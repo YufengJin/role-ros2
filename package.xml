@@ -1,0 +1,49 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>role_ros2</name>
+  <version>1.0.0</version>
+  <description>ROS2 package for Robot Learning (role-ros2)</description>
+  <maintainer email="role-ros2@example.com">Role-ROS2 Team</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+
+  <!-- Build dependencies -->
+  <depend>rclpy</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>visualization_msgs</depend>
+  <depend>control_msgs</depend>
+  <depend>franka_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>trajectory_msgs</depend>
+  <depend>franka_description</depend>
+  <depend>franka_bringup</depend>
+  <depend>franka_gripper</depend>
+  <depend>franka_fr3_moveit_config</depend>
+  <depend>controller_manager</depend>
+  <depend>joint_state_publisher</depend>
+  <depend>robot_state_publisher</depend>
+  <depend>message_filters</depend>
+  <depend>cv_bridge</depend>
+  <depend>image_transport</depend>
+
+  <!-- Runtime dependencies for launch files -->
+  <exec_depend>zed_wrapper</exec_depend>
+  <exec_depend>zed_components</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>rosidl_default_runtime</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
+</package>
