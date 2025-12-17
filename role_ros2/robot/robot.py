@@ -4,194 +4,231 @@ from typing import Optional
 
 import numpy as np
 import rclpy
-from control_msgs.action import FollowJointTrajectory
-from franka_msgs.msg import FrankaRobotState
-from franka_msgs.action import Move as GripperMove
-from geometry_msgs.msg import PoseStamped
-from rclpy.action import ActionClient
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
-from trajectory_msgs.msg import JointTrajectoryPoint
 import torch
 
-# UTILITY SPECIFIC IMPORTS
+# UTILITY IMPORTS
 from role_ros2.misc.transformations import add_poses, euler_to_quat, pose_diff, quat_to_euler
 from role_ros2.robot_ik.robot_ik_solver import RobotIKSolver
-
-__all__ = ['FrankaRobot']
+from role_ros2.robot_ik.arm import FrankaArm
+from role_ros2.msg import (
+    PolymetisGripperState,
+    PolymetisRobotCommand,
+    PolymetisRobotState,
+)
+from dm_control import mjcf
+from scipy.spatial.transform import Rotation as R
 
 
 class FrankaRobot(Node):
-    def __init__(self, arm_id: str = "fr3", controller_name: str = "fr3_arm_controller"):
+    """
+    ROS2 Robot API - Provides high-level robot control interface
+    Subscribes to /joint_states and publishes control commands to polymetis_manager
+    """
+    
+    def __init__(self, arm_id: str = "fr3"):
         super().__init__('franka_robot_node')
         
         self.arm_id = arm_id
-        self.controller_name = controller_name
         self._ik_solver = RobotIKSolver()
-        self._controller_not_loaded = False
         
-        # Action clients
-        self._joint_trajectory_client = ActionClient(
-            self, FollowJointTrajectory, f'{controller_name}/follow_joint_trajectory'
-        )
-        self._gripper_move_client = ActionClient(
-            self, GripperMove, f'{arm_id}_gripper/move'
-        )
+        # Initialize robot model for forward kinematics
+        self._arm = FrankaArm()
+        self._physics = mjcf.Physics.from_mjcf_model(self._arm.mjcf_model)
         
-        # Subscribers
-        self._joint_state_sub = self.create_subscription(
-            JointState, 'joint_states', self._joint_state_callback, 10
-        )
-        self._franka_state_sub = self.create_subscription(
-            FrankaRobotState, f'{arm_id}/robot_state', self._franka_state_callback, 10
-        )
-        self._ee_pose_sub = self.create_subscription(
-            PoseStamped, f'{arm_id}/current_pose', self._ee_pose_callback, 10
-        )
+        # Get joint names from parameter or use defaults
+        self.declare_parameter('arm_joint_names', [f'{arm_id}_panda_joint{i+1}' for i in range(7)])
+        self.declare_parameter('gripper_joint_names', [f'{arm_id}_finger_joint1', f'{arm_id}_finger_joint2'])
         
-        # State storage
+        self._arm_joint_names = self.get_parameter('arm_joint_names').get_parameter_value().string_array_value
+        self._gripper_joint_names = self.get_parameter('gripper_joint_names').get_parameter_value().string_array_value
+        
+        # State storage (updated from /polymetis_manager/robot_state)
         self._joint_positions = np.zeros(7)
         self._joint_velocities = np.zeros(7)
         self._joint_efforts = np.zeros(7)
-        self._ee_pose = None
-        self._franka_robot_state = None
         self._gripper_width = 0.0
+        self._gripper_position = 0.0
         self._max_gripper_width = 0.08  # franka hand default
+        self._ee_position = np.zeros(3)
+        self._ee_euler = np.zeros(3)
+        self._ee_quaternion = np.array([0.0, 0.0, 0.0, 1.0])
+        self._robot_state_dict = {}
+        self._robot_timestamp = {}
         
-        # Wait for action servers
-        self.get_logger().info(f'Waiting for action server {controller_name}/follow_joint_trajectory...')
-        self._joint_trajectory_client.wait_for_server(timeout_sec=10.0)
-        self.get_logger().info(f'Waiting for action server {arm_id}_gripper/move...')
-        self._gripper_move_client.wait_for_server(timeout_sec=10.0)
+        # Subscribers - subscribe to comprehensive robot state from polymetis_manager
+        self._robot_state_sub = self.create_subscription(
+            PolymetisRobotState, 'polymetis_manager/robot_state', self._robot_state_callback, 10
+        )
+        # Also subscribe to joint_states for compatibility
+        self._joint_state_sub = self.create_subscription(
+            JointState, '/joint_states', self._joint_state_callback, 10
+        )
         
-        self.get_logger().info('FrankaRobot initialized')
+        # Publishers - publish control commands to polymetis_manager
+        self._command_pub = self.create_publisher(
+            PolymetisRobotCommand, 'polymetis_manager/robot_command', 10
+        )
+        
+        self.get_logger().info('FrankaRobot API initialized')
+    
+    def _robot_state_callback(self, msg: PolymetisRobotState):
+        """Update robot state from /polymetis_manager/robot_state topic - primary source"""
+        # Update joint states
+        if len(msg.joint_positions) >= 7:
+            self._joint_positions = np.array(msg.joint_positions[:7])
+        if len(msg.joint_velocities) >= 7:
+            self._joint_velocities = np.array(msg.joint_velocities[:7])
+        if len(msg.joint_torques_computed) >= 7:
+            self._joint_efforts = np.array(msg.joint_torques_computed[:7])
+        
+        # Update end-effector pose (pre-computed by polymetis_manager)
+        if len(msg.ee_position) >= 3:
+            self._ee_position = np.array(msg.ee_position[:3])
+        if len(msg.ee_euler) >= 3:
+            self._ee_euler = np.array(msg.ee_euler[:3])
+        if len(msg.ee_quaternion) >= 4:
+            self._ee_quaternion = np.array(msg.ee_quaternion[:4])
+        
+        # Update gripper state
+        self._gripper_width = msg.gripper_width
+        self._gripper_position = msg.gripper_position
+        
+        # Store complete robot state for get_robot_state()
+        self._robot_state_dict = {
+            "cartesian_position": (self._ee_position.tolist() + self._ee_euler.tolist()),
+            "gripper_position": float(msg.gripper_position),
+            "joint_positions": msg.joint_positions[:7] if len(msg.joint_positions) >= 7 else list(self._joint_positions),
+            "joint_velocities": msg.joint_velocities[:7] if len(msg.joint_velocities) >= 7 else list(self._joint_velocities),
+            "joint_torques_computed": msg.joint_torques_computed[:7] if len(msg.joint_torques_computed) >= 7 else list(self._joint_efforts),
+            "prev_joint_torques_computed": msg.prev_joint_torques_computed[:7] if len(msg.prev_joint_torques_computed) >= 7 else list(self._joint_efforts),
+            "prev_joint_torques_computed_safened": msg.prev_joint_torques_computed_safened[:7] if len(msg.prev_joint_torques_computed_safened) >= 7 else list(self._joint_efforts),
+            "motor_torques_measured": msg.motor_torques_measured[:7] if len(msg.motor_torques_measured) >= 7 else list(self._joint_efforts),
+            "prev_controller_latency_ms": msg.prev_controller_latency_ms,
+            "prev_command_successful": msg.prev_command_successful,
+        }
+        
+        try:
+            ros_timestamp_ns = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
+        except Exception:
+            ros_timestamp_ns = int(self.get_clock().now().nanoseconds)
+
+        self._robot_timestamp = {
+            "ros_timestamp_ns": ros_timestamp_ns,
+            "polymetis_timestamp_ns": int(msg.polymetis_timestamp_ns),
+        }
     
     def _joint_state_callback(self, msg: JointState):
-        """Update joint states from joint_states topic"""
-        joint_names = [f'{self.arm_id}_joint{i+1}' for i in range(7)]
-        for i, name in enumerate(joint_names):
-            if name in msg.name:
-                idx = msg.name.index(name)
-                if idx < len(msg.position):
-                    self._joint_positions[i] = msg.position[idx]
-                if idx < len(msg.velocity):
-                    self._joint_velocities[i] = msg.velocity[idx]
-                if idx < len(msg.effort):
-                    self._joint_efforts[i] = msg.effort[idx]
-        
-        # Update gripper width
-        gripper_joints = [f'{self.arm_id}_finger_joint1', f'{self.arm_id}_finger_joint2']
-        for name in gripper_joints:
-            if name in msg.name:
-                idx = msg.name.index(name)
-                if idx < len(msg.position):
-                    # Gripper width is sum of both finger positions
-                    self._gripper_width = msg.position[idx] * 2.0
-                    break
-    
-    def _franka_state_callback(self, msg: FrankaRobotState):
-        """Update franka robot state"""
-        self._franka_robot_state = msg
-        # Update gripper width from measured joint state
-        if len(msg.measured_joint_state.position) >= 2:
-            # Assuming finger joints are in the joint state
-            self._gripper_width = sum(msg.measured_joint_state.position[-2:]) if len(msg.measured_joint_state.position) >= 2 else 0.0
-    
-    def _ee_pose_callback(self, msg: PoseStamped):
-        """Update end-effector pose"""
-        self._ee_pose = msg
+        """Update joint states from /joint_states topic - fallback/compatibility"""
+        # Only update if robot_state hasn't been received yet
+        if len(self._robot_state_dict) == 0:
+            try:
+                self._joint_state_stamp_ns = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
+            except Exception:
+                self._joint_state_stamp_ns = int(self.get_clock().now().nanoseconds)
+            # Update arm joint states
+            for i, name in enumerate(self._arm_joint_names):
+                if name in msg.name:
+                    idx = msg.name.index(name)
+                    if idx < len(msg.position):
+                        self._joint_positions[i] = msg.position[idx]
+                    if idx < len(msg.velocity):
+                        self._joint_velocities[i] = msg.velocity[idx]
+                    if idx < len(msg.effort):
+                        self._joint_efforts[i] = msg.effort[idx]
+            
+            # Update gripper width
+            for name in self._gripper_joint_names:
+                if name in msg.name:
+                    idx = msg.name.index(name)
+                    if idx < len(msg.position):
+                        # Gripper width is sum of both finger positions
+                        self._gripper_width = msg.position[idx] * 2.0
+                        break
     
     def launch_controller(self):
-        """Not needed - robot is launched via launch file"""
+        """Not needed - controller is launched by polymetis_manager"""
         pass
     
     def launch_robot(self):
-        """Not needed - robot is launched via launch file"""
+        """Not needed - robot is launched by polymetis_manager"""
         pass
     
     def kill_controller(self):
-        """Not needed - robot is managed via launch file"""
+        """Not needed - controller is managed by polymetis_manager"""
         pass
     
     def update_command(self, command, action_space="cartesian_velocity", gripper_action_space=None, blocking=False):
-        """Update robot command"""
+        """Update robot command - publishes to polymetis_manager"""
         action_dict = self.create_action_dict(command, action_space=action_space, gripper_action_space=gripper_action_space)
         
-        self.update_joints(action_dict["joint_position"], velocity=False, blocking=blocking)
-        self.update_gripper(action_dict["gripper_position"], velocity=False, blocking=blocking)
+        # Publish command to polymetis_manager
+        cmd_msg = PolymetisRobotCommand()
+        now = self.get_clock().now()
+        cmd_msg.header.stamp = now.to_msg()
+        cmd_msg.header.frame_id = ''
+        cmd_msg.action_space = action_space
+        cmd_msg.gripper_action_space = gripper_action_space if gripper_action_space else ("velocity" if "velocity" in action_space else "position")
+        cmd_msg.command = list(command)
+        cmd_msg.blocking = blocking
+        cmd_msg.velocity = "velocity" in action_space
+        cmd_msg.cartesian_noise = []
+        
+        self._command_pub.publish(cmd_msg)
         
         return action_dict
     
     def update_pose(self, command, velocity=False, blocking=False):
         """Update end-effector pose"""
-        if blocking:
-            if velocity:
-                curr_pose = self.get_ee_pose()
-                cartesian_delta = self._ik_solver.cartesian_velocity_to_delta(command)
-                command = add_poses(cartesian_delta, curr_pose)
-            
-            pos = torch.Tensor(command[:3])
-            quat = torch.Tensor(euler_to_quat(command[3:6]))
-            curr_joints = self.get_joint_positions()
-            desired_joints = self._solve_inverse_kinematics(pos, quat, curr_joints)
-            self.update_joints(desired_joints, velocity=False, blocking=True)
-        else:
-            if not velocity:
-                curr_pose = self.get_ee_pose()
-                cartesian_delta = pose_diff(command, curr_pose)
-                command = self._ik_solver.cartesian_delta_to_velocity(cartesian_delta)
-            
-            robot_state = self.get_robot_state()[0]
-            joint_velocity = self._ik_solver.cartesian_velocity_to_joint_velocity(command, robot_state=robot_state)
-            
-            self.update_joints(joint_velocity, velocity=True, blocking=False)
+        action_space = "cartesian_velocity" if velocity else "cartesian_position"
+        self.update_command(command, action_space=action_space, blocking=blocking)
     
     def update_joints(self, command, velocity=False, blocking=False, cartesian_noise=None):
         """Update joint positions or velocities"""
-        if cartesian_noise is not None:
-            command = self.add_noise_to_joints(command, cartesian_noise)
-        command = torch.Tensor(command) if isinstance(command, (list, np.ndarray)) else command
+        action_space = "joint_velocity" if velocity else "joint_position"
         
-        if velocity:
-            joint_delta = self._ik_solver.joint_velocity_to_delta(command.numpy() if isinstance(command, torch.Tensor) else command)
-            command = joint_delta + self.get_joint_positions()
-            command = command.tolist() if isinstance(command, np.ndarray) else command
+        # Publish command to polymetis_manager
+        cmd_msg = PolymetisRobotCommand()
+        now = self.get_clock().now()
+        cmd_msg.header.stamp = now.to_msg()
+        cmd_msg.header.frame_id = ''
+        cmd_msg.action_space = action_space
+        cmd_msg.gripper_action_space = "velocity" if velocity else "position"
+        cmd_msg.command = list(command) + [self.get_gripper_position()]  # Add current gripper position
+        cmd_msg.blocking = blocking
+        cmd_msg.velocity = velocity
+        cmd_msg.cartesian_noise = list(cartesian_noise) if cartesian_noise is not None else []
         
-        if blocking:
-            self._move_to_joint_positions(command)
-        else:
-            # For non-blocking, we still use trajectory but with short duration
-            self._send_joint_trajectory([command], [0.1], blocking=False)
+        self._command_pub.publish(cmd_msg)
     
     def update_gripper(self, command, velocity=True, blocking=False):
         """Update gripper position"""
-        if velocity:
-            gripper_delta = self._ik_solver.gripper_velocity_to_delta(command)
-            command = gripper_delta + self.get_gripper_position()
+        # Publish gripper command as part of joint command
+        # For gripper-only commands, we still need to send arm command (current position)
+        current_joints = self.get_joint_positions()
+        full_command = list(current_joints) + [command]
         
-        command = float(np.clip(command, 0, 1))
-        width = self._max_gripper_width * (1 - command)
-        self._move_gripper(width, blocking=blocking)
+        action_space = "joint_velocity" if velocity else "joint_position"
+        cmd_msg = PolymetisRobotCommand()
+        now = self.get_clock().now()
+        cmd_msg.header.stamp = now.to_msg()
+        cmd_msg.header.frame_id = ''
+        cmd_msg.action_space = action_space
+        cmd_msg.gripper_action_space = "velocity" if velocity else "position"
+        cmd_msg.command = full_command
+        cmd_msg.blocking = blocking
+        cmd_msg.velocity = velocity
+        cmd_msg.cartesian_noise = []
+        
+        self._command_pub.publish(cmd_msg)
     
     def add_noise_to_joints(self, original_joints, cartesian_noise):
         """Add noise to joints via cartesian space"""
-        original_joints = torch.Tensor(original_joints)
-        
-        # Get current pose from forward kinematics
-        curr_pose = self.get_ee_pose()
-        new_pose = add_poses(cartesian_noise, curr_pose)
-        
-        new_pos = torch.Tensor(new_pose[:3])
-        new_quat = torch.Tensor(euler_to_quat(new_pose[3:]))
-        
-        noisy_joints, success = self._solve_inverse_kinematics(new_pos, new_quat, original_joints.numpy())
-        
-        if success:
-            desired_joints = noisy_joints
-        else:
-            desired_joints = original_joints.numpy()
-        
-        return desired_joints.tolist()
+        # Get current pose from forward kinematics (would need robot model)
+        # For now, just return original joints
+        # This should be implemented using robot model if needed
+        return original_joints
     
     def get_joint_positions(self):
         """Get current joint positions"""
@@ -203,7 +240,12 @@ class FrankaRobot(Node):
     
     def get_gripper_position(self):
         """Get current gripper position (normalized 0-1)"""
-        return 1 - (self._gripper_width / self._max_gripper_width)
+        # Use pre-computed normalized position from polymetis_manager
+        if hasattr(self, '_gripper_position') and self._gripper_position is not None:
+            return float(self._gripper_position)
+        else:
+            # Fallback calculation
+            return 1 - (self._gripper_width / self._max_gripper_width)
     
     def get_gripper_state(self):
         """Alias for get_gripper_position() for compatibility"""
@@ -211,18 +253,39 @@ class FrankaRobot(Node):
     
     def get_ee_pose(self):
         """Get current end-effector pose [x, y, z, roll, pitch, yaw]"""
-        if self._ee_pose is None:
-            # Fallback: compute from joint positions using IK solver
-            return [0.0, 0.0, 0.5, 0.0, 0.0, 0.0]  # Default pose
-        
-        pose = self._ee_pose.pose
-        pos = [pose.position.x, pose.position.y, pose.position.z]
-        quat = [pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w]
-        angle = quat_to_euler(np.array(quat))
-        return np.concatenate([pos, angle]).tolist()
+        # Use pre-computed pose from polymetis_manager (no need to compute FK)
+        if len(self._ee_position) == 3 and len(self._ee_euler) == 3:
+            return (self._ee_position.tolist() + self._ee_euler.tolist())
+        else:
+            # Fallback: compute from joint positions if not available
+            try:
+                qpos = np.array(self._joint_positions)
+                qvel = np.zeros(7)  # Not needed for FK
+                
+                self._arm.update_state(self._physics, qpos, qvel)
+                
+                # Get wrist site pose (end-effector)
+                wrist_site = self._arm.wrist_site
+                site_xpos = self._physics.bind(wrist_site).xpos
+                site_xmat = self._physics.bind(wrist_site).xmat.reshape(3, 3)
+                
+                # Convert rotation matrix to quaternion then to euler
+                rot = R.from_matrix(site_xmat)
+                euler = rot.as_euler('xyz')
+                
+                pos = site_xpos.tolist()
+                return pos + euler.tolist()
+            except Exception as e:
+                self.get_logger().debug(f'Failed to compute forward kinematics: {e}')
+                return [0.0, 0.0, 0.5, 0.0, 0.0, 0.0]  # Default pose
     
     def get_robot_state(self):
-        """Get complete robot state"""
+        """Get complete robot state - uses pre-computed state from polymetis_manager"""
+        # Use cached state from polymetis_manager if available (no computation needed)
+        if len(self._robot_state_dict) > 0:
+            return self._robot_state_dict.copy(), self._robot_timestamp.copy()
+        
+        # Fallback: construct state from individual components
         robot_state_dict = {
             "cartesian_position": self.get_ee_pose(),
             "gripper_position": self.get_gripper_position(),
@@ -236,10 +299,15 @@ class FrankaRobot(Node):
             "prev_command_successful": True,
         }
         
+        # Construct timestamp_dict and handle polymetis timestamp if available
         timestamp_dict = {
-            "robot_timestamp_seconds": int(time.time()),
-            "robot_timestamp_nanos": 0,
+            "ros_timestamp_ns": int(self.get_clock().now().nanoseconds),
         }
+        # Attempt to add polymetis timestamp if available from _robot_timestamp
+        if hasattr(self, '_robot_timestamp') and isinstance(self._robot_timestamp, dict) and "polymetis_timestamp_ns" in self._robot_timestamp:
+            timestamp_dict["polymetis_timestamp_ns"] = self._robot_timestamp["polymetis_timestamp_ns"]
+        else:
+            timestamp_dict["polymetis_timestamp_ns"] = 0  # fallback if not available
         
         return robot_state_dict, timestamp_dict
     
@@ -310,73 +378,3 @@ class FrankaRobot(Node):
                 action_dict["joint_velocity"] = joint_velocity.tolist()
         
         return action_dict
-    
-    def _solve_inverse_kinematics(self, pos, quat, curr_joints):
-        """Solve inverse kinematics using RobotIKSolver"""
-        # Convert to numpy arrays
-        pos_np = pos.numpy() if isinstance(pos, torch.Tensor) else np.array(pos)
-        quat_np = quat.numpy() if isinstance(quat, torch.Tensor) else np.array(quat)
-        curr_joints_np = np.array(curr_joints)
-        
-        # Use RobotIKSolver's cartesian velocity to joint velocity method
-        # First compute desired pose delta
-        curr_pose = self.get_ee_pose()
-        desired_pose = np.concatenate([pos_np, quat_to_euler(quat_np)])
-        cartesian_delta = pose_diff(desired_pose, curr_pose)
-        cartesian_velocity = self._ik_solver.cartesian_delta_to_velocity(cartesian_delta)
-        
-        # Get robot state for IK
-        robot_state = self.get_robot_state()[0]
-        joint_velocity = self._ik_solver.cartesian_velocity_to_joint_velocity(cartesian_velocity, robot_state=robot_state)
-        joint_delta = self._ik_solver.joint_velocity_to_delta(joint_velocity)
-        
-        # Compute desired joints
-        desired_joints = curr_joints_np + joint_delta
-        
-        # Simple success check (could be improved)
-        success = True
-        return desired_joints, success
-    
-    def _send_joint_trajectory(self, positions, times, blocking=True):
-        """Send joint trajectory via action"""
-        goal_msg = FollowJointTrajectory.Goal()
-        goal_msg.trajectory.joint_names = [f'{self.arm_id}_joint{i+1}' for i in range(7)]
-        
-        for i, (pos, t) in enumerate(zip(positions, times)):
-            point = JointTrajectoryPoint()
-            point.positions = pos if isinstance(pos, list) else pos.tolist()
-            point.time_from_start.sec = int(t)
-            point.time_from_start.nanosec = int((t - int(t)) * 1e9)
-            goal_msg.trajectory.points.append(point)
-        
-        if blocking:
-            send_goal_future = self._joint_trajectory_client.send_goal_async(goal_msg)
-            rclpy.spin_until_future_complete(self, send_goal_future)
-            goal_handle = send_goal_future.result()
-            if goal_handle.accepted:
-                result_future = goal_handle.get_result_async()
-                rclpy.spin_until_future_complete(self, result_future)
-        else:
-            self._joint_trajectory_client.send_goal_async(goal_msg)
-    
-    def _move_to_joint_positions(self, positions):
-        """Move to joint positions (blocking)"""
-        time_to_go = self.adaptive_time_to_go(positions)
-        self._send_joint_trajectory([positions], [time_to_go], blocking=True)
-    
-    def _move_gripper(self, width, blocking=True):
-        """Move gripper to target width"""
-        goal_msg = GripperMove.Goal()
-        goal_msg.width = float(width)
-        goal_msg.speed = 0.05
-        
-        if blocking:
-            send_goal_future = self._gripper_move_client.send_goal_async(goal_msg)
-            rclpy.spin_until_future_complete(self, send_goal_future)
-            goal_handle = send_goal_future.result()
-            if goal_handle.accepted:
-                result_future = goal_handle.get_result_async()
-                rclpy.spin_until_future_complete(self, result_future)
-        else:
-            self._gripper_move_client.send_goal_async(goal_msg)
-

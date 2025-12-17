@@ -78,21 +78,37 @@ def robot_description_dependent_nodes_spawner(
     load_gripper_str = context.perform_substitution(load_gripper)
     controller_name_str = context.perform_substitution(controller_name)
 
-    franka_xacro_filepath = os.path.join(get_package_share_directory(
-        'franka_description'), 'robots', arm_id_str, arm_id_str+'.urdf.xacro')
-    robot_description = xacro.process_file(franka_xacro_filepath,
-                                           mappings={
-                                               'ros2_control': 'true',
-                                               'arm_id': arm_id_str,
-                                               'robot_ip': robot_ip_str,
-                                               'hand': load_gripper_str,
-                                               'use_fake_hardware': use_fake_hardware_str,
-                                               'fake_sensor_commands': fake_sensor_commands_str,
-                                           }).toprettyxml(indent='  ')
-
-    # Use fr3_ros_controllers.yaml for MoveIt config, or controllers.yaml for basic control
-    franka_controllers = PathJoinSubstitution(
-        [FindPackageShare('franka_fr3_moveit_config'), 'config', 'fr3_ros_controllers.yaml'])
+    # Load URDF from role_ros2 package (converted from MuJoCo XML)
+    package_share_dir = get_package_share_directory('role_ros2')
+    # Get source directory
+    src_dir = os.path.join(package_share_dir, '..', '..', 'src', 'role_ros2')
+    urdf_filepath = os.path.join(src_dir, 'role_ros2', 'robot_ik', 'franka', f'{arm_id_str}.urdf')
+    
+    # If URDF doesn't exist, try to generate it
+    if not os.path.exists(urdf_filepath):
+        # Try to generate from XML
+        xml_filepath = os.path.join(src_dir, 'role_ros2', 'robot_ik', 'franka', f'{arm_id_str}.xml')
+        if os.path.exists(xml_filepath):
+            import subprocess
+            convert_script = os.path.join(src_dir, 'scripts', 'mujoco_to_urdf.py')
+            if os.path.exists(convert_script):
+                result = subprocess.run(['python3', convert_script, xml_filepath, urdf_filepath, arm_id_str],
+                                      capture_output=True, text=True)
+                if result.returncode != 0:
+                    print(f"Warning: Failed to generate URDF: {result.stderr}")
+    
+    # Read URDF file
+    if os.path.exists(urdf_filepath):
+        with open(urdf_filepath, 'r') as f:
+            robot_description = f.read()
+        # Replace mesh paths to use absolute file paths (since we're not using package://)
+        mesh_dir = os.path.join(src_dir, 'role_ros2', 'robot_ik', 'franka', 'mesh')
+        robot_description = robot_description.replace(
+            'package://role_ros2/meshes/franka/',
+            f'file://{mesh_dir}/'
+        )
+    else:
+        raise FileNotFoundError(f"URDF file not found: {urdf_filepath}. Please run the conversion script first.")
 
     return [
         Node(
@@ -101,23 +117,8 @@ def robot_description_dependent_nodes_spawner(
             name='robot_state_publisher',
             output='screen',
             parameters=[{'robot_description': robot_description}],
-            # 确保 robot_state_publisher 订阅 /joint_states 话题
-            # 默认就是 /joint_states，但显式指定以确保正确
-            remappings=[('joint_states', '/joint_states')],
-        ),
-        Node(
-            package='controller_manager',
-            executable='ros2_control_node',
-            parameters=[franka_controllers,
-                        {'robot_description': robot_description},
-                        {'arm_id': arm_id},
-                        ],
-            remappings=[('joint_states', 'franka/joint_states')],
-            output={
-                'stdout': 'screen',
-                'stderr': 'screen',
-            },
-            on_exit=Shutdown(),
+            # robot_state_publisher subscribes to /joint_states and publishes /tf
+            # This will convert joint_states from polymetis_manager to TF transforms
         )]
 
 
@@ -185,51 +186,32 @@ def generate_launch_description():
             controller_name_parameter_name,
             default_value=get_default('controller_name', 'fr3_arm_controller'),
             description='Name of the arm controller to use. Default from config/franka_robot_config.yaml'),
-        # Note: joint_state_publisher is optional
-        # The joint_state_broadcaster controller already publishes joint states to /joint_states
-        # This node can merge multiple sources, but is not essential for basic operation
-        # Using hardcoded 'fr3' since arm_id is LaunchConfiguration and cannot be used in f-string
+        # Polymetis manager node - replaces franka_ros2 hardware interface
         Node(
-            package='joint_state_publisher',
-            executable='joint_state_publisher',
-            name='joint_state_publisher',
+            package='role_ros2',
+            executable='polymetis_manager',
+            name='polymetis_manager_node',
+            output='screen',
             parameters=[
-                {'source_list': ['franka/joint_states', 'fr3_gripper/joint_states'],
-                 'rate': 30}],
+                {'arm_id': arm_id},
+                {'ip_address': robot_ip},
+                {'urdf_file': ''},  # Auto-detect from package
+                {'launch_controller': True},
+                {'launch_robot': True},
+            ],
         ),
+        # Robot state publisher - subscribes to /joint_states and publishes /tf
         robot_description_dependent_nodes_spawner_opaque_function,
-        # Spawn joint state broadcaster
-        Node(
-            package='controller_manager',
-            executable='spawner',
-            arguments=['joint_state_broadcaster'],
-            output='screen',
-        ),
-        # Spawn franka robot state broadcaster
-        Node(
-            package='controller_manager',
-            executable='spawner',
-            arguments=['franka_robot_state_broadcaster'],
-            parameters=[{'arm_id': arm_id}],
-            output='screen',
-            condition=UnlessCondition(use_fake_hardware),
-        ),
-        # Spawn arm controller
-        Node(
-            package='controller_manager',
-            executable='spawner',
-            arguments=[controller_name],
-            output='screen',
-        ),
-        # Include gripper launch
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource([PathJoinSubstitution(
-                [FindPackageShare('franka_gripper'), 'launch', 'gripper.launch.py'])]),
-            launch_arguments={robot_ip_parameter_name: robot_ip,
-                              use_fake_hardware_parameter_name: use_fake_hardware,
-                              arm_id_parameter_name: arm_id}.items(),
-            condition=IfCondition(load_gripper)
-        ),
+        # Note: Gripper is controlled via Polymetis (polymetis_manager handles both arm and gripper)
+        # If you need franka_gripper ROS2 node, uncomment below and add franka_gripper dependency
+        # IncludeLaunchDescription(
+        #     PythonLaunchDescriptionSource([PathJoinSubstitution(
+        #         [FindPackageShare('franka_gripper'), 'launch', 'gripper.launch.py'])]),
+        #     launch_arguments={robot_ip_parameter_name: robot_ip,
+        #                       use_fake_hardware_parameter_name: use_fake_hardware,
+        #                       arm_id_parameter_name: arm_id}.items(),
+        #     condition=IfCondition(load_gripper)
+        # ),
     ])
 
     return launch_description

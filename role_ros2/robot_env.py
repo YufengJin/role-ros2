@@ -14,7 +14,7 @@ from builtin_interfaces.msg import Time
 from role_ros2.calibration.calibration_utils import load_calibration_info
 from role_ros2.camera_utils.info import camera_type_dict
 from role_ros2.misc.parameters import hand_camera_id, nuc_ip
-from role_ros2.misc.time import time_ms
+from role_ros2.misc.time import time_ms  # legacy; prefer ROS ns timestamps in this file
 from role_ros2.misc.transformations import change_pose_frame
 from role_ros2.robot import FrankaRobot
 
@@ -158,9 +158,9 @@ class ROS2CameraSubscriber(Node):
                 full_obs_dict[f'{cam_id}_depth'] = cam_data['depth']
         
         if timestamp:
-            # Convert ROS2 Time to milliseconds
-            timestamp_ms = int(timestamp.sec * 1000 + timestamp.nanosec / 1e6)
-            full_timestamp_dict['cameras'] = timestamp_ms
+            # Convert ROS2 Time to nanoseconds int
+            timestamp_ns = int(timestamp.sec) * 1_000_000_000 + int(timestamp.nanosec)
+            full_timestamp_dict['cameras'] = timestamp_ns
         
         return full_obs_dict, full_timestamp_dict
     
@@ -177,7 +177,7 @@ class ROS2CameraSubscriber(Node):
 
 class RobotEnv(gym.Env):
     def __init__(self, action_space="cartesian_velocity", gripper_action_space=None, 
-                 camera_kwargs={}, do_reset=True, arm_id="fr3", controller_name="fr3_arm_controller",
+                 camera_kwargs={}, do_reset=True, arm_id="fr3",
                  camera_topics_config=None, use_ros2_cameras=True):
         # Initialize Gym Environment
         super().__init__()
@@ -199,21 +199,13 @@ class RobotEnv(gym.Env):
         self.DoF = 7 if ("cartesian" in action_space) else 8
         self.control_hz = 15
         
-        # Initialize Robot
-        if nuc_ip is None or nuc_ip == "":
-            self._robot = FrankaRobot(arm_id=arm_id, controller_name=controller_name)
-            # Run robot node in separate thread
-            self._robot_executor = rclpy.executors.SingleThreadedExecutor()
-            self._robot_executor.add_node(self._robot)
-            self._robot_thread = threading.Thread(target=self._robot_executor.spin, daemon=True)
-            self._robot_thread.start()
-        else:
-            # ServerInterface not available in role-ros2, use ROS2 robot instead
-            self._robot = FrankaRobot(arm_id=arm_id, controller_name=controller_name)
-            self._robot_executor = rclpy.executors.SingleThreadedExecutor()
-            self._robot_executor.add_node(self._robot)
-            self._robot_thread = threading.Thread(target=self._robot_executor.spin, daemon=True)
-            self._robot_thread.start()
+        # Initialize Robot (no controller_name needed - uses polymetis_manager)
+        self._robot = FrankaRobot(arm_id=arm_id)
+        # Run robot node in separate thread
+        self._robot_executor = rclpy.executors.SingleThreadedExecutor()
+        self._robot_executor.add_node(self._robot)
+        self._robot_thread = threading.Thread(target=self._robot_executor.spin, daemon=True)
+        self._robot_thread.start()
         
         # Create Cameras
         self.use_ros2_cameras = use_ros2_cameras
@@ -283,10 +275,11 @@ class RobotEnv(gym.Env):
         return self.camera_reader.read_cameras()
     
     def get_state(self):
-        read_start = time_ms()
+        # Use ROS2 clock nanoseconds int from robot node
+        read_start_ns = int(self._robot.get_clock().now().nanoseconds)
         state_dict, timestamp_dict = self._robot.get_robot_state()
-        timestamp_dict["read_start"] = read_start
-        timestamp_dict["read_end"] = time_ms()
+        timestamp_dict["read_start_ns"] = read_start_ns
+        timestamp_dict["read_end_ns"] = int(self._robot.get_clock().now().nanoseconds)
         return state_dict, timestamp_dict
     
     def get_camera_extrinsics(self, state_dict):

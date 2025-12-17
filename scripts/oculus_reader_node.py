@@ -310,7 +310,6 @@ class OculusReaderNode(Node):
             return
         
         current_time = self.get_clock().now()
-        
         # Publish right controller pose
         if 'r' in poses:
             right_pose_msg = PoseStamped()

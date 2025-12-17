@@ -20,12 +20,10 @@
   <depend>franka_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>trajectory_msgs</depend>
-  <depend>franka_description</depend>
-  <depend>franka_bringup</depend>
-  <depend>franka_gripper</depend>
-  <depend>franka_fr3_moveit_config</depend>
-  <depend>controller_manager</depend>
-  <depend>controller_manager_msgs</depend>
+  <!-- Note: franka_gripper is optional - only needed if using franka_ros2 gripper instead of Polymetis -->
+  <!-- <depend>franka_gripper</depend> -->
+  <!-- Note: franka_msgs is still needed for message definitions used by robot.py -->
+  <!-- Note: controller_manager dependencies removed - using Polymetis instead of franka_ros2 hardware -->
   <depend>joint_state_publisher</depend>
   <depend>robot_state_publisher</depend>
   <depend>message_filters</depend>

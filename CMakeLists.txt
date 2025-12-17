@@ -13,6 +13,9 @@ find_package(std_msgs REQUIRED)
 # Generate messages
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/OculusButtons.msg"
+  "msg/PolymetisRobotCommand.msg"
+  "msg/PolymetisRobotState.msg"
+  "msg/PolymetisGripperState.msg"
   DEPENDENCIES std_msgs
 )
 
@@ -25,38 +28,18 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
   RENAME oculus_reader_node
 )
+install(PROGRAMS
+  scripts/polymetis_manager.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME polymetis_manager
+)
+install(PROGRAMS
+  scripts/teleoperation_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME teleoperation_node
+)
 
-# Install test scripts
-install(PROGRAMS
-  scripts/test_franka_controllers.py
-  DESTINATION lib/${PROJECT_NAME}
-  RENAME test_franka_controllers
-)
-install(PROGRAMS
-  scripts/test_cartesian_pose_control.py
-  DESTINATION lib/${PROJECT_NAME}
-  RENAME test_cartesian_pose_control
-)
-install(PROGRAMS
-  scripts/test_joint_position_control.py
-  DESTINATION lib/${PROJECT_NAME}
-  RENAME test_joint_position_control
-)
-install(PROGRAMS
-  scripts/test_joint_velocity_control.py
-  DESTINATION lib/${PROJECT_NAME}
-  RENAME test_joint_velocity_control
-)
-install(PROGRAMS
-  scripts/test_cartesian_velocity_control.py
-  DESTINATION lib/${PROJECT_NAME}
-  RENAME test_cartesian_velocity_control
-)
-install(PROGRAMS
-  scripts/test_required_components.py
-  DESTINATION lib/${PROJECT_NAME}
-  RENAME test_required_components
-)
+# Note: test scripts are not installed because they are not shipped in this repo snapshot.
 
 # Install Python package
 # Source directory is 'role_ros2' (underscore) matching Python import convention
@@ -79,6 +62,12 @@ install(DIRECTORY launch
 # Install config files
 install(DIRECTORY config
   DESTINATION share/${PROJECT_NAME}/
+)
+
+# Install URDF files
+install(FILES
+  role_ros2/robot_ik/franka/fr3.urdf
+  DESTINATION share/${PROJECT_NAME}/urdf
 )
 
 if(BUILD_TESTING)
