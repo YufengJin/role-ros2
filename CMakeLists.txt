@@ -26,9 +26,48 @@ install(PROGRAMS
   RENAME oculus_reader_node
 )
 
+# Install test scripts
+install(PROGRAMS
+  scripts/test_franka_controllers.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME test_franka_controllers
+)
+install(PROGRAMS
+  scripts/test_cartesian_pose_control.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME test_cartesian_pose_control
+)
+install(PROGRAMS
+  scripts/test_joint_position_control.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME test_joint_position_control
+)
+install(PROGRAMS
+  scripts/test_joint_velocity_control.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME test_joint_velocity_control
+)
+install(PROGRAMS
+  scripts/test_cartesian_velocity_control.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME test_cartesian_velocity_control
+)
+install(PROGRAMS
+  scripts/test_required_components.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME test_required_components
+)
+
 # Install Python package
-install(DIRECTORY role-ros2/role-ros2
+# Source directory is 'role_ros2' (underscore) matching Python import convention
+# Install to both site-packages and local/dist-packages for ROS2 compatibility
+install(DIRECTORY role_ros2
   DESTINATION lib/python3.10/site-packages
+  FILES_MATCHING PATTERN "*.py"
+)
+# Also install to local/dist-packages for ROS2 message compatibility
+install(DIRECTORY role_ros2
+  DESTINATION local/lib/python3.10/dist-packages
   FILES_MATCHING PATTERN "*.py"
 )
 

@@ -34,7 +34,7 @@ def generate_launch_description():
     
     # Hand Camera (mounted on gripper) - ZED-M
     # Configuration: See hand_camera_params.yaml for all parameters including:
-    #   - serial_number: 11022812
+    #   - serial_number: 24285872
     #   - resolution, frame rates, depth mode, IMU settings, etc.
     hand_camera_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
@@ -50,7 +50,7 @@ def generate_launch_description():
     
     # Static Camera (fixed position) - ZED 2
     # Configuration: See static_camera_params.yaml for all parameters including:
-    #   - serial_number: 24285872
+    #   - serial_number: 11022812
     #   - resolution, frame rates, depth mode, IMU settings, etc.
     static_camera_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([

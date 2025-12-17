@@ -1,0 +1,53 @@
+# Franka Robot Configuration File
+# This file contains default parameters for franka_robot.launch.py
+# You can override these values via launch arguments when starting the robot
+
+# Robot connection settings
+robot_ip: "172.17.0.2"   # REQUIRED: Robot IP address or hostname
+                         # Example: "172.17.0.2" or "robot-hostname.local"
+
+# Robot identification
+arm_id: "fr3"  # Robot arm ID. Supported values: fer, fr3, fp3
+
+# Hardware settings
+use_fake_hardware: false  # Use fake/simulated hardware (true/false)
+fake_sensor_commands: false  # Enable fake sensor commands (only valid when use_fake_hardware is true)
+
+# Gripper settings
+load_gripper: true  # Load Franka Gripper as end-effector (true/false)
+
+# Controller settings
+controller_name: "fr3_arm_controller"  # Name of the arm controller to use
+                                       # Common options:
+                                       #   - "fr3_arm_controller" (joint trajectory controller)
+                                       #   - "joint_position_example_controller"
+                                       #   - "joint_velocity_example_controller"
+                                       #   - "joint_impedance_example_controller"
+                                       #   - "cartesian_pose_example_controller"
+                                       #   - "cartesian_velocity_example_controller"
+                                       #   - "gravity_compensation_example_controller"
+
+# Example configurations for different use cases:
+
+# Configuration 1: Real robot with gripper (default)
+# robot_ip: "172.16.0.2"
+# arm_id: "fr3"
+# use_fake_hardware: false
+# load_gripper: true
+# controller_name: "fr3_arm_controller"
+
+# Configuration 2: Real robot without gripper
+# robot_ip: "172.16.0.2"
+# arm_id: "fr3"
+# use_fake_hardware: false
+# load_gripper: false
+# controller_name: "fr3_arm_controller"
+
+# Configuration 3: Simulated robot (Gazebo)
+# robot_ip: "172.16.0.2"  # Not used in simulation, but required
+# arm_id: "fr3"
+# use_fake_hardware: true
+# fake_sensor_commands: false
+# load_gripper: true
+# controller_name: "joint_position_example_controller"
+

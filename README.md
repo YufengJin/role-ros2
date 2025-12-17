@@ -1,50 +1,157 @@
-# DROID ROS2 Package
+# role-ros2: Robot Learning 统一平台
 
-这是 DROID 机器人平台的 ROS2 模块化包。
+`role-ros2`（Robot Learning ROS2）是机器人学习（Robot Learning）的 ROS2 统一平台，为机器人学习任务提供完整的 ROS2 接口和工具。
+
+## 概述
+
+`role-ros2` 是一个独立的 ROS2 包，专门为机器人学习任务设计，提供：
+
+- 🤖 **机器人控制接口**：基于 `franka_ros2` 的 Franka 机械臂控制
+- 🎮 **Gym-compatible 环境**：兼容 OpenAI Gym 的机器人环境接口
+- 📷 **相机数据同步**：使用 ROS2 时间同步的多相机数据订阅
+- 🎯 **Oculus Quest 支持**：VR 控制器数据发布和订阅
+- 🔧 **机器人学习工具**：逆运动学求解器、标定工具等
 
 ## 版本信息
 
 - **ROS2 发行版**: Humble Hawksbill
-- **zed-ros2-wrapper 版本**: humble-v5.1.0 (tag: `humble-v5.1.0`)
-  - 仓库: https://github.com/stereolabs/zed-ros2-wrapper.git
-  - 路径: `ros2_ws/src/zed-ros2-wrapper`
-- **franka_description 版本**: 0.5.1 (tag: `0.5.1`)
-  - 仓库: https://github.com/frankarobotics/franka_description.git
-  - 路径: `ros2_ws/src/franka_description`
-- **franka_ros2 版本**: b79ce40 (commit: `b79ce40`)
-  - 仓库: https://github.com/souljaboy764/franka_ros2.git
-  - 路径: `ros2_ws/src/franka_ros2`
-- **droid_ros2 版本**: 1.0.0
+- **role_ros2 版本**: 1.0.0
+- **依赖包**:
+  - `franka_ros2`: b79ce40
+  - `franka_description`: 0.5.1
+  - `zed_wrapper`: humble-v5.1.0
 
-## 功能
+## 功能特性
 
-- 启动两个 ZED 相机（hand_camera 和 static_camera）
-- 自动配置相机序列号
-- 禁用 IMU 数据发布
-- Oculus Quest 控制器数据发布节点
-- Franka 机械臂 ROS2 支持（通过 franka_ros2 和 franka_description）
+### 1. 机器人控制 (`role_ros2.robot`)
 
-## 相机配置
+提供 `FrankaRobot` 类，封装 Franka 机械臂的控制接口：
 
-- **Hand Camera**: 序列号 `11022812`（安装在机械臂末端）
-- **Static Camera**: 序列号 `24285872`（固定位置）
+- 关节空间控制（位置、速度、力矩）
+- 笛卡尔空间控制（位置、速度）
+- 夹爪控制
+- 机器人状态订阅（关节状态、末端位姿、机器人状态）
 
-## 环境设置
+```python
+from role_ros2.robot import FrankaRobot
+import rclpy
+
+rclpy.init()
+robot = FrankaRobot(arm_id="fr3", controller_name="fr3_arm_controller")
+
+# 移动到关节位置
+robot.update_joint_positions([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785])
+
+# 移动到笛卡尔位置
+robot.update_ee_pose([0.5, 0.0, 0.5], [0.0, 0.0, 0.0, 1.0])
+
+# 控制夹爪
+robot.update_gripper(0.04)  # 打开到 4cm
+```
+
+### 2. 机器人环境 (`role_ros2.robot_env`)
+
+提供 Gym-compatible 的机器人环境，支持强化学习和模仿学习：
+
+- 观察空间：机器人状态 + 相机图像
+- 动作空间：关节位置/速度或笛卡尔位置
+- 时间同步：使用 ROS2 `ApproximateTimeSynchronizer` 同步多传感器数据
+
+```python
+from role_ros2.robot_env import RobotEnv
+import rclpy
+
+rclpy.init()
+env = RobotEnv()
+
+# 获取观察
+obs = env.get_observation()
+# obs 包含：
+# - 'robot_state': 机器人状态（关节位置、速度、末端位姿等）
+# - 'images': 相机图像字典
+
+# 执行动作
+action = env.action_space.sample()
+obs, reward, done, info = env.step(action)
+```
+
+### 3. 相机数据订阅
+
+支持多相机数据的时间同步订阅：
+
+- RGB 图像
+- 深度图像
+- 相机内参（CameraInfo）
+- 自动时间同步（使用 `ApproximateTimeSynchronizer`）
+
+### 4. Oculus Quest 控制器
+
+发布 Oculus Quest 控制器的姿态和按钮状态：
+
+- 左右手控制器姿态（`geometry_msgs/PoseStamped`）
+- 按钮和摇杆状态（自定义消息 `role_ros2/OculusButtons`）
+- TF 变换发布（可选）
+- RViz 可视化标记（可选）
+
+### 5. 工具模块
+
+- **逆运动学求解器** (`role_ros2.robot_ik`): 基于 `RobotIKSolver` 的逆运动学计算
+- **标定工具** (`role_ros2.calibration`): 相机和机器人标定工具
+- **变换工具** (`role_ros2.misc.transformations`): 位姿变换和坐标系转换
+
+## 安装
 
 ### 前置要求
 
-1. **安装 Conda**（如果尚未安装）：
-   - 从 [Conda 官网](https://docs.conda.io/projects/conda/en/latest/user-guide/install/linux.html) 安装 Miniconda 或 Anaconda
+1. **ROS2 Humble**：已安装并配置
+2. **Python 3.10**：ROS2 Humble 需要 Python 3.10（详见下面的"Python 环境设置"部分）
+3. **依赖包**：
+   - `franka_ros2`
+   - `franka_description`
+   - `zed_wrapper`（如果使用相机）
+4. **Python 依赖**：
+   - `rclpy`
+   - `numpy`
+   - `gym`
+   - `cv_bridge`
+   - `message_filters`
 
-2. **创建并激活 Conda 环境**：
+### Python 环境设置
+
+#### 为什么需要 Python 3.10？
+
+ROS2 Humble 需要 Python 3.10。如果使用 Python 3.8 或 3.9，会出现以下错误：
+
+```
+ModuleNotFoundError: No module named 'rclpy._rclpy_pybind11'
+The C extension '/opt/ros/humble/lib/python3.10/site-packages/_rclpy_pybind11.cpython-38-x86_64-linux-gnu.so' isn't present on the system.
+```
+
+这是因为 ROS2 系统安装的 C 扩展模块是为 Python 3.10 编译的，与 Python 3.8 不兼容。
+
+#### 迁移到 Python 3.10
+
+**1. 备份当前环境（可选但推荐）**
+
 ```bash
-# 注意：ROS2 Humble 需要 Python 3.10
-# 如果已有 Python 3.8 环境，请参考 MIGRATION_PYTHON310.md 进行迁移
-conda create -n "robot" python=3.10
+# 导出当前环境的包列表
+conda activate robot
+conda env export -n robot > robot_env_py38_backup.yml
+pip freeze > robot_pip_py38_backup.txt
+```
+
+**2. 创建新的 Python 3.10 环境**
+
+```bash
+# 创建新环境
+conda create -n robot python=3.10
+
+# 激活新环境
 conda activate robot
 ```
 
-3. **安装项目依赖到 Conda 环境**：
+**3. 重新安装项目依赖**
+
 ```bash
 # 确保在项目根目录
 cd ~/repos/droid
@@ -55,7 +162,7 @@ pip install -e ./droid/oculus_reader
 # 安装主项目
 pip install -e .
 
-# 安装 dm-robotics 相关依赖（避免依赖冲突，使用 --no-deps）
+# 安装其他依赖（如果需要）
 pip install dm-robotics-moma==0.5.0 --no-deps
 pip install dm-robotics-transformations==0.5.0 --no-deps
 pip install dm-robotics-agentflow==0.5.0 --no-deps
@@ -64,498 +171,266 @@ pip install dm-robotics-manipulation==0.5.0 --no-deps
 pip install dm-robotics-controllers==0.5.0 --no-deps
 ```
 
-4. **安装系统依赖**：
-```bash
-sudo apt update
-sudo apt install -y build-essential
-gcc --version  # 验证安装
-```
-
-5. **安装 ROS2 Humble**：
-   - 按照 [ROS2 Humble 官方安装指南](https://docs.ros.org/en/humble/Installation.html) 安装
-   - 确保安装完整桌面版本：`ros-humble-desktop`
-
-6. **安装 ZED SDK 和 Python API**：
-   - 按照 [ZED SDK 官方指南](https://www.stereolabs.com/docs/installation/linux) 安装
-   - 在 conda 环境中验证：`python -c "import pyzed"`
-
-7. **安装 Oculus Reader 系统依赖**：
-```bash
-# 安装 Android Debug Bridge（用于连接 Oculus Quest）
-sudo apt install android-tools-adb
-```
-
-**注意**：Oculus Reader Python 包已在步骤 3 中安装。
-
-## 安装
-
-### 前置依赖
-
-#### 方法 1: 使用 Git Submodules（推荐）
-
-如果仓库已配置 Git Submodules，依赖包会自动管理：
+**4. 验证安装**
 
 ```bash
-# 克隆主仓库和所有 submodules
-git clone --recursive <repository-url>
-cd droid
+# 激活 ROS2 环境
+source ros2_ws/start_env.sh
 
-# 或者如果已克隆主仓库，更新 submodules
-git submodule update --init --recursive
+# 验证 Python 版本
+python --version  # 应该显示 Python 3.10.x
 
-# 确保 submodules 在正确的版本
-cd ros2_ws/src/zed-ros2-wrapper && git checkout humble-v5.1.0 && cd ../../..
-cd ros2_ws/src/franka_description && git checkout 0.5.1 && cd ../../..
-cd ros2_ws/src/franka_ros2 && git checkout b79ce40 && cd ../../..
+# 验证 rclpy
+python -c "import rclpy; print('rclpy version:', rclpy.__version__)"
+
+# 验证其他关键包
+python -c "import pyzed; print('pyzed available')"
+
+# 测试 ROS2 节点
+ros2 launch role_ros2 zed_cameras.launch.py
+ros2 launch role_ros2 oculus_controller.launch.py
 ```
 
-#### 方法 2: 手动安装
+**常见问题**
 
-1. 安装 ROS2 Humble 依赖包：
-```bash
-sudo apt update
-sudo apt install -y ros-humble-zed-msgs ros-humble-nmea-msgs
-```
+- **Q: 如何同时保留两个环境？**
+  - 可以重命名旧环境：`conda create -n robot_py38 --clone robot`，然后创建新的 Python 3.10 环境
 
-2. 安装依赖包（使用 Git Submodules，推荐）：
-```bash
-# 如果使用 Git Submodules，依赖包会自动克隆
-cd ~/repos/droid
-git submodule update --init --recursive
-```
+- **Q: 某些包在 Python 3.10 下不兼容怎么办？**
+  - 大多数现代 Python 包都支持 Python 3.10。如果遇到兼容性问题，检查包的最新版本是否支持 Python 3.10
 
-**或者手动安装依赖包**：
+- **Q: 如何回滚到旧环境？**
+  - 如果备份了环境文件：`conda env create -n robot_py38 --file robot_env_py38_backup.yml`
 
-2a. 安装 zed_ros2_wrapper（使用指定版本）：
-```bash
-cd ~/repos/droid/ros2_ws/src
-git clone --recursive https://github.com/stereolabs/zed-ros2-wrapper.git
-cd zed-ros2-wrapper
-git checkout humble-v5.1.0
-cd ..
-```
+### 构建
 
-2b. 安装 franka_description（使用指定版本）：
-```bash
-cd ~/repos/droid/ros2_ws/src
-git clone https://github.com/frankarobotics/franka_description.git
-cd franka_description
-git checkout 0.5.1
-cd ..
-```
-
-2c. 安装 franka_ros2（使用指定提交）：
-```bash
-cd ~/repos/droid/ros2_ws/src
-git clone https://github.com/souljaboy764/franka_ros2.git
-cd franka_ros2
-git checkout b79ce40
-cd ..
-```
-
-3. 安装其他依赖（使用 rosdep）：
-```bash
-cd ~/repos/droid/ros2_ws
-sudo apt update
-rosdep update
-rosdep install --from-paths src --ignore-src -r -y
-```
-
-4. 构建工作空间：
 ```bash
 cd ~/repos/droid/ros2_ws
 source /opt/ros/humble/setup.bash
-colcon build --symlink-install --cmake-args=-DCMAKE_BUILD_TYPE=Release
-```
-
-**注意**：
-- 构建产物（`build/`, `install/`, `log/`）已添加到 `.gitignore`，不会被提交
-- 如果使用 Git Submodules，确保 submodules 在正确的版本/标签上
-
-### 启动环境
-
-**推荐方式：使用 `start_env.sh` 脚本**
-
-这个脚本会自动激活 Conda 环境和 ROS2 工作空间：
-
-```bash
-# 从项目根目录
-source ros2_ws/src/droid_ros2/start_env.sh
-
-# 或者使用点命令
-. ros2_ws/src/droid_ros2/start_env.sh
-```
-
-**自定义 Conda 环境名称**：
-```bash
-export CONDA_ENV_NAME=your_env_name
-source ros2_ws/src/droid_ros2/start_env.sh
-```
-
-**手动方式**：
-```bash
-# 1. 激活 Conda 环境
-source ~/miniconda3/etc/profile.d/conda.sh  # 或 ~/anaconda3/etc/profile.d/conda.sh
-conda activate robot
-
-# 2. Source ROS2 系统安装
-source /opt/ros/humble/setup.bash
-
-# 3. Source ROS2 工作空间
-source ~/repos/droid/ros2_ws/install/setup.bash
-
-# 4. 设置环境变量（可选）
-export ROS_DOMAIN_ID=0
-export RCUTILS_COLORIZED_OUTPUT=1
+colcon build --packages-select role_ros2 --symlink-install
+source install/setup.bash
 ```
 
 ## 使用方法
 
-**重要**: 在使用 ROS2 命令前，请确保已激活环境（见上面的"启动环境"部分）。
+### 启动环境
+
+**推荐方式：使用工作空间的 `start_env.sh` 脚本**
+
+```bash
+# 从项目根目录
+source ros2_ws/start_env.sh
+```
+
+### 启动机器人
+
+启动 Franka 机械臂和夹爪控制器：
+
+```bash
+ros2 launch role_ros2 franka_robot.launch.py
+```
 
 ### 启动相机
 
-启动两个相机：
-```bash
-ros2 launch droid_ros2 droid_cameras.launch.py
-```
+启动两个 ZED 相机（hand_camera 和 static_camera）：
 
-指定相机型号（如果需要）：
 ```bash
-ros2 launch droid_ros2 droid_cameras.launch.py camera_model:=zed2
+ros2 launch role_ros2 zed_cameras.launch.py
 ```
 
 ### 启动 Oculus Quest 控制器节点
 
-#### USB 连接（默认）
 ```bash
-ros2 launch droid_ros2 oculus_reader.launch.py
+# USB 连接（默认）
+ros2 launch role_ros2 oculus_controller.launch.py
+
+# 网络连接
+ros2 launch role_ros2 oculus_controller.launch.py oculus_ip_address:=192.168.1.100
 ```
 
-#### 网络连接
-```bash
-ros2 launch droid_ros2 oculus_reader.launch.py oculus_ip_address:=192.168.1.100
+### 使用 Python API
+
+#### 基本机器人控制
+
+```python
+import rclpy
+from role_ros2.robot import FrankaRobot
+
+rclpy.init()
+robot = FrankaRobot(arm_id="fr3", controller_name="fr3_arm_controller")
+
+# 获取机器人状态
+state = robot.get_robot_state()
+print(f"关节位置: {state['joint_positions']}")
+print(f"末端位姿: {state['ee_pose']}")
+
+# 移动到目标位置
+target_joints = [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
+robot.update_joint_positions(target_joints)
+
+rclpy.shutdown()
 ```
 
-#### 自定义参数
-```bash
-ros2 launch droid_ros2 oculus_reader.launch.py \
-    publish_rate:=100.0 \
-    publish_tf:=true \
-    frame_id:=oculus_base
+#### 使用机器人环境
+
+```python
+import rclpy
+from role_ros2.robot_env import RobotEnv
+
+rclpy.init()
+env = RobotEnv()
+
+# 重置环境
+obs = env.reset()
+
+# 执行动作循环
+for _ in range(100):
+    # 获取观察
+    obs = env.get_observation()
+    
+    # 选择动作（示例：随机动作）
+    action = env.action_space.sample()
+    
+    # 执行动作
+    obs, reward, done, info = env.step(action)
+    
+    if done:
+        obs = env.reset()
+
+rclpy.shutdown()
 ```
 
-**注意**: 使用 Oculus Reader 节点前，需要安装 `oculus_reader` Python 包：
-```bash
-pip install -e /path/to/droid/droid/oculus_reader
+## 包结构
+
+```
+role-ros2/
+├── scripts/                    # ROS2 节点脚本
+│   └── oculus_reader_node.py   # Oculus Quest 控制器节点
+├── launch/                     # Launch 文件
+│   ├── franka_robot.launch.py  # 启动机器人控制器
+│   ├── zed_cameras.launch.py # 启动相机
+│   └── oculus_controller.launch.py # 启动 Oculus 节点
+├── config/                     # 配置文件
+│   ├── hand_camera_params.yaml
+│   └── static_camera_params.yaml
+├── msg/                        # 自定义消息
+│   └── OculusButtons.msg
+└── role-ros2/                  # Python 模块
+    ├── robot/                  # 机器人控制
+    │   └── robot.py
+    ├── robot_env.py            # Gym 环境
+    ├── robot_ik/               # 逆运动学
+    ├── calibration/            # 标定工具
+    ├── camera_utils/           # 相机工具
+    └── misc/                   # 工具函数
 ```
 
-**启动参数**：
+## 话题
+
+### 机器人状态话题
+
+- `/joint_states` (sensor_msgs/JointState) - 关节状态
+- `/fr3/robot_state` (franka_msgs/FrankaRobotState) - 机器人状态
+- `/fr3/current_pose` (geometry_msgs/PoseStamped) - 末端位姿
+
+### 相机话题
+
+- `/hand_camera/zed_node/rgb/image_rect_color` (sensor_msgs/Image) - Hand camera RGB
+- `/hand_camera/zed_node/depth/depth_registered` (sensor_msgs/Image) - Hand camera 深度
+- `/static_camera/zed_node/rgb/image_rect_color` (sensor_msgs/Image) - Static camera RGB
+- `/static_camera/zed_node/depth/depth_registered` (sensor_msgs/Image) - Static camera 深度
+
+### Oculus Quest 控制器话题
+
+- `/oculus/right_controller/pose` (geometry_msgs/PoseStamped) - 右手控制器姿态
+- `/oculus/left_controller/pose` (geometry_msgs/PoseStamped) - 左手控制器姿态
+- `/oculus/buttons` (role_ros2/OculusButtons) - 按钮和摇杆状态
+- `/oculus/controllers/markers` (visualization_msgs/MarkerArray) - RViz 可视化标记（可选）
+
+## 配置
+
+### 机器人配置
+
+机器人配置通过 launch 文件参数控制：
+
+- `arm_id` (默认: "fr3") - 机械臂 ID
+- `controller_name` (默认: "fr3_arm_controller") - 控制器名称
+- `robot_ip` - 机器人 IP 地址（必需）
+- `use_fake_hardware` (默认: false) - 是否使用仿真硬件
+
+### 相机配置
+
+相机参数通过 YAML 配置文件设置：
+
+- `config/hand_camera_params.yaml` - Hand camera 参数
+- `config/static_camera_params.yaml` - Static camera 参数
+
+### Oculus Reader 节点参数
+
 - `publish_rate` (默认: 50.0) - 发布频率（Hz）
 - `publish_tf` (默认: true) - 是否发布 TF 变换
 - `publish_markers` (默认: false) - 是否发布 RViz 可视化标记
 - `oculus_ip_address` (默认: '') - Oculus Quest IP 地址（空字符串表示 USB 连接）
 - `oculus_port` (默认: 5555) - ADB 网络连接端口
-- `frame_id` (默认: 'oculus_base') - 发布的姿态和 TF 的坐标系 ID
-
-**启用 RViz 可视化**：
-```bash
-# 启动节点并启用标记可视化
-ros2 launch droid_ros2 oculus_reader.launch.py publish_markers:=true
+- `frame_id` (默认: 'oculus_base') - 坐标系 ID
 
-# 在 RViz 中添加 MarkerArray 显示
-# Add -> MarkerArray -> Topic: /oculus/controllers/markers
-# Fixed Frame: oculus_base (或你设置的 frame_id)
-```
+## 开发指南
 
-**注意**：
-- Marker 话题使用 `RELIABLE` QoS（RViz 要求），其他话题使用 `BEST_EFFORT`（更低延迟）
-- 如果 RViz 中看不到标记，请检查：
-  1. Fixed Frame 是否设置为正确的坐标系（默认：`oculus_base`）
-  2. MarkerArray 显示是否已添加到 RViz
-  3. 话题名称是否正确：`/oculus/controllers/markers`
+### 添加新的机器人接口
 
-### 测试 Oculus Reader 节点
+1. 在 `role-ros2/robot/` 中添加新的机器人类
+2. 实现标准的机器人接口方法
+3. 更新 `__init__.py` 导出新类
 
-**重要**：测试前必须确保工作空间已正确 source！
+### 扩展机器人环境
 
-**快速测试（一行命令）**：
-```bash
-# 先 source 工作空间
-source ros2_ws/src/droid_ros2/start_env.sh
-# 然后测试
-ros2 topic echo /oculus/buttons --once && echo "✓ 节点运行正常！"
-```
+1. 继承 `RobotEnv` 类
+2. 重写 `get_observation()` 和 `step()` 方法
+3. 定义自定义的观察空间和动作空间
 
-**完整测试步骤**：
-```bash
-# 终端 1：启动节点（会自动 source 工作空间）
-source ros2_ws/src/droid_ros2/start_env.sh
-ros2 launch droid_ros2 oculus_reader.launch.py
+### 添加新的传感器
 
-# 终端 2：测试（也需要 source 工作空间）
-source ros2_ws/src/droid_ros2/start_env.sh
+1. 创建传感器订阅节点
+2. 在 `robot_env.py` 中集成传感器数据
+3. 使用 `ApproximateTimeSynchronizer` 同步多传感器数据
 
-# 检查节点
-ros2 node list | grep oculus_reader_node
+## 故障排除
 
-# 检查话题
-ros2 topic list | grep oculus
+### 机器人连接问题
 
-# 验证消息类型是否正确注册
-ros2 interface list | grep OculusButtons
+**问题：无法连接到机器人**
+- 检查机器人 IP 地址是否正确
+- 确保机器人和计算机在同一网络
+- 检查防火墙设置
 
-# 查看按钮状态
-ros2 topic echo /oculus/buttons
+### 相机同步问题
 
-# 检查发布频率
-ros2 topic hz /oculus/buttons
-```
+**问题：相机数据不同步**
+- 调整 `ApproximateTimeSynchronizer` 的 `slop` 参数
+- 检查相机时间戳是否同步
+- 确保相机发布频率一致
 
-**常见错误修复**：
+### Python 导入错误
 
-**错误：`The message type 'droid_ros2/msg/OculusButtons' is invalid`**
-- **原因**：工作空间未正确 source
-- **解决方法**：
-  ```bash
-  # 方法 1：使用 start_env.sh（推荐）
-  source ros2_ws/src/droid_ros2/start_env.sh
-  
-  # 方法 2：手动 source
-  source /opt/ros/humble/setup.bash
-  source ros2_ws/install/setup.bash
-  
-  # 验证消息类型已注册
-  ros2 interface list | grep OculusButtons
-  ```
-- **验证**：运行 `ros2 interface show droid_ros2/msg/OculusButtons` 应该能显示消息定义
+**问题：`ModuleNotFoundError: No module named 'role_ros2'`**
+- 确保已构建并 source 工作空间：`source ros2_ws/install/setup.bash`
+- 检查 Python 路径：`python -c "import sys; print(sys.path)"`
+- 验证包是否正确安装：`ros2 pkg list | grep role_ros2`
 
-## 话题
+## 贡献
 
-### ZED 相机话题
+欢迎贡献代码和提出建议！请确保：
 
-启动后，两个相机将发布以下话题：
+1. 代码遵循 ROS2 和 Python 最佳实践
+2. 添加适当的文档和注释
+3. 更新相关的 README 和文档
 
-#### Hand Camera
-- `/hand_camera/zed_node/rgb/image_rect_color`
-- `/hand_camera/zed_node/depth/depth_registered`
-- `/hand_camera/zed_node/point_cloud/cloud`
+## 许可证
 
-#### Static Camera
-- `/static_camera/zed_node/rgb/image_rect_color`
-- `/static_camera/zed_node/depth/depth_registered`
-- `/static_camera/zed_node/point_cloud/cloud`
+Apache-2.0
 
-### Oculus Quest 控制器话题
+## 相关文档
 
-Oculus Reader 节点发布以下话题：
-
-- `/oculus/right_controller/pose` (geometry_msgs/PoseStamped) - 右手控制器姿态
-- `/oculus/left_controller/pose` (geometry_msgs/PoseStamped) - 左手控制器姿态
-- `/oculus/buttons` (droid_ros2/OculusButtons) - 所有按钮和摇杆状态
-- `/oculus/controllers/markers` (visualization_msgs/MarkerArray) - RViz 可视化标记（可选，通过 `publish_markers` 参数启用）
-
-#### TF 变换（如果启用 `publish_tf:=true`）
-
-- `oculus_base` → `oculus_right_controller` - 右手控制器变换
-- `oculus_base` → `oculus_left_controller` - 左手控制器变换
-
-#### OculusButtons 消息内容
-
-- **布尔按钮**: `a`, `b`, `x`, `y`, `right_thumb_up`, `left_thumb_up`, `right_joystick_pressed`, `left_joystick_pressed`, `right_grip_pressed`, `left_grip_pressed`, `right_trigger_pressed`, `left_trigger_pressed`
-- **模拟值** (0.0-1.0): `right_grip_value`, `left_grip_value`, `right_trigger_value`, `left_trigger_value`
-- **摇杆位置** (-1.0 到 1.0): `right_joystick_x`, `right_joystick_y`, `left_joystick_x`, `left_joystick_y`
-
-## 配置
-
-### ZED 相机配置
-
-相机参数可以通过以下配置文件进行覆盖：
-- `config/hand_camera_params.yaml` - Hand camera 参数
-- `config/static_camera_params.yaml` - Static camera 参数
-
-默认配置已禁用 IMU 数据发布。
-
-### Oculus Reader 节点参数
-
-- `publish_rate` (float, 默认: 50.0) - 发布频率（Hz）
-- `publish_tf` (bool, 默认: true) - 是否发布 TF 变换
-- `oculus_ip_address` (string, 默认: '') - Oculus Quest IP 地址（空字符串表示 USB 连接）
-- `oculus_port` (int, 默认: 5555) - ADB 网络连接端口
-- `frame_id` (string, 默认: 'oculus_base') - 发布的姿态和 TF 的坐标系名称
-
-## 环境管理最佳实践
-
-### Conda 环境隔离
-
-为了保持环境隔离，建议：
-
-1. **Python 包通过 Conda/Pip 管理**：
-   - 所有 Python 依赖安装在 conda 环境中
-   - 避免使用系统级 `pip install --user` 或 `sudo pip install`
-
-2. **ROS2 系统包**：
-   - ROS2 核心包（`/opt/ros/humble`）需要系统级安装（通过 apt）
-   - 这是 ROS2 的标准安装方式，无法避免
-
-3. **ROS2 工作空间**：
-   - 工作空间可以安装在任意位置（推荐在项目目录下）
-   - 使用 `colcon build` 构建，不污染系统
-
-4. **环境变量管理**：
-   - `start_env.sh` 脚本自动设置必要的环境变量
-   - 退出 conda 环境时，ROS2 环境变量会自动清理
-
-### 验证环境设置
-
-运行以下命令验证环境是否正确配置：
-
-```bash
-# 激活环境
-source ros2_ws/src/droid_ros2/start_env.sh
-
-# 验证 ROS2
-ros2 --help
-
-# 验证 Python 包
-python -c "import rclpy; print('rclpy:', rclpy.__version__)"
-python -c "import pyzed; print('pyzed available')"  # 如果安装了 ZED SDK
-
-# 验证工作空间
-ros2 pkg list | grep droid_ros2
-```
-
-### 故障排除
-
-**问题：`ros2` 命令未找到**
-- 确保已 source ROS2 系统安装：`source /opt/ros/humble/setup.bash`
-- 检查 ROS2 是否正确安装：`ls /opt/ros/humble/`
-
-**问题：`rclpy` 模块未找到**
-- **重要**：ROS2 Humble 需要 Python 3.10。如果使用 Python 3.8 或 3.9，会出现 C 扩展模块不兼容的错误（`ModuleNotFoundError: No module named 'rclpy._rclpy_pybind11'`）
-- 解决方案：创建新的 conda 环境使用 Python 3.10：
-  ```bash
-  conda create -n robot python=3.10
-  conda activate robot
-  # 重新安装所有依赖
-  pip install -e ./droid/oculus_reader
-  pip install -e .
-  ```
-- 如果必须使用其他 Python 版本，尝试：`conda install -c conda-forge ros-humble-rclpy`（可能不兼容）
-
-**问题：工作空间包未找到**
-- 确保已构建工作空间：`cd ros2_ws && colcon build`
-- 确保已 source 工作空间：`source ros2_ws/install/setup.bash`
-
-**问题：Conda 环境未激活**
-- 检查 conda 是否正确安装：`which conda`
-- 手动 source conda：`source ~/miniconda3/etc/profile.d/conda.sh`
-
-**问题：`colcon build` 构建错误**
-
-1. **错误：`std_msgs` has not been found before using find_package()**
-   - 原因：CMakeLists.txt 中缺少 `find_package(std_msgs REQUIRED)`
-   - 解决：已修复，确保 CMakeLists.txt 中包含：
-     ```cmake
-     find_package(std_msgs REQUIRED)
-     ```
-
-2. **错误：`rosidl_interface_packages` member_of_group missing**
-   - 原因：package.xml 中缺少接口包声明
-   - 解决：确保 package.xml 中包含：
-     ```xml
-     <member_of_group>rosidl_interface_packages</member_of_group>
-     ```
-
-3. **错误：`ModuleNotFoundError: No module named 'ament_package'`**
-   - 原因：构建时使用了错误的 Python 环境
-   - 解决：使用系统 Python 进行构建，而不是 conda 环境：
-     ```bash
-     # 构建时使用系统 Python（不要激活 conda 环境）
-     source /opt/ros/humble/setup.bash
-     cd ~/repos/droid/ros2_ws
-     colcon build --symlink-install
-     ```
-
-4. **错误：`ImportError: cannot import name 'generate_py' from 'rosidl_generator_py'`**
-   - 原因：Python 环境冲突（conda 和系统 Python 混用）
-   - 解决：
-     ```bash
-     # 方法 1：构建时停用 conda 环境
-     conda deactivate
-     source /opt/ros/humble/setup.bash
-     colcon build --symlink-install
-     
-     # 方法 2：清理构建缓存后重新构建
-     cd ~/repos/droid/ros2_ws
-     rm -rf build/ install/ log/
-     source /opt/ros/humble/setup.bash
-     colcon build --symlink-install
-     ```
-
-5. **错误：依赖包未找到（如 `zed_wrapper`, `zed_components`）**
-   - 原因：需要先构建依赖包
-   - 解决：按顺序构建依赖包：
-     ```bash
-     source /opt/ros/humble/setup.bash
-     cd ~/repos/droid/ros2_ws
-     # 先构建依赖包
-     colcon build --packages-select zed_components zed_wrapper --symlink-install
-     # 然后构建 droid_ros2
-     colcon build --packages-select droid_ros2 --symlink-install
-     # 或一次性构建所有包
-     colcon build --symlink-install
-     ```
-
-6. **错误：Python 库路径冲突警告**
-   - 警告信息：`runtime library [libpython3.10.so.1.0] may be hidden by files in: /home/user/miniconda3/envs/robot/lib`
-   - 原因：conda 环境和系统 Python 路径冲突
-   - 解决：构建时停用 conda 环境（见问题 3 和 4 的解决方案）
-
-**构建最佳实践**：
-- 构建 ROS2 包时，使用系统 Python（通过 `source /opt/ros/humble/setup.bash`）
-- 运行时可以使用 conda 环境中的 Python
-- 如果遇到构建问题，先清理构建缓存：`rm -rf build/ install/ log/`
-
-## Git Submodules 管理
-
-本项目使用 Git Submodules 管理依赖包。所有依赖包位于 `ros2_ws/src/` 目录下：
-
-### Submodules 列表
-
-- `ros2_ws/src/zed-ros2-wrapper` - ZED 相机 ROS2 包装器
-  - 版本: `humble-v5.1.0` (tag)
-  - 仓库: https://github.com/stereolabs/zed-ros2-wrapper.git
-- `ros2_ws/src/franka_description` - Franka 机器人描述文件
-  - 版本: `0.5.1` (tag)
-  - 仓库: https://github.com/frankarobotics/franka_description.git
-- `ros2_ws/src/franka_ros2` - Franka 机器人 ROS2 驱动
-  - 版本: `b79ce40` (commit)
-  - 仓库: https://github.com/souljaboy764/franka_ros2.git
-
-### 常用 Submodule 命令
-
-```bash
-# 初始化并克隆所有 submodules
-git submodule update --init --recursive
-
-# 更新所有 submodules 到最新提交（在各自的分支上）
-git submodule update --remote
-
-# 更新特定 submodule
-git submodule update --remote ros2_ws/src/zed-ros2-wrapper
-
-# 检查 submodule 状态
-git submodule status
-
-# 进入 submodule 目录并切换版本
-cd ros2_ws/src/zed-ros2-wrapper
-git checkout humble-v5.1.0
-cd ../../..
-git add ros2_ws/src/zed-ros2-wrapper  # 提交版本变更
-```
-
-### 构建产物管理
-
-构建产物（`ros2_ws/build/`, `ros2_ws/install/`, `ros2_ws/log/`）已添加到 `.gitignore`，不会被 Git 跟踪。这些目录会在每次构建时重新生成。
-
+- [ROS2 工作空间 README](../../README.md)
+- [Franka ROS2 文档](https://github.com/souljaboy764/franka_ros2)
+- [ZED ROS2 Wrapper 文档](https://github.com/stereolabs/zed-ros2-wrapper)

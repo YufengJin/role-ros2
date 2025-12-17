@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchContext, LaunchDescription
@@ -30,6 +31,34 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 import xacro
+
+
+def load_config_yaml(package_name, config_file):
+    """
+    Load launch configuration YAML file.
+    
+    This is a plain YAML file for launch configuration, NOT a ROS2 node parameter file.
+    The format is simple key-value pairs at the root level.
+    
+    Args:
+        package_name: ROS2 package name
+        config_file: Config file name (e.g., 'franka_robot_config.yaml')
+    
+    Returns:
+        dict: Configuration dictionary, or empty dict if file not found
+    """
+    try:
+        package_share_dir = get_package_share_directory(package_name)
+        config_path = os.path.join(package_share_dir, 'config', config_file)
+        
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
+                return config if config else {}
+    except Exception as e:
+        print(f"Warning: Could not load config file {config_file}: {e}")
+    
+    return {}
 
 
 def robot_description_dependent_nodes_spawner(
@@ -72,6 +101,9 @@ def robot_description_dependent_nodes_spawner(
             name='robot_state_publisher',
             output='screen',
             parameters=[{'robot_description': robot_description}],
+            # 确保 robot_state_publisher 订阅 /joint_states 话题
+            # 默认就是 /joint_states，但显式指定以确保正确
+            remappings=[('joint_states', '/joint_states')],
         ),
         Node(
             package='controller_manager',
@@ -90,6 +122,17 @@ def robot_description_dependent_nodes_spawner(
 
 
 def generate_launch_description():
+    # Load default values from YAML config file
+    config = load_config_yaml('role_ros2', 'franka_robot_config.yaml')
+    
+    # Helper function to convert config values to strings for launch arguments
+    def get_default(key, default_value):
+        value = config.get(key, default_value)
+        # Convert boolean to string
+        if isinstance(value, bool):
+            return 'true' if value else 'false'
+        return str(value)
+    
     arm_id_parameter_name = 'arm_id'
     robot_ip_parameter_name = 'robot_ip'
     load_gripper_parameter_name = 'load_gripper'
@@ -118,35 +161,40 @@ def generate_launch_description():
     launch_description = LaunchDescription([
         DeclareLaunchArgument(
             robot_ip_parameter_name,
-            description='Hostname or IP address of the robot.'),
+            default_value=get_default('robot_ip', '172.16.0.2'),
+            description='Hostname or IP address of the robot. Default from config/franka_robot_config.yaml'),
         DeclareLaunchArgument(
             arm_id_parameter_name,
-            default_value='fr3',
-            description='ID of the type of arm used. Supported values: fer, fr3, fp3'),
+            default_value=get_default('arm_id', 'fr3'),
+            description='ID of the type of arm used. Supported values: fer, fr3, fp3. Default from config/franka_robot_config.yaml'),
         DeclareLaunchArgument(
             use_fake_hardware_parameter_name,
-            default_value='false',
-            description='Use fake hardware'),
+            default_value=get_default('use_fake_hardware', 'false'),
+            description='Use fake hardware. Default from config/franka_robot_config.yaml'),
         DeclareLaunchArgument(
             fake_sensor_commands_parameter_name,
-            default_value='false',
-            description='Fake sensor commands. Only valid when "{}" is true'.format(
+            default_value=get_default('fake_sensor_commands', 'false'),
+            description='Fake sensor commands. Only valid when "{}" is true. Default from config/franka_robot_config.yaml'.format(
                 use_fake_hardware_parameter_name)),
         DeclareLaunchArgument(
             load_gripper_parameter_name,
-            default_value='true',
+            default_value=get_default('load_gripper', 'true'),
             description='Use Franka Gripper as an end-effector, otherwise, the robot is loaded '
-                        'without an end-effector.'),
+                        'without an end-effector. Default from config/franka_robot_config.yaml'),
         DeclareLaunchArgument(
             controller_name_parameter_name,
-            default_value='fr3_arm_controller',
-            description='Name of the arm controller to use.'),
+            default_value=get_default('controller_name', 'fr3_arm_controller'),
+            description='Name of the arm controller to use. Default from config/franka_robot_config.yaml'),
+        # Note: joint_state_publisher is optional
+        # The joint_state_broadcaster controller already publishes joint states to /joint_states
+        # This node can merge multiple sources, but is not essential for basic operation
+        # Using hardcoded 'fr3' since arm_id is LaunchConfiguration and cannot be used in f-string
         Node(
             package='joint_state_publisher',
             executable='joint_state_publisher',
             name='joint_state_publisher',
             parameters=[
-                {'source_list': ['franka/joint_states', f'{arm_id}_gripper/joint_states'],
+                {'source_list': ['franka/joint_states', 'fr3_gripper/joint_states'],
                  'rate': 30}],
         ),
         robot_description_dependent_nodes_spawner_opaque_function,

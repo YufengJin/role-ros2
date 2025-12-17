@@ -25,6 +25,7 @@
   <depend>franka_gripper</depend>
   <depend>franka_fr3_moveit_config</depend>
   <depend>controller_manager</depend>
+  <depend>controller_manager_msgs</depend>
   <depend>joint_state_publisher</depend>
   <depend>robot_state_publisher</depend>
   <depend>message_filters</depend>
