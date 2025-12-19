@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+    <!-- FastRTPS Profile for ROS2 Cross-Container Communication -->
+    <!-- This profile enables network discovery between container and host -->
+    
+    <participant profile_name="default" is_default_profile="true">
+        <rtps>
+            <!-- Use network discovery (not just localhost) -->
+            <builtin>
+                <discovery_config>
+                    <!-- Enable network discovery -->
+                    <discoveryProtocol>SIMPLE</discoveryProtocol>
+                    <!-- Use all available network interfaces -->
+                    <use_SIMPLE_EndpointDiscoveryProtocol>true</use_SIMPLE_EndpointDiscoveryProtocol>
+                    <use_STATIC_EndpointDiscoveryProtocol>false</use_STATIC_EndpointDiscoveryProtocol>
+                </discovery_config>
+                
+                <!-- Initial peers for discovery (optional, can be empty for auto-discovery) -->
+                <initialPeersList>
+                    <!-- Empty list means use multicast discovery -->
+                </initialPeersList>
+            </builtin>
+            
+            <!-- Network configuration -->
+            <useBuiltinTransports>true</useBuiltinTransports>
+            
+            <!-- Port configuration for DDS -->
+            <port>
+                <portBase>7400</portBase>
+                <domainIDGain>250</domainIDGain>
+                <participantIDGain>2</participantIDGain>
+            </port>
+            
+            <!-- Multicast configuration for network discovery -->
+            <builtin>
+                <discovery_config>
+                    <discoveryProtocol>SIMPLE</discoveryProtocol>
+                    <use_SIMPLE_EndpointDiscoveryProtocol>true</use_SIMPLE_EndpointDiscoveryProtocol>
+                    <use_STATIC_EndpointDiscoveryProtocol>false</use_STATIC_EndpointDiscoveryProtocol>
+                    <!-- Enable multicast for network discovery -->
+                    <simpleEDP>
+                        <use_PublicationReaderANDSubscriptionWriter>true</use_PublicationReaderANDSubscriptionWriter>
+                        <use_PublicationWriterANDSubscriptionReader>true</use_PublicationWriterANDSubscriptionReader>
+                    </simpleEDP>
+                </discovery_config>
+                <!-- Multicast locator for discovery -->
+                <metatrafficMulticastLocatorList>
+                    <locator>
+                        <udpv4>
+                            <address>239.255.0.1</address>
+                            <port>7400</port>
+                        </udpv4>
+                    </locator>
+                </metatrafficMulticastLocatorList>
+            </builtin>
+        </rtps>
+    </participant>
+</profiles>
+

@@ -1,0 +1,37 @@
+services:
+  ros2_polymetis:
+    build:
+      context: ../../../../
+      dockerfile: ros2_ws/src/role-ros2/docker/Dockerfile.ros2_polymetis
+      args:
+        LIBFRANKA_VERSION: "0.14.1"
+        ROBOT_TYPE: "fr3"
+        ROBOT_IP: "172.17.0.2"
+        NUC_IP: "172.17.0.1"
+    network_mode: host
+    environment:
+      # Franka hardware IP (your setup: PC=172.17.0.1, Robot=172.17.0.2)
+      ROBOT_IP: "172.17.0.2"
+      # Polymetis gRPC server bind IP inside container (entrypoint defaults to 127.0.0.1)
+      POLYMETIS_IP: "127.0.0.1"
+      # ROS2 DDS settings for cross-version communication (Foxy <-> Humble)
+      # Must match host system settings
+      ROS_DOMAIN_ID: "0"
+      RMW_IMPLEMENTATION: "rmw_fastrtps_cpp"  # Use FastRTPS for compatibility
+      ROS_LOCALHOST_ONLY: "0"  # Allow network discovery (not just localhost)
+      # Optional GUI support for RViz (only if you run GUI apps in container)
+      DISPLAY: "${DISPLAY}"
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # Bind mount role-ros2 package for development (overrides COPY'd code but preserves build artifacts)
+      # Path is relative to docker-compose.yaml location (docker/ directory)
+      - ../:/app/ros2_ws/src/role-ros2:rw
+    # Franka/libfranka often benefits from real-time scheduling; keep it opt-in.
+    # If you need RT, uncomment one of:
+    # privileged: true
+    # cap_add:
+    #   - SYS_NICE
+    # ulimits:
+    #   rtprio: 99
+    #   memlock: -1
+

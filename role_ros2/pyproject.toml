@@ -1,0 +1,82 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "role_ros2"
+version = "0.1.0"
+description = "role-ros2 python package (installed into venv_ros2; ROS2 interfaces are still built via colcon)"
+readme = "README.md"
+requires-python = ">=3.7"
+keywords = ["robotics", "ros2", "franka", "polymetis"]
+dependencies = [
+    "boto3",
+    "customtkinter",
+    "dm-control==1.0.5",
+    "gym",
+    "h5py",
+    "imageio",
+    "matplotlib",
+    "mujoco==2.3.2",
+    "numpy",
+    "open3d",
+    "opencv-python==4.6.0.66",
+    "opencv-contrib-python==4.6.0.66",
+    "Pillow",
+    "protobuf==3.20.1",
+    "psutil",
+    "pyrallis",
+    "scipy",
+    "torch",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+dm_robotics = [
+  # Installed with --no-deps in start_env.sh to avoid conflicts; kept here for reference.
+  "dm-robotics-moma==0.5.0",
+  "dm-robotics-transformations==0.5.0",
+  "dm-robotics-agentflow==0.5.0",
+  "dm-robotics-geometry==0.5.0",
+  "dm-robotics-manipulation==0.5.0",
+  "dm-robotics-controllers==0.5.0",
+]
+dev = [
+    "black[jupyter]",
+    "ipython",
+    "pre-commit",
+    "ruff",
+]
+postprocessing = [
+    "scikit-image",
+]
+
+[project.urls]
+homepage = "https://github.com/YufengJin/role-ros2"
+repository = "https://github.com/YufengJin/role-ros2"
+documentation = "https://github.com/YufengJin/role-ros2"
+
+[tool.black]
+line-length = 100
+target-version = ["py37", "py38", "py39", "py310"]
+preview = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+select = ["A", "B", "C90", "E", "F", "I", "RUF", "W"]
+ignore = ["F405", "B006", "C901", "F403", "E722"]
+[tool.ruff.per-file-ignores]
+"__init__.py" = ["E402", "F401"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+skip = ["__init__.py"]
+filter_files = true
+py_version = "all"
+
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["test*", "tests*", "build*", "install*", "log*"]
+
