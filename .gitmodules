@@ -1,0 +1,6 @@
+[submodule "role_ros2/fairo"]
+	path = role_ros2/fairo
+	url = https://github.com/facebookresearch/fairo.git
+[submodule "role_ros2/oculus_reader"]
+	path = role_ros2/oculus_reader
+	url = https://github.com/rail-berkeley/oculus_reader.git
