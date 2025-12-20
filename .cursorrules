@@ -1,0 +1,132 @@
+# Cursor Rules for role_ros2
+
+## Language and Comments
+- **ALL comments MUST be in English** - no exceptions
+- Use clear, concise English for all docstrings, inline comments, and code documentation
+- Prefer descriptive variable and function names over comments when possible
+
+## Code Style and Formatting
+
+### Python Style
+- Follow PEP 8 style guide
+- Use 4 spaces for indentation (no tabs)
+- Maximum line length: 100 characters (soft limit, 120 hard limit)
+- Use type hints for function parameters and return values
+- Use `typing` module for complex types (Optional, List, Dict, Tuple, etc.)
+
+### Naming Conventions
+- **Classes**: PascalCase (e.g., `FrankaRobot`, `ROS2CameraSubscriber`)
+- **Functions/Methods**: snake_case (e.g., `get_joint_positions`, `_setup_subscribers`)
+- **Constants**: UPPER_SNAKE_CASE (e.g., `CHARUCOBOARD_ROWCOUNT`, `NUC_IP`)
+- **Private methods**: prefix with single underscore (e.g., `_setup_subscribers`, `_internal_method`)
+- **Module-level variables**: snake_case
+- Use descriptive names that clearly indicate purpose
+
+### Imports
+- Group imports in this order:
+  1. Standard library imports
+  2. Third-party imports (numpy, rclpy, etc.)
+  3. Local application imports (role_ros2.*)
+- Use absolute imports for local modules
+- One import per line for clarity
+- Sort imports alphabetically within each group
+
+### Docstrings
+- Use triple double quotes (""") for all docstrings
+- Follow Google-style docstrings or NumPy-style docstrings consistently
+- Include:
+  - Brief description
+  - Args section for parameters
+  - Returns section for return values
+  - Raises section for exceptions (if applicable)
+- Example:
+  ```python
+  def get_joint_positions(self) -> np.ndarray:
+      """
+      Get current joint positions.
+      
+      Returns:
+          np.ndarray: Array of 7 joint positions in radians
+      """
+  ```
+
+## Code Organization
+
+### Class Structure
+- Order class elements:
+  1. Class docstring
+  2. `__init__` method
+  3. Public methods
+  4. Private/protected methods (prefixed with `_`)
+  5. Special methods (`__str__`, `__repr__`, etc.)
+
+### Function Design
+- Keep functions focused on a single responsibility
+- Limit function length to ~50 lines when possible
+- Extract complex logic into separate helper functions
+- Use early returns to reduce nesting
+
+### Error Handling
+- Use specific exception types, not bare `except:`
+- Include meaningful error messages in English
+- Log errors appropriately using ROS2 logging when available
+
+## ROS2 Specific
+
+### Node Naming
+- Use descriptive node names (e.g., `'franka_robot_node'`, `'ros2_camera_subscriber'`)
+- Follow ROS2 naming conventions (lowercase with underscores)
+
+### Message Handling
+- Use type hints for ROS2 message types
+- Validate message data when necessary
+- Handle message synchronization properly (e.g., ApproximateTimeSynchronizer)
+
+### Threading and Concurrency
+- Document thread-safety assumptions
+- Use locks appropriately for shared data
+- Prefer queue.Queue for thread-safe data passing
+
+## Code Quality
+
+### General Principles
+- **DRY (Don't Repeat Yourself)**: Extract common code into functions
+- **KISS (Keep It Simple, Stupid)**: Prefer simple, readable solutions
+- **YAGNI (You Aren't Gonna Need It)**: Don't add functionality until needed
+- Write self-documenting code with clear variable names
+
+### Best Practices
+- Avoid magic numbers - use named constants
+- Use enums for related constants
+- Prefer composition over inheritance when appropriate
+- Keep functions pure when possible (no side effects)
+- Use context managers for resource management (`with` statements)
+
+### Performance
+- Profile before optimizing
+- Use NumPy operations instead of loops when possible
+- Cache expensive computations when appropriate
+- Document performance-critical sections
+
+## Testing and Documentation
+- Write unit tests for complex logic
+- Include examples in docstrings for non-trivial functions
+- Document assumptions and limitations
+- Keep README files updated
+
+## Version Control
+- Write clear, descriptive commit messages in English
+- Keep commits focused on a single logical change
+- Use meaningful branch names
+
+## Code Review Checklist
+Before submitting code, ensure:
+- [ ] All comments are in English
+- [ ] Type hints are used appropriately
+- [ ] Docstrings are complete and accurate
+- [ ] Code follows PEP 8
+- [ ] No magic numbers (use named constants)
+- [ ] Error handling is appropriate
+- [ ] Thread-safety is considered for concurrent code
+- [ ] ROS2 best practices are followed
+

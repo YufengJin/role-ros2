@@ -65,6 +65,7 @@ RUN apt-get update && \
     apt-get update && \
     apt-get install -y \
     ros-foxy-desktop \
+    ros-foxy-rmw-cyclonedds-cpp \
     python3-argcomplete \
     python3-colcon-common-extensions \
     && rm -rf /var/lib/apt/lists/*
@@ -109,6 +110,22 @@ RUN /usr/local/bin/micromamba shell init -s bash --root-prefix /opt/conda
 WORKDIR ${POLYMETIS_DIR}
 RUN micromamba env create -f ./polymetis/environment.yml
 
+# Step 1.5: Remove spdlog from conda environment to avoid symbol conflicts with ROS2
+# System spdlog (libspdlog-dev) will be used instead
+# This MUST be done after environment creation but before any imports
+# Remove library files, include files, AND cmake config files
+RUN rm -f /opt/conda/envs/polymetis-local/lib/libspdlog* && \
+    rm -rf /opt/conda/envs/polymetis-local/include/spdlog && \
+    rm -rf /opt/conda/envs/polymetis-local/lib/cmake/spdlog && \
+    rm -rf /opt/conda/envs/polymetis-local/lib/pkgconfig/spdlog.pc && \
+    echo "spdlog completely removed from conda environment - using system spdlog"
+
+# Verify spdlog is removed from conda
+RUN echo "Checking spdlog removal:" && \
+    (ls /opt/conda/envs/polymetis-local/lib/libspdlog* 2>/dev/null && echo "ERROR: spdlog lib still exists!" && exit 1) || \
+    (ls /opt/conda/envs/polymetis-local/lib/cmake/spdlog 2>/dev/null && echo "ERROR: spdlog cmake still exists!" && exit 1) || \
+    echo "OK: spdlog completely removed from conda"
+
 # Step 2: Install Python package in editable mode (before building C++)
 WORKDIR ${POLYMETIS_DIR}
 RUN micromamba run -n polymetis-local pip install -e ./polymetis
@@ -125,18 +142,20 @@ RUN micromamba run -n polymetis-local bash -c "\
 
 # Step 4: Build Polymetis from source
 # Note: Libraries are built in build directory, Python package uses them from there
+# Important: Use system spdlog (from libspdlog-dev) - conda spdlog was removed
 WORKDIR ${POLYMETIS_DIR}
 RUN micromamba run -n polymetis-local bash -c "\
-    export CMAKE_PREFIX_PATH=/opt/openrobots:\$CONDA_PREFIX:\$CMAKE_PREFIX_PATH && \
-    export PKG_CONFIG_PATH=/opt/openrobots/lib/pkgconfig:\$CONDA_PREFIX/lib/pkgconfig:\$PKG_CONFIG_PATH && \
-    export LD_LIBRARY_PATH=/opt/openrobots/lib:\$CONDA_PREFIX/lib:\$LD_LIBRARY_PATH && \
+    export CMAKE_PREFIX_PATH=/usr:/opt/openrobots:\$CONDA_PREFIX:\$CMAKE_PREFIX_PATH && \
+    export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/opt/openrobots/lib/pkgconfig:\$CONDA_PREFIX/lib/pkgconfig:\$PKG_CONFIG_PATH && \
+    export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/opt/openrobots/lib:\$CONDA_PREFIX/lib:\$LD_LIBRARY_PATH && \
     mkdir -p ./polymetis/build && \
     cd ./polymetis/build && \
     cmake .. \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_FRANKA=ON \
     -DBUILD_TESTS=ON \
-    -DBUILD_DOCS=ON && \
+    -DBUILD_DOCS=ON \
+    -Dspdlog_DIR=/usr/lib/x86_64-linux-gnu/cmake/spdlog && \
     make -j\$(nproc)"
 
 # Copy robot config files from franka_hw_config to polymetis config directory
@@ -194,9 +213,10 @@ RUN bash -c "source /opt/ros/foxy/setup.bash && \
 # Set working directory
 WORKDIR /app
 
-# Copy entrypoint script
+# Copy entrypoint script and DDS config files
 COPY ros2_ws/src/role-ros2/docker/entrypoint.sh /entrypoint.sh
 COPY ros2_ws/src/role-ros2/docker/fastrtps_profile.xml /app/ros2_ws/src/role-ros2/docker/fastrtps_profile.xml
+COPY ros2_ws/src/role-ros2/docker/cyclonedds.xml /app/ros2_ws/src/role-ros2/docker/cyclonedds.xml
 RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]

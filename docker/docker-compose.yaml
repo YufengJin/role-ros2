@@ -10,28 +10,23 @@ services:
         NUC_IP: "172.17.0.1"
     network_mode: host
     environment:
-      # Franka hardware IP (your setup: PC=172.17.0.1, Robot=172.17.0.2)
       ROBOT_IP: "172.17.0.2"
-      # Polymetis gRPC server bind IP inside container (entrypoint defaults to 127.0.0.1)
       POLYMETIS_IP: "127.0.0.1"
-      # ROS2 DDS settings for cross-version communication (Foxy <-> Humble)
-      # Must match host system settings
       ROS_DOMAIN_ID: "0"
-      RMW_IMPLEMENTATION: "rmw_fastrtps_cpp"  # Use FastRTPS for compatibility
-      ROS_LOCALHOST_ONLY: "0"  # Allow network discovery (not just localhost)
-      # Optional GUI support for RViz (only if you run GUI apps in container)
+      RMW_IMPLEMENTATION: "rmw_cyclonedds_cpp"
+      ROS_LOCALHOST_ONLY: "0"
       DISPLAY: "${DISPLAY}"
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      # Bind mount role-ros2 package for development (overrides COPY'd code but preserves build artifacts)
-      # Path is relative to docker-compose.yaml location (docker/ directory)
-      - ../:/app/ros2_ws/src/role-ros2:rw
-    # Franka/libfranka often benefits from real-time scheduling; keep it opt-in.
-    # If you need RT, uncomment one of:
-    # privileged: true
-    # cap_add:
-    #   - SYS_NICE
-    # ulimits:
-    #   rtprio: 99
-    #   memlock: -1
-
+      # ========== 开发模式：选择性挂载 ==========
+      # 挂载 scripts 目录（主要开发区域）
+      - ../scripts:/app/ros2_ws/src/role-ros2/scripts:rw
+      # 挂载 launch 目录
+      - ../launch:/app/ros2_ws/src/role-ros2/launch:rw
+      # 挂载 config 目录
+      - ../config:/app/ros2_ws/src/role-ros2/config:rw
+      # 挂载 msg 目录（修改后需重新 colcon build）
+      - ../msg:/app/ros2_ws/src/role-ros2/msg:rw
+      # 挂载 franka_hw_config 目录
+      - ../franka_hw_config:/app/ros2_ws/src/role-ros2/franka_hw_config:rw
+      # 注意：不挂载 role_ros2/fairo/ - 保留 Docker 中编译的 Polymetis
