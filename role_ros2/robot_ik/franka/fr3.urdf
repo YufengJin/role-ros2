@@ -1,5 +1,15 @@
 <?xml version='1.0' encoding='utf-8'?>
 <robot name="fr3_robot">
+  <!-- Base link (root) -->
+  <link name="base_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <mass value="0.001" />
+      <inertia ixx="0.001" iyy="0.001" izz="0.001" ixy="0" ixz="0" iyz="0" />
+    </inertial>
+  </link>
+  
+  <!-- Robot base link -->
   <link name="fr3_panda_link0">
     <inertial>
       <origin xyz="-0.041018 -0.00014 0.049974" rpy="0 0 0" />
@@ -9,7 +19,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://role_ros2/meshes/franka/link0.obj" />
+        <mesh filename="package://role_ros2/robot_ik/franka/mesh/link0.obj" />
       </geometry>
       <material name="panda_material">
         <color rgba="0.8 0.8 0.8 1" />
@@ -18,10 +28,17 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://role_ros2/meshes/franka/link0.obj" />
+        <mesh filename="package://role_ros2/robot_ik/franka/mesh/link0.obj" />
       </geometry>
     </collision>
   </link>
+  <joint name="fr3_base_joint" type="fixed">
+    <parent link="base_link" />
+    <child link="fr3_panda_link0" />
+    <origin rpy="0 0 0" xyz="0.0 0.0 0.0" />
+  </joint>
+  
+  <!-- Joint 1 -->
   <link name="fr3_panda_link1">
     <inertial>
       <origin xyz="0.003875 0.002081 -0.04762" rpy="0 0 0" />
@@ -31,7 +48,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://role_ros2/meshes/franka/link1.obj" />
+        <mesh filename="package://role_ros2/robot_ik/franka/mesh/link1.obj" />
       </geometry>
       <material name="panda_material">
         <color rgba="0.8 0.8 0.8 1" />
@@ -40,7 +57,7 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://role_ros2/meshes/franka/link1.obj" />
+        <mesh filename="package://role_ros2/robot_ik/franka/mesh/link1.obj" />
       </geometry>
     </collision>
   </link>
@@ -51,6 +68,8 @@
     <axis xyz="0.0 0.0 1.0" />
     <limit lower="-2.7437" upper="2.7437" effort="87" velocity="2.175" />
   </joint>
+  
+  <!-- Joint 2 -->
   <link name="fr3_panda_link2">
     <inertial>
       <origin xyz="-0.003141 -0.02872 0.003495" rpy="0 0 0" />
@@ -60,7 +79,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://role_ros2/meshes/franka/link2.obj" />
+        <mesh filename="package://role_ros2/robot_ik/franka/mesh/link2.obj" />
       </geometry>
       <material name="panda_material">
         <color rgba="0.8 0.8 0.8 1" />
@@ -69,7 +88,7 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://role_ros2/meshes/franka/link2.obj" />
+        <mesh filename="package://role_ros2/robot_ik/franka/mesh/link2.obj" />
       </geometry>
     </collision>
   </link>
@@ -80,6 +99,8 @@
     <axis xyz="0.0 0.0 1.0" />
     <limit lower="-1.7837" upper="1.7837" effort="87" velocity="2.175" />
   </joint>
+  
+  <!-- Joint 3 -->
   <link name="fr3_panda_link3">
     <inertial>
       <origin xyz="0.027518 0.039252 -0.066502" rpy="0 0 0" />
@@ -89,7 +110,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://role_ros2/meshes/franka/link3.obj" />
+        <mesh filename="package://role_ros2/robot_ik/franka/mesh/link3.obj" />
       </geometry>
       <material name="panda_material">
         <color rgba="0.8 0.8 0.8 1" />
@@ -98,7 +119,7 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://role_ros2/meshes/franka/link3.obj" />
+        <mesh filename="package://role_ros2/robot_ik/franka/mesh/link3.obj" />
       </geometry>
     </collision>
   </link>
@@ -109,6 +130,8 @@
     <axis xyz="0.0 0.0 1.0" />
     <limit lower="-2.9007" upper="2.9007" effort="87" velocity="2.175" />
   </joint>
+  
+  <!-- Joint 4 -->
   <link name="fr3_panda_link4">
     <inertial>
       <origin xyz="-0.05317 0.104419 0.027454" rpy="0 0 0" />
@@ -118,7 +141,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://role_ros2/meshes/franka/link4.obj" />
+        <mesh filename="package://role_ros2/robot_ik/franka/mesh/link4.obj" />
       </geometry>
       <material name="panda_material">
         <color rgba="0.8 0.8 0.8 1" />
@@ -127,7 +150,7 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://role_ros2/meshes/franka/link4.obj" />
+        <mesh filename="package://role_ros2/robot_ik/franka/mesh/link4.obj" />
       </geometry>
     </collision>
   </link>
@@ -138,6 +161,8 @@
     <axis xyz="0.0 0.0 1.0" />
     <limit lower="-3.0421" upper="-0.1518" effort="87" velocity="2.175" />
   </joint>
+  
+  <!-- Joint 5 -->
   <link name="fr3_panda_link5">
     <inertial>
       <origin xyz="0.011953 0.041065 -0.038437" rpy="0 0 0" />
@@ -147,7 +172,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://role_ros2/meshes/franka/link5.obj" />
+        <mesh filename="package://role_ros2/robot_ik/franka/mesh/link5.obj" />
       </geometry>
       <material name="panda_material">
         <color rgba="0.8 0.8 0.8 1" />
@@ -156,7 +181,7 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://role_ros2/meshes/franka/link5.obj" />
+        <mesh filename="package://role_ros2/robot_ik/franka/mesh/link5.obj" />
       </geometry>
     </collision>
   </link>
@@ -167,6 +192,8 @@
     <axis xyz="0.0 0.0 1.0" />
     <limit lower="-2.8065" upper="2.8065" effort="87" velocity="2.175" />
   </joint>
+  
+  <!-- Joint 6 -->
   <link name="fr3_panda_link6">
     <inertial>
       <origin xyz="0.060149 -0.014117 -0.010517" rpy="0 0 0" />
@@ -176,7 +203,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://role_ros2/meshes/franka/link6.obj" />
+        <mesh filename="package://role_ros2/robot_ik/franka/mesh/link6.obj" />
       </geometry>
       <material name="panda_material">
         <color rgba="0.8 0.8 0.8 1" />
@@ -185,7 +212,7 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://role_ros2/meshes/franka/link6.obj" />
+        <mesh filename="package://role_ros2/robot_ik/franka/mesh/link6.obj" />
       </geometry>
     </collision>
   </link>
@@ -196,6 +223,8 @@
     <axis xyz="0.0 0.0 1.0" />
     <limit lower="0.5445" upper="4.5169" effort="87" velocity="2.175" />
   </joint>
+  
+  <!-- Joint 7 -->
   <link name="fr3_panda_link7">
     <inertial>
       <origin xyz="0.010517 -0.004252 0.061597" rpy="0 0 0" />
@@ -205,7 +234,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://role_ros2/meshes/franka/link7.obj" />
+        <mesh filename="package://role_ros2/robot_ik/franka/mesh/link7.obj" />
       </geometry>
       <material name="panda_material">
         <color rgba="0.8 0.8 0.8 1" />
@@ -214,7 +243,7 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://role_ros2/meshes/franka/link7.obj" />
+        <mesh filename="package://role_ros2/robot_ik/franka/mesh/link7.obj" />
       </geometry>
     </collision>
   </link>
@@ -225,17 +254,18 @@
     <axis xyz="0.0 0.0 1.0" />
     <limit lower="-3.0159" upper="3.0159" effort="87" velocity="2.175" />
   </joint>
-  <link name="fr3_panda_link8" />
+  
+  <!-- End-effector (hand) - directly connected to link7 -->
   <link name="fr3_panda_hand">
     <inertial>
       <origin xyz="-0.01 0.0 0.03" rpy="0 0 0" />
       <mass value="0.73" />
-      <inertia ixx="0.001" iyy="0.001" izz="0.001" ixy="0" ixz="0" iyz="0" />
+      <inertia ixx="0.001" iyy="0.0025" izz="0.0017" ixy="0" ixz="0" iyz="0" />
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://role_ros2/meshes/franka/hand.obj" />
+        <mesh filename="package://role_ros2/robot_ik/franka/mesh/hand.obj" />
       </geometry>
       <material name="panda_material">
         <color rgba="0.8 0.8 0.8 1" />
@@ -244,8 +274,13 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://role_ros2/meshes/franka/hand.obj" />
+        <mesh filename="package://role_ros2/robot_ik/franka/mesh/hand.obj" />
       </geometry>
     </collision>
   </link>
+  <joint name="fr3_panda_hand_fixed_joint" type="fixed">
+    <parent link="fr3_panda_link7" />
+    <child link="fr3_panda_hand" />
+    <origin rpy="0.0 0.0 -0.785398163397" xyz="0.0 0.0 0.107" />
+  </joint>
 </robot>

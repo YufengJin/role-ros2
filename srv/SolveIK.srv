@@ -1,0 +1,11 @@
+# Solve Inverse Kinematics Service
+float64[] position      # Desired position [x, y, z]
+float64[] orientation   # Desired orientation as quaternion [x, y, z, w]
+float64[] q0            # Initial joint guess (7 DOF)
+float64 tolerance        # IK solution tolerance (default: 1e-3)
+---
+bool success
+string message
+float64[] joint_positions  # Solved joint positions (7 DOF)
+float64 error              # IK solution error
+

@@ -109,6 +109,26 @@
 - Document performance-critical sections
 
 ## Testing and Documentation
+
+### Test Code Organization
+- **ALL test code MUST be placed in the `tests/` directory** - no exceptions
+- Test files should follow naming convention: `test_*.py` or `*_test.py`
+- Keep test code separate from production code in `scripts/`
+- Mock interfaces used in production code (e.g., `MockRobotInterface` in `polymetis_bridge_node.py`) are NOT test code and should remain in their respective modules
+
+### Documentation and Reports
+- **ALL documentation, reports, and issue analysis MUST be saved in the `docs/` directory**
+- Use descriptive filenames with UPPERCASE and underscores (e.g., `DOCKER_SIGSEGV_ANALYSIS.md`, `LAUNCH_SCRIPTS_IMPROVEMENTS.md`)
+- Document all significant issues, solutions, and analysis in markdown format
+- Include timestamps and context in reports when relevant
+- Keep documentation organized by topic/feature area
+- When creating new documentation:
+  - Use clear, descriptive titles
+  - Include problem description, analysis, and solutions
+  - Add cross-references to related documents
+  - Update relevant README files if needed
+
+### General Documentation Guidelines
 - Write unit tests for complex logic
 - Include examples in docstrings for non-trivial functions
 - Document assumptions and limitations

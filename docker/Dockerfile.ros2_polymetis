@@ -39,6 +39,9 @@ RUN apt-get update && \
     libsm6 \
     libxext6 \
     locales \
+    iputils-ping \
+    iproute2 \
+    net-tools \
     && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/*
 
@@ -183,6 +186,11 @@ RUN echo "Copying robot config files for ${ROBOT_TYPE}..." && \
         echo "Warning: Robot config directory ${ROBOT_CONFIG_DIR} not found"; \
     fi
 
+# Install xacro for ROS2 launch files (required for URDF processing)
+# Install to both system Python (for ROS2 launch files) and conda environment
+RUN pip3 install xacro && \
+    micromamba run -n polymetis-local pip install xacro
+
 # Install role_ros2 package dependencies in polymetis-local conda environment
 WORKDIR /app
 RUN micromamba run -n polymetis-local pip install -e ./ros2_ws/src/role-ros2/role_ros2
@@ -204,20 +212,22 @@ RUN apt-get update && \
     rosdep update && \
     rm -rf /var/lib/apt/lists/*
 
-# Build ROS2 workspace (only role-ros2 package)
-WORKDIR /app/ros2_ws
-RUN bash -c "source /opt/ros/foxy/setup.bash && \
-    rosdep install --from-paths src --ignore-src -r -y && \
-    colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release"
+# Note: ROS2 workspace is NOT built during docker build
+# Users should build it manually after entering the container:
+#   1. source /app/ros2_ws/src/role-ros2/docker/polymetis_ros2.env
+#   2. cd /app/ros2_ws
+#   3. colcon build --symlink-install
 
 # Set working directory
 WORKDIR /app
 
-# Copy entrypoint script and DDS config files
+# Copy entrypoint script, environment setup script, and DDS config files
 COPY ros2_ws/src/role-ros2/docker/entrypoint.sh /entrypoint.sh
+COPY ros2_ws/src/role-ros2/docker/polymetis_ros2.env /app/ros2_ws/src/role-ros2/docker/polymetis_ros2.env
 COPY ros2_ws/src/role-ros2/docker/fastrtps_profile.xml /app/ros2_ws/src/role-ros2/docker/fastrtps_profile.xml
 COPY ros2_ws/src/role-ros2/docker/cyclonedds.xml /app/ros2_ws/src/role-ros2/docker/cyclonedds.xml
-RUN chmod +x /entrypoint.sh
+RUN chmod +x /entrypoint.sh && \
+    chmod +x /app/ros2_ws/src/role-ros2/docker/polymetis_ros2.env
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["bash"]

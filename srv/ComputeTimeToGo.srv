@@ -1,0 +1,7 @@
+# Compute Adaptive Time to Go Service
+float64[] desired_joint_positions  # Target joint positions (7 DOF)
+---
+bool success
+string message
+float64 time_to_go  # Computed time to go (seconds)
+

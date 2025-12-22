@@ -1,0 +1,8 @@
+# Start Cartesian Impedance Controller Service
+# Optional gains, if not provided, uses defaults
+float64[] kx      # Cartesian position gains [x, y, z, roll, pitch, yaw] (optional)
+float64[] kxd     # Cartesian velocity gains [x, y, z, roll, pitch, yaw] (optional)
+---
+bool success
+string message
+

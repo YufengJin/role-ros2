@@ -64,5 +64,7 @@ class FrankaArm(RobotArm):
         self._name = "franka"
         dir_path = os.path.dirname(os.path.realpath(__file__))
         self._model_file = os.path.join(dir_path, "franka", "{0}.xml".format(robot_type))
+        if not os.path.exists(self._model_file):
+            raise FileNotFoundError(f"Model file not found: {self._model_file}")
         self._mjcf_root = mjcf.from_path(self._model_file)
         self._create_body()

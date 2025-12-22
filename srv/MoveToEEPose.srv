@@ -1,0 +1,10 @@
+# Move to End-Effector Pose Service (blocking)
+float64[] position      # Target position [x, y, z]
+float64[] orientation   # Target orientation as quaternion [x, y, z, w]
+float64 time_to_go      # Time to reach target (optional, 0 = auto)
+float64[] q0            # Initial joint guess for IK (optional)
+---
+bool success
+string message
+float64[] final_joint_positions  # Final joint positions after movement
+

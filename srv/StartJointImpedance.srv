@@ -1,0 +1,8 @@
+# Start Joint Impedance Controller Service
+# Optional gains, if not provided, uses defaults
+float64[] kq      # Joint position gains (7 DOF, optional)
+float64[] kqd     # Joint velocity gains (7 DOF, optional)
+---
+bool success
+string message
+

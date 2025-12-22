@@ -1,0 +1,8 @@
+# Move to Joint Positions Service (blocking)
+float64[] joint_positions  # Target joint positions (7 DOF)
+float64 time_to_go         # Time to reach target (optional, 0 = auto)
+---
+bool success
+string message
+float64[] final_joint_positions  # Final joint positions after movement
+

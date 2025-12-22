@@ -1,0 +1,5 @@
+# Terminate Current Policy Service
+---
+bool success
+string message
+

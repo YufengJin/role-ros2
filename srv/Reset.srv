@@ -1,0 +1,5 @@
+# Reset service - Move robot to reset/home position
+---
+bool success
+string message
+

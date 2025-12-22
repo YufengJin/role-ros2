@@ -8,10 +8,34 @@ robot_ip: "172.17.0.2"   # REQUIRED: Robot IP address or hostname
 
 # Robot identification
 arm_id: "fr3"  # Robot arm ID. Supported values: fer, fr3, fp3
+               # NOTE: URDF file must exist at: role_ros2/robot_ik/franka/{arm_id}.urdf
+               # To generate URDF from MuJoCo XML, run:
+               #   python3 scripts/mujoco_to_urdf.py role_ros2/robot_ik/franka/{arm_id}.xml role_ros2/robot_ik/franka/{arm_id}.urdf {arm_id}
+
+# Joint names configuration
+# IMPORTANT: Joint names must match URDF joint names exactly (with arm_id prefix)
+# Format: {arm_id}_panda_jointX for arm joints, {arm_id}_panda_finger_jointX for gripper joints
+arm_joints:
+  - fr3_panda_joint1
+  - fr3_panda_joint2
+  - fr3_panda_joint3
+  - fr3_panda_joint4
+  - fr3_panda_joint5
+  - fr3_panda_joint6
+  - fr3_panda_joint7
+
+gripper_joints:
+  - fr3_panda_finger_joint1
+  - fr3_panda_finger_joint2
 
 # Hardware settings
 use_fake_hardware: false  # Use fake/simulated hardware (true/false)
 fake_sensor_commands: false  # Enable fake sensor commands (only valid when use_fake_hardware is true)
+
+# Mock mode settings
+use_mock: false  # Use mock mode (no real robot). If true, uses MockRobotInterface and MockGripperInterface
+                 # NOTE: Even in mock mode, URDF file is REQUIRED for robot_state_publisher
+                 # The URDF file must exist and conform to ROS standards with proper mesh links
 
 # Gripper settings
 load_gripper: true  # Load Franka Gripper as end-effector (true/false)
@@ -27,12 +51,39 @@ controller_name: "fr3_arm_controller"  # Name of the arm controller to use
                                        #   - "cartesian_velocity_example_controller"
                                        #   - "gravity_compensation_example_controller"
 
+# ============================================================================
+# URDF File Requirements
+# ============================================================================
+# IMPORTANT: The URDF file must exist before launching!
+#
+# The URDF file is expected at:
+#   role_ros2/robot_ik/franka/{arm_id}.urdf
+#
+# To generate the URDF file from MuJoCo XML, run:
+#   python3 scripts/mujoco_to_urdf.py \\
+#       role_ros2/robot_ik/franka/{arm_id}.xml \\
+#       role_ros2/robot_ik/franka/{arm_id}.urdf \\
+#       {arm_id}
+#
+# The URDF file must conform to ROS standards:
+#   - Proper link and joint definitions
+#   - Mesh files referenced correctly (mesh directory must exist)
+#   - Valid inertial properties
+#   - Joint limits and dynamics
+#
+# Mesh directory structure:
+#   role_ros2/robot_ik/franka/mesh/
+#     - Contains .obj mesh files referenced in URDF
+#
+# ============================================================================
 # Example configurations for different use cases:
+# ============================================================================
 
 # Configuration 1: Real robot with gripper (default)
 # robot_ip: "172.16.0.2"
 # arm_id: "fr3"
 # use_fake_hardware: false
+# use_mock: false
 # load_gripper: true
 # controller_name: "fr3_arm_controller"
 
@@ -40,13 +91,24 @@ controller_name: "fr3_arm_controller"  # Name of the arm controller to use
 # robot_ip: "172.16.0.2"
 # arm_id: "fr3"
 # use_fake_hardware: false
+# use_mock: false
 # load_gripper: false
 # controller_name: "fr3_arm_controller"
 
-# Configuration 3: Simulated robot (Gazebo)
+# Configuration 3: Mock mode (no real robot, for testing)
+# robot_ip: "172.17.0.2"  # Not used in mock mode, but required
+# arm_id: "fr3"
+# use_fake_hardware: false
+# use_mock: true  # Enable mock mode
+# load_gripper: true
+# controller_name: "fr3_arm_controller"
+# NOTE: URDF file is still REQUIRED even in mock mode for robot_state_publisher
+
+# Configuration 4: Simulated robot (Gazebo)
 # robot_ip: "172.16.0.2"  # Not used in simulation, but required
 # arm_id: "fr3"
 # use_fake_hardware: true
+# use_mock: false
 # fake_sensor_commands: false
 # load_gripper: true
 # controller_name: "joint_position_example_controller"

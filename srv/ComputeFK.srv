@@ -1,0 +1,8 @@
+# Compute Forward Kinematics Service
+float64[] joint_positions  # Joint positions (7 DOF)
+---
+bool success
+string message
+float64[] position      # End-effector position [x, y, z]
+float64[] orientation   # End-effector orientation as quaternion [x, y, z, w]
+
