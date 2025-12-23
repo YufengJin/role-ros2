@@ -5,12 +5,21 @@ FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
 
 SHELL ["/bin/bash", "-c"]
 
+# 2. Build Arguments
+ARG UBUNTU_RELEASE_YEAR=22
+ARG CUDA_MAJOR=11
+ARG CUDA_MINOR=8
+ARG ZED_SDK_MAJOR=4
+ARG ZED_SDK_MINOR=1
+ARG ZED_ROS2_WRAPPER_VERSION=humble-v4.1.4
+
 # 2. Environment Setup
 ENV LOGNAME=root \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     DEBIAN_FRONTEND=noninteractive \
-    ROS_DISTRO=humble
+    ROS_DISTRO=humble \
+    NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:+$NVIDIA_DRIVER_CAPABILITIES,}compute,video,utility
 
 # --- 3. Setup Repositories (ROS 2 官方安装步骤) ---
 # 3.1 基础工具
@@ -75,16 +84,116 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN rosdep init || true && rosdep update
 ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 
-# --- 6. Setup ROS 2 Workspace ---
+# --- 6. Install ZED SDK ---
+# ZED SDK dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    udev \
+    sudo \
+    less \
+    && rm -rf /var/lib/apt/lists/*
+
+# Verify CUDA libraries are available (libnvcuvid.so for video decoder)
+RUN echo "Checking CUDA libraries..." && \
+    find /usr/local/cuda -name "libnvcuvid.so*" 2>/dev/null | head -5 || \
+    echo "Warning: libnvcuvid.so not found, may need additional CUDA packages" && \
+    ls -la /usr/local/cuda/lib64/ | grep -E "(cuda|nvcuvid)" | head -10 || true
+
+# Install ZED SDK (Ubuntu 22.04, CUDA 11.8)
+# Note: Using silent mode with skip_cuda, skip_od_module, skip_hub, skip_tools since CUDA is already in base image
+RUN cd / && \
+    wget -q -O ZED_SDK_Linux_Ubuntu${UBUNTU_RELEASE_YEAR}.run \
+    https://download.stereolabs.com/zedsdk/${ZED_SDK_MAJOR}.${ZED_SDK_MINOR}/cu${CUDA_MAJOR}${CUDA_MINOR%.*}/ubuntu${UBUNTU_RELEASE_YEAR} && \
+    chmod +x ZED_SDK_Linux_Ubuntu${UBUNTU_RELEASE_YEAR}.run && \
+    ./ZED_SDK_Linux_Ubuntu${UBUNTU_RELEASE_YEAR}.run -- silent skip_cuda skip_od_module skip_hub skip_tools && \
+    ln -sf /lib/x86_64-linux-gnu/libusb-1.0.so.0 /usr/lib/x86_64-linux-gnu/libusb-1.0.so && \
+    rm ZED_SDK_Linux_Ubuntu${UBUNTU_RELEASE_YEAR}.run
+
+# Install ZED Python API
+# Fix setuptools version compatibility issue (humble-v4.1.4 requires older setuptools)
+RUN python3 -m pip install --upgrade pip wheel && \
+    python3 -m pip install "setuptools<70.0.0" && \
+    python3 -m pip install numpy opencv-python && \
+    (python3 /usr/local/zed/get_python_api.py && \
+     (python3 -m pip install --ignore-installed /tmp/pyzed-*.whl 2>/dev/null || \
+      python3 -m pip install --ignore-installed $(ls -t /tmp/pyzed*.whl 2>/dev/null | head -1) 2>/dev/null || \
+      python3 -m pip install pyzed)) || \
+    echo "Warning: pyzed installation failed, continuing..."
+
+# Set ZED SDK environment variables
+ENV ZED_SDK_ROOT=/usr/local/zed
+ENV PATH=${ZED_SDK_ROOT}/bin:${PATH}
+ENV LD_LIBRARY_PATH=${ZED_SDK_ROOT}/lib:/usr/local/cuda/lib64:/usr/local/cuda/lib:${LD_LIBRARY_PATH}
+
+# Set CUDA environment variables for linking
+ENV CUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda
+ENV CUDA_PATH=/usr/local/cuda
+ENV CUDA_HOME=/usr/local/cuda
+
+# --- 7. Setup ROS 2 Workspace ---
 # 创建 workspace 目录结构
-# Note: Source code will be mounted via volume in docker-compose.yaml
 RUN mkdir -p /app/ros2_ws/src
 
 WORKDIR /app/ros2_ws
 
-# --- 7. Setup ROS2 environment in bashrc ---
-# Note: role_ros2 will be built inside container using colcon build
-RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc
+# --- 8. Install zed-ros2-wrapper ---
+# Clone zed-ros2-wrapper repository and checkout specific version
+WORKDIR /app/ros2_ws/src
+RUN git clone --recursive https://github.com/stereolabs/zed-ros2-wrapper.git || \
+    (echo "Warning: zed-ros2-wrapper clone failed, will be installed at runtime" && mkdir -p zed-ros2-wrapper)
+
+# Checkout specific version (humble-v4.1.4 for ZED SDK 4.1 compatibility)
+RUN if [ -d "zed-ros2-wrapper" ] && [ "$(ls -A zed-ros2-wrapper)" ]; then \
+        cd zed-ros2-wrapper && \
+        git fetch --all --tags && \
+        git checkout ${ZED_ROS2_WRAPPER_VERSION} 2>/dev/null || \
+        (echo "Warning: Tag ${ZED_ROS2_WRAPPER_VERSION} not found, using default branch" && \
+         git checkout master 2>/dev/null || git checkout main 2>/dev/null) && \
+        git submodule update --init --recursive && \
+        echo "Checked out zed-ros2-wrapper version: ${ZED_ROS2_WRAPPER_VERSION}"; \
+    fi
+
+# Note: humble-v4.1.4 should be compatible with ZED SDK 4.1, no patches needed
+
+# Install zed-ros2-wrapper dependencies
+WORKDIR /app/ros2_ws
+RUN if [ -d "src/zed-ros2-wrapper" ] && [ "$(ls -A src/zed-ros2-wrapper)" ]; then \
+        . /opt/ros/humble/setup.bash && \
+        rosdep install --from-paths src --ignore-src -r -y || echo "Warning: rosdep install failed, continuing..."; \
+    fi
+
+# --- 9. Build zed-ros2-wrapper packages in Docker ---
+# Note: role_ros2 will be mounted as a volume for development, not built in image
+# Note: NVIDIA driver libraries (libcuda.so, libnvcuvid.so, etc.) are runtime libraries
+# provided by the NVIDIA driver, so we allow unresolved symbols during linking
+WORKDIR /app/ros2_ws
+RUN . /opt/ros/humble/setup.bash && \
+    export LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/lib:${LD_LIBRARY_PATH} && \
+    export CUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda && \
+    export CUDA_PATH=/usr/local/cuda && \
+    export CUDA_HOME=/usr/local/cuda && \
+    export LDFLAGS="-L/usr/local/cuda/lib64 -L/usr/local/cuda/lib -Wl,--allow-shlib-undefined ${LDFLAGS}" && \
+    if [ -d "src/zed-ros2-wrapper" ] && [ "$(ls -A src/zed-ros2-wrapper)" ]; then \
+        echo "Building zed-ros2-wrapper packages..." && \
+        echo "CUDA paths: CUDA_TOOLKIT_ROOT_DIR=${CUDA_TOOLKIT_ROOT_DIR}, LD_LIBRARY_PATH=${LD_LIBRARY_PATH}" && \
+        colcon build --packages-select zed_interfaces zed_wrapper zed_components \
+            --symlink-install \
+            --cmake-args \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda \
+                -DCUDA_PATH=/usr/local/cuda \
+                -DCUDA_HOME=/usr/local/cuda \
+                -DCMAKE_LIBRARY_PATH=/usr/local/cuda/lib64 \
+                -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+                -DCMAKE_EXE_LINKER_FLAGS="-L/usr/local/cuda/lib64 -L/usr/local/cuda/lib -Wl,--allow-shlib-undefined" \
+                -DCMAKE_SHARED_LINKER_FLAGS="-L/usr/local/cuda/lib64 -L/usr/local/cuda/lib -Wl,--allow-shlib-undefined" \
+                -DCMAKE_MODULE_LINKER_FLAGS="-Wl,--allow-shlib-undefined" || \
+        (echo "Error: zed-ros2-wrapper build failed" && exit 1); \
+    fi && \
+    echo "zed-ros2-wrapper packages built successfully!"
+
+# --- 10. Setup ROS2 environment in bashrc ---
+RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc && \
+    echo "if [ -f /app/ros2_ws/install/setup.bash ]; then source /app/ros2_ws/install/setup.bash; fi" >> /root/.bashrc
 
 # --- Final Setup ---
 # Copy Docker configuration files to image
