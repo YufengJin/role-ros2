@@ -1,0 +1,105 @@
+# ============================================================
+# Dockerfile for ROS2 Humble with CUDA 11.8 on Ubuntu 22.04
+# ============================================================
+FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
+
+SHELL ["/bin/bash", "-c"]
+
+# 2. Environment Setup
+ENV LOGNAME=root \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    DEBIAN_FRONTEND=noninteractive \
+    ROS_DISTRO=humble
+
+# --- 3. Setup Repositories (ROS 2 官方安装步骤) ---
+# 3.1 基础工具
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    gnupg2 \
+    lsb-release \
+    software-properties-common \
+    locales \
+    && rm -rf /var/lib/apt/lists/*
+
+# 3.2 设置 UTF-8 locale（参考 ROS2 官方文档）
+RUN locale-gen en_US en_US.UTF-8 && \
+    update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
+
+ENV LANG=en_US.UTF-8
+
+# 3.3 添加 ROS 2 Humble key & 源（跟官方安装保持一致）
+RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+    -o /usr/share/keyrings/ros-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" \
+    | tee /etc/apt/sources.list.d/ros2.list > /dev/null
+
+RUN apt-get update
+
+# --- 4. Install Dependencies ---
+
+# A. System Build Tools (install before ROS2 to avoid dependency conflicts)
+RUN apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    git \
+    python3-pip \
+    wget \
+    zstd \
+    libpng-dev \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# B. ROS 2 Core（ros-dev-tools 包含了 rosdep 和 vcstool）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-humble-desktop \
+    ros-humble-rmw-cyclonedds-cpp \
+    ros-dev-tools \
+    python3-colcon-common-extensions \
+    && rm -rf /var/lib/apt/lists/*
+
+# C. Network & Debugging Tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    iputils-ping \
+    net-tools \
+    iproute2 \
+    usbutils \
+    tcpdump \
+    htop \
+    vim \
+    tmux \
+    nano \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- 5. ROS Dep & RMW ---
+RUN rosdep init || true && rosdep update
+ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+
+# --- 6. Setup ROS 2 Workspace ---
+# 创建 workspace 目录结构
+# Note: Source code will be mounted via volume in docker-compose.yaml
+RUN mkdir -p /app/ros2_ws/src
+
+WORKDIR /app/ros2_ws
+
+# --- 7. Setup ROS2 environment in bashrc ---
+# Note: role_ros2 will be built inside container using colcon build
+RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc
+
+# --- Final Setup ---
+# Copy Docker configuration files to image
+# Build context is ../../../../ (role_ws directory), so path is relative to that
+COPY src/role-ros2/docker/ros2_cu118/entrypoint.sh /entrypoint.sh
+COPY src/role-ros2/docker/ros2_cu118/ros2_cu118.env /app/ros2_ws/src/role-ros2/docker/ros2_cu118/ros2_cu118.env
+COPY src/role-ros2/docker/ros2_cu118/cyclonedds.xml /app/ros2_ws/src/role-ros2/docker/ros2_cu118/cyclonedds.xml
+COPY src/role-ros2/docker/ros2_cu118/fastrtps_profile.xml /app/ros2_ws/src/role-ros2/docker/ros2_cu118/fastrtps_profile.xml
+RUN chmod +x /entrypoint.sh && \
+    chmod +x /app/ros2_ws/src/role-ros2/docker/ros2_cu118/ros2_cu118.env
+
+# Set working directory
+WORKDIR /app
+
+# Use the entrypoint from image
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["bash"]
+

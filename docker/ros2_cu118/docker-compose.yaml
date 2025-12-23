@@ -1,0 +1,44 @@
+services:
+  ros2_cu118:
+    image: ros2_cu118:latest
+    container_name: ros2_cu118_container
+    build:
+      context: ../../../../  # From ros2_cu118 directory, go up 4 levels to role_ws
+      dockerfile: src/role-ros2/docker/ros2_cu118/Dockerfile.ros2_cu118
+      # args:  # Uncomment and add build args here if needed in the future
+    # Use host network mode for ROS2 communication
+    network_mode: host
+    # Keep container running (required for background mode)
+    stdin_open: true
+    tty: true
+    # Enable NVIDIA GPU support (required for CUDA)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+      restart_policy:
+        condition: any
+    # Environment variables
+    environment:
+      ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
+      RMW_IMPLEMENTATION: "rmw_cyclonedds_cpp"
+      ROS_LOCALHOST_ONLY: "${ROS_LOCALHOST_ONLY:-0}"
+      DISPLAY: "${DISPLAY}"
+      # Robot configuration (can be overridden)
+      ROBOT_IP: "${ROBOT_IP:-172.17.0.2}"
+      NUC_IP: "${NUC_IP:-172.17.0.1}"
+      LAPTOP_IP: "${LAPTOP_IP:-172.17.0.1}"
+      ROBOT_TYPE: "${ROBOT_TYPE:-fr3}"
+      # Set SKIP_AUTO_ENV=true to skip automatic environment configuration
+      SKIP_AUTO_ENV: "${SKIP_AUTO_ENV:-false}"
+    volumes:
+      # X11 forwarding for GUI applications
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # ========== 开发模式：挂载整个 role-ros2 源代码目录 ==========
+      # 从 ros2_cu118 目录，../../ 指向 role-ros2 目录（向上两级）
+      # 挂载整个 role-ros2 包，这样可以在容器外部修改代码，在容器内编译
+      - ../../:/app/ros2_ws/src/role-ros2:rw
+
