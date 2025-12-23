@@ -1,0 +1,123 @@
+# ZED Cameras Configuration
+# This file contains configuration for all ZED cameras
+# Each camera has an 'activate' flag to enable/disable it
+#
+# Frame ID Prefix:
+#   The 'name' field is used as the frame_id prefix for all TF frames.
+#   For example, if name='hand_camera', frame_ids will be:
+#     - hand_camera_camera_center
+#     - hand_camera_left_camera_frame
+#     - hand_camera_left_camera_frame_optical
+#     - hand_camera_right_camera_frame
+#     - hand_camera_imu_link
+#     etc.
+
+cameras:
+  # Hand Camera (mounted on gripper) - ZED-M
+  # Camera Serial Number: 11022812
+  # IMU: ENABLED
+  - name: 'hand_camera'  # Used as frame_id prefix (e.g., hand_camera_camera_center)
+    activate: true  # Set to false to disable this camera
+    camera_model: 'zedm'  # Options: 'zed', 'zedm', 'zed2', 'zed2i', 'zedx', 'zedxm', 'zedxhdr', 'zedxhdrmini', 'zedxhdrmax'
+    serial_number: 11022812  # Camera serial number (integer)
+    namespace: 'hand_camera'  # Topic namespace: /hand_camera/...
+    node_name: 'zed_node'
+    # Resolution settings
+    grab_resolution: 'HD1080'  # Native camera grab resolution. Options: 'HD2K', 'HD1080', 'HD720', 'VGA', 'AUTO'
+    grab_frame_rate: 30  # ZED SDK internal grabbing rate (FPS)
+    # Publishing settings
+    pub_resolution: 'CUSTOM'  # Options: 'NATIVE' (use grab_resolution), 'CUSTOM' (apply downscale_factor)
+    pub_downscale_factor: 2.0  # Rescale factor when pub_resolution is 'CUSTOM' (reduces bandwidth)
+    pub_frame_rate: 15.0  # Frequency of publishing images and depth data (Hz). Must be <= grab_frame_rate
+    # Sensor settings
+    sensors:
+      publish_imu: true  # Enable IMU data publishing
+      publish_imu_raw: false  # Enable raw IMU data publishing
+      publish_imu_tf: true  # Enable IMU TF broadcasting
+      sensors_pub_rate: 100.0  # Frequency of publishing sensors data (Hz). MAX: 400.0, MIN: grab_frame_rate
+    # Depth settings
+    depth:
+      depth_mode: 'NEURAL'  # Options: 'NONE', 'PERFORMANCE', 'QUALITY', 'ULTRA', 'NEURAL', 'NEURAL_PLUS', 'NEURAL_LIGHT'
+      depth_stabilization: 30  # Forces positional tracking to start if > 0. Range: [0,100]
+      min_depth: 0.01  # Minimum depth in meters. Range: [0.01, 3.0]
+      max_depth: 10.0  # Maximum depth in meters. Range: [0.5, 15.0] (zedm max: 15.0)
+      depth_confidence: 95  # Depth confidence threshold. Range: [0, 100]
+      depth_texture_conf: 100  # Depth texture confidence. Range: [0, 100]
+      remove_saturated_areas: true  # Remove saturated areas from depth processing
+      point_cloud_freq: 10.0  # Frequency of point cloud publishing (Hz). Must be <= grab_frame_rate
+      point_cloud_res: 'COMPACT'  # Options: 'COMPACT' (standard), 'REDUCED' (half resolution, lower bandwidth)
+      publish_depth_map: true  # Publish depth map topics
+      publish_point_cloud: true  # Publish point cloud topic
+    # Position tracking settings
+    pos_tracking:
+      publish_tf: true  # Enable TF publishing (odom -> camera_link)
+      publish_map_tf: true  # Enable map TF publishing (map -> odom)
+      pos_tracking_enabled: true  # Enable positional tracking from start
+      pos_tracking_mode: 'GEN_2'  # Options: 'GEN_1', 'GEN_2', 'GEN_3'
+      imu_fusion: true  # Enable IMU fusion. If false, only optical odometry is used
+      set_as_static: true  # Camera is static and doesn't move (same as static_camera)
+    # Video settings
+    video:
+      brightness: 4  # Image brightness. Range: [0, 8]
+      contrast: 4  # Image contrast. Range: [0, 8]
+      saturation: 4  # Image saturation. Range: [0, 8]
+      sharpness: 4  # Image sharpness. Range: [0, 8]
+      gamma: 8  # Image gamma. Range: [0, 8]
+      auto_exposure_gain: true  # Enable auto exposure/gain
+      auto_whitebalance: true  # Enable auto white balance
+      publish_rgb: true  # Publish RGB image topics
+
+  # Static Camera (fixed position) - ZED 2
+  # Camera Serial Number: 24285872
+  # IMU: DISABLED
+  - name: 'static_camera'  # Used as frame_id prefix (e.g., static_camera_camera_center)
+    activate: true  # Set to false to disable this camera
+    camera_model: 'zed2'  # Options: 'zed', 'zedm', 'zed2', 'zed2i', 'zedx', 'zedxm', 'zedxhdr', 'zedxhdrmini', 'zedxhdrmax'
+    serial_number: 24285872  # Camera serial number (integer)
+    namespace: 'static_camera'  # Topic namespace: /static_camera/...
+    node_name: 'zed_node'
+    # Resolution settings
+    grab_resolution: 'HD720'  # Native camera grab resolution. Options: 'HD2K', 'HD1080', 'HD720', 'VGA', 'AUTO'
+    grab_frame_rate: 30  # ZED SDK internal grabbing rate (FPS)
+    # Publishing settings
+    pub_resolution: 'CUSTOM'  # Options: 'NATIVE' (use grab_resolution), 'CUSTOM' (apply downscale_factor)
+    pub_downscale_factor: 2.0  # Rescale factor when pub_resolution is 'CUSTOM' (reduces bandwidth)
+    pub_frame_rate: 15.0  # Frequency of publishing images and depth data (Hz). Must be <= grab_frame_rate
+    # Sensor settings
+    sensors:
+      publish_imu: false  # Disable IMU data publishing
+      publish_imu_raw: false  # Disable raw IMU data publishing
+      publish_imu_tf: false  # Disable IMU TF broadcasting
+      sensors_pub_rate: 100.0  # Frequency of publishing sensors data (Hz). MAX: 400.0, MIN: grab_frame_rate
+    # Depth settings
+    depth:
+      depth_mode: 'NEURAL'  # Options: 'NONE', 'PERFORMANCE', 'QUALITY', 'ULTRA', 'NEURAL', 'NEURAL_PLUS', 'NEURAL_LIGHT'
+      depth_stabilization: 30  # Forces positional tracking to start if > 0. Range: [0,100]
+      min_depth: 0.01  # Minimum depth in meters. Range: [0.01, 3.0]
+      max_depth: 15.0  # Maximum depth in meters. Range: [0.5, 20.0] (zed2 max: 20.0)
+      depth_confidence: 95  # Depth confidence threshold. Range: [0, 100]
+      depth_texture_conf: 100  # Depth texture confidence. Range: [0, 100]
+      remove_saturated_areas: true  # Remove saturated areas from depth processing
+      point_cloud_freq: 10.0  # Frequency of point cloud publishing (Hz). Must be <= grab_frame_rate
+      point_cloud_res: 'COMPACT'  # Options: 'COMPACT' (standard), 'REDUCED' (half resolution, lower bandwidth)
+      publish_depth_map: true  # Publish depth map topics
+      publish_point_cloud: true  # Publish point cloud topic
+    # Position tracking settings
+    pos_tracking:
+      publish_tf: true  # Enable TF publishing (odom -> camera_link)
+      publish_map_tf: true  # Enable map TF publishing (map -> odom)
+      pos_tracking_enabled: true  # Enable positional tracking from start
+      pos_tracking_mode: 'GEN_2'  # Options: 'GEN_1', 'GEN_2', 'GEN_3'
+      imu_fusion: true  # Enable IMU fusion. If false, only optical odometry is used
+      set_as_static: true  # Camera is static and doesn't move (recommended for static camera)
+    # Video settings
+    video:
+      brightness: 4  # Image brightness. Range: [0, 8]
+      contrast: 4  # Image contrast. Range: [0, 8]
+      saturation: 4  # Image saturation. Range: [0, 8]
+      sharpness: 4  # Image sharpness. Range: [0, 8]
+      gamma: 8  # Image gamma. Range: [0, 8]
+      auto_exposure_gain: true  # Enable auto exposure/gain
+      auto_whitebalance: true  # Enable auto white balance
+      publish_rgb: true  # Publish RGB image topics
+
