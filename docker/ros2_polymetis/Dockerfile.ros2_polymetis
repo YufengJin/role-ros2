@@ -1,5 +1,6 @@
 # Dockerfile for ROS2 Foxy with Polymetis
 # Based on Ubuntu 20.04 (Focal) - required for ROS2 Foxy
+# No conda/micromamba - all packages installed via apt or pip
 FROM ubuntu:20.04
 
 # Set build arguments
@@ -16,13 +17,14 @@ ENV ROBOT_IP=${ROBOT_IP}
 ENV NUC_IP=${NUC_IP}
 
 # Set directory structure
-# Copy entire fairo directory to /opt/fairo (includes .git for version detection)
 ARG FAIRO_DIR=/opt/fairo
 ARG POLYMETIS_DIR=${FAIRO_DIR}/polymetis
 ARG POLYMETIS_CONFIG_DIR=${POLYMETIS_DIR}/polymetis/conf
 ARG ROBOT_CONFIG_DIR=/app/ros2_ws/src/role-ros2/franka_hw_config/${ROBOT_TYPE}
 
-# Base system installations
+# ============================================================================
+# Base System Installations
+# ============================================================================
 RUN apt-get update && \
     apt-get install -y \
     software-properties-common \
@@ -34,6 +36,7 @@ RUN apt-get update && \
     python3-pip \
     python3.8 \
     python3.8-dev \
+    python3.8-venv \
     libspdlog-dev \
     libeigen3-dev \
     lsb-release \
@@ -44,6 +47,7 @@ RUN apt-get update && \
     iputils-ping \
     iproute2 \
     net-tools \
+    pkg-config \
     && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/*
 
@@ -55,7 +59,9 @@ RUN wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/nul
     apt-get install -y cmake && \
     rm -rf /var/lib/apt/lists/*
 
+# ============================================================================
 # Install ROS2 Foxy
+# ============================================================================
 RUN locale-gen en_US en_US.UTF-8 && \
     update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 && \
     export LANG=en_US.UTF-8
@@ -78,101 +84,269 @@ RUN apt-get update && \
     python3-lark \
     && rm -rf /var/lib/apt/lists/*
 
-# Add Robotpkg repository for Pinocchio
+# Setup ROS2 environment in bashrc
+RUN echo "source /opt/ros/foxy/setup.bash" >> /root/.bashrc && \
+    echo "if [ -f /app/ros2_ws/install/setup.bash ]; then source /app/ros2_ws/install/setup.bash; fi" >> /root/.bashrc
+
+# ============================================================================
+# Install Polymetis Build Dependencies (matching environment.yml versions)
+# ============================================================================
+
+# Install system libraries via apt
+RUN apt-get update && \
+    apt-get install -y \
+    libassimp-dev \
+    doxygen \
+    libprotobuf-dev \
+    libprotobuf17 \
+    protobuf-compiler \
+    protobuf-c-compiler \
+    libprotoc-dev \
+    libopenmpi-dev \
+    openmpi-bin \
+    libpoco-dev \
+    liburdfdom-dev \
+    liburdfdom-headers-dev \
+    libyaml-cpp-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build protobuf from source (version 3.18.1, matching environment.yml)
+# Ubuntu 20.04's protobuf (3.6.1) is too old for gRPC 1.41.1
+# Note: protobuf 3.18.1 has CMakeLists.txt in cmake/ subdirectory
+WORKDIR /tmp
+RUN git clone --recurse-submodules -b v3.18.1 https://github.com/protocolbuffers/protobuf.git && \
+    cd protobuf && \
+    # Patch CMakeLists.txt to fix CMake version requirement
+    find . -name "CMakeLists.txt" -exec sed -i 's/cmake_minimum_required(VERSION [0-9.]*)/cmake_minimum_required(VERSION 3.5)/' {} \; && \
+    mkdir -p build && \
+    cd build && \
+    cmake ../cmake \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr/local \
+    -Dprotobuf_BUILD_TESTS=OFF \
+    -Dprotobuf_BUILD_SHARED_LIBS=ON \
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 && \
+    make -j$(nproc) && \
+    make install && \
+    ldconfig && \
+    cd / && rm -rf /tmp/protobuf
+
+# Build gRPC from source (version 1.41.1, matching environment.yml)
+# Now using the protobuf we just built
+WORKDIR /tmp
+RUN git clone --recurse-submodules -b v1.41.1 https://github.com/grpc/grpc.git && \
+    cd grpc && \
+    # Patch cares submodule CMakeLists.txt to fix CMake version requirement
+    sed -i 's/cmake_minimum_required(VERSION [0-9.]*)/cmake_minimum_required(VERSION 3.5)/' third_party/cares/cares/CMakeLists.txt && \
+    mkdir -p cmake/build && \
+    cd cmake/build && \
+    cmake ../.. \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr/local \
+    -DgRPC_INSTALL=ON \
+    -DgRPC_BUILD_TESTS=OFF \
+    -DgRPC_PROTOBUF_PROVIDER=package \
+    -DgRPC_ZLIB_PROVIDER=package \
+    -DgRPC_CARES_PROVIDER=module \
+    -DgRPC_SSL_PROVIDER=module \
+    -DgRPC_RE2_PROVIDER=module \
+    -DgRPC_ABSL_PROVIDER=module \
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 && \
+    # Use fewer parallel jobs to avoid memory/race condition issues
+    make -j$(($(nproc) / 2)) || make -j1 && \
+    make install && \
+    ldconfig && \
+    # Fix incorrect protobuf include paths in gRPC CMake config files
+    find /usr/local/lib/cmake/grpc -name "*.cmake" -exec sed -i 's|"/include/google/protobuf/"|"/usr/local/include/google/protobuf/"|g' {} \; && \
+    # Create symlinks for protobuf headers and libraries that some packages expect in non-standard locations
+    mkdir -p /include/google && \
+    ln -sf /usr/local/include/google/protobuf /include/google/protobuf && \
+    # Create symlinks for protobuf libraries in /lib (some CMake configs reference this path)
+    ln -sf /usr/local/lib/libprotobuf.so /lib/libprotobuf.so && \
+    ln -sf /usr/local/lib/libprotobuf.so.28 /lib/libprotobuf.so.28 && \
+    ln -sf /usr/local/lib/libprotoc.so /lib/libprotoc.so && \
+    # Verify grpc_cpp_plugin is installed and accessible
+    ls -la /usr/local/bin/grpc_cpp_plugin && \
+    cd / && rm -rf /tmp/grpc
+
+# Add Robotpkg repository for Pinocchio and eigenpy (version 2.5.2)
+# eigenpy is required by hpp-fcl
 RUN echo "deb [arch=amd64] http://robotpkg.openrobots.org/packages/debian/pub $(lsb_release -sc) robotpkg" \
     > /etc/apt/sources.list.d/robotpkg.list && \
     curl http://robotpkg.openrobots.org/packages/debian/robotpkg.key | apt-key add - && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
-    robotpkg-py3*-pinocchio && \
-    apt-get clean && \
+    robotpkg-py3*-pinocchio \
+    robotpkg-py3*-eigenpy \
+    && apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Setup ROS2 environment
-RUN echo "source /opt/ros/foxy/setup.bash" >> /root/.bashrc
+# Build hpp-fcl from source (version 1.6.0)
+# hpp-fcl is not available in Ubuntu 20.04 repos with exact version
+# Note: v1.6.0 has old CMake requirements, need to patch CMakeLists.txt
+# Also need to fix git:// protocol in submodules to use https://
+WORKDIR /tmp
+RUN git config --global url."https://github.com/".insteadOf "git://github.com/" && \
+    git clone https://github.com/humanoid-path-planner/hpp-fcl.git && \
+    cd hpp-fcl && \
+    git checkout v1.6.0 && \
+    # Fix submodule URLs to use https instead of git://
+    sed -i 's|git://github.com/|https://github.com/|g' .gitmodules && \
+    git submodule sync && \
+    git submodule update --init --recursive && \
+    # Patch CMakeLists.txt to fix CMake version requirement
+    sed -i 's/cmake_minimum_required(VERSION [0-9.]*)/cmake_minimum_required(VERSION 3.5)/' CMakeLists.txt && \
+    mkdir build && cd build && \
+    cmake .. \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr/local \
+    -DCMAKE_PREFIX_PATH=/opt/openrobots && \
+    make -j$(nproc) && \
+    make install && \
+    cd / && rm -rf /tmp/hpp-fcl
 
-# Create ROS2 workspace structure
-# Note: Source code will be mounted via volume in docker-compose.yaml
+# Install Eigen 3.3.9 from source (header-only library)
+# Ubuntu 20.04 has 3.3.7, so we'll install 3.3.9 to match environment.yml
+# Eigen is header-only, so we can patch CMakeLists.txt or install directly
+WORKDIR /tmp
+RUN wget https://gitlab.com/libeigen/eigen/-/archive/3.3.9/eigen-3.3.9.tar.gz && \
+    tar -xzf eigen-3.3.9.tar.gz && \
+    cd eigen-3.3.9 && \
+    # Patch CMakeLists.txt to fix CMake version requirement
+    sed -i 's/cmake_minimum_required(VERSION [0-9.]*)/cmake_minimum_required(VERSION 3.5)/' CMakeLists.txt && \
+    mkdir build && cd build && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local && \
+    make install && \
+    cd / && rm -rf /tmp/eigen-3.3.9*
+
+# ============================================================================
+# Install Python Dependencies (matching environment.yml versions)
+# ============================================================================
+# Set Python 3.8 as default
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.8 1 && \
+    update-alternatives --install /usr/bin/python python /usr/bin/python3.8 1
+
+# Upgrade pip, but use compatible version for old packages
+# pip 24.1+ has stricter dependency resolution that breaks old packages like hydra-core==1.0.6
+RUN python3.8 -m pip install --upgrade "pip<24.1" setuptools wheel
+
+# Install PyTorch 1.13.1 (CPU version, matching environment.yml)
+RUN python3.8 -m pip install torch==1.13.1 torchvision==0.14.1 torchaudio==0.13.1 --index-url https://download.pytorch.org/whl/cpu
+
+# Install MKL (Intel Math Kernel Library) - required for PyTorch
+RUN python3.8 -m pip install mkl mkl-include
+
+# Install Polymetis Python dependencies (matching environment.yml)
+RUN python3.8 -m pip install \
+    numpy==1.23.5 \
+    scipy \
+    pandas \
+    matplotlib \
+    tqdm \
+    black \
+    pytest \
+    pytest-benchmark==4.0.0 \
+    grpcio==1.46.0 \
+    grpcio-tools==1.46.0 \
+    protobuf \
+    pybullet \
+    pymodbus==2.5.3 \
+    pyserial \
+    importlib-resources==5.7.1 \
+    sphinx \
+    sphinx-copybutton \
+    sphinx-book-theme \
+    breathe \
+    dash \
+    plotly \
+    asv \
+    myst-parser && \
+    # Install hydra-core==1.0.6 with compatible omegaconf version
+    # hydra-core 1.0.6 requires omegaconf<2.1,>=2.0.5, so install 2.0.6 first
+    python3.8 -m pip install omegaconf==2.0.6 && \
+    python3.8 -m pip install hydra-core==1.0.6
+
+# Install mujoco (required for IK solver)
+RUN python3.8 -m pip install mujoco
+
+# Install dm-control (required for IK solver)
+RUN python3.8 -m pip install dm-control==1.0.5
+
+# Install habitat-sim (optional, but in environment.yml)
+# Note: This is a large package, may take time
+RUN python3.8 -m pip install habitat-sim==0.2.1 || echo "Warning: habitat-sim installation failed, continuing..."
+
+# Install additional role_ros2 dependencies
+# Use --ignore-installed to handle system-installed packages like PyYAML
+RUN python3.8 -m pip install --ignore-installed \
+    boto3 \
+    customtkinter \
+    gym \
+    h5py \
+    imageio \
+    open3d \
+    opencv-python==4.6.0.66 \
+    opencv-contrib-python==4.6.0.66 \
+    Pillow \
+    protobuf==3.20.1 \
+    psutil \
+    pyrallis \
+    lark \
+    xacro
+
+# Install dm-robotics packages
+RUN python3.8 -m pip install dm-robotics-moma==0.5.0 --no-deps || true
+RUN python3.8 -m pip install dm-robotics-transformations==0.5.0 --no-deps || true
+RUN python3.8 -m pip install dm-robotics-agentflow==0.5.0 --no-deps || true
+RUN python3.8 -m pip install dm-robotics-geometry==0.5.0 --no-deps || true
+RUN python3.8 -m pip install dm-robotics-manipulation==0.5.0 --no-deps || true
+RUN python3.8 -m pip install dm-robotics-controllers==0.5.0 --no-deps || true
+
+# ============================================================================
+# Create ROS2 Workspace Structure
+# ============================================================================
 RUN mkdir -p /app/ros2_ws/src
 
-# Copy entire fairo directory to /opt/fairo (includes .git for version detection)
-# Build context is ../../../../ (role_ws directory), so path is relative to that
+# ============================================================================
+# Copy fairo directory (includes Polymetis)
+# ============================================================================
 COPY src/role-ros2/role_ros2/fairo /opt/fairo
 
 # Convert fairo from git submodule to standalone git repository
-# fairo is a git submodule with .git pointing to parent repo, we need to make it standalone
-# If .git is a file (submodule), initialize a new standalone repo
+# Create a git tag for Polymetis version detection
 WORKDIR /opt/fairo
 RUN if [ -f .git ]; then \
-        # .git is a file pointing to parent repo's .git/modules, which doesn't exist in container
-        # Remove it and initialize a new standalone git repo
         rm -f .git && \
         git init && \
         git config user.email "build@docker" && \
         git config user.name "Docker Build" && \
         git add . && \
-        git commit -m "Initial commit for version detection" || true; \
+        git commit -m "Initial commit for version detection" || true && \
+        git tag -a v0.2.0-0-glocal -m "Docker build version"; \
     elif [ ! -d .git ]; then \
-        # No .git at all, initialize new repo
         git init && \
         git config user.email "build@docker" && \
         git config user.name "Docker Build" && \
         git add . && \
-        git commit -m "Initial commit for version detection" || true; \
+        git commit -m "Initial commit for version detection" || true && \
+        git tag -a v0.2.0-0-glocal -m "Docker build version"; \
     fi
 
-# Copy franka_hw_config directory if it exists (for robot config files)
-# This is optional - if not available during build, config files will be copied at runtime via entrypoint
-# Note: If franka_hw_config doesn't exist in build context, this will fail the build
-# To make it optional, you can comment out this line and rely on runtime copying via entrypoint
+# Copy franka_hw_config for robot configuration (needed for Polymetis config)
 COPY src/role-ros2/franka_hw_config /app/ros2_ws/src/role-ros2/franka_hw_config
+
+# Note: role-ros2 source code will be mounted via docker-compose volume at runtime
+# for development. ROS2 workspace should be built after container starts.
 
 WORKDIR /app
 
-# Install Micromamba (lightweight and faster alternative to conda)
-RUN curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj bin/micromamba && \
-    mv bin/micromamba /usr/local/bin/ && \
-    rm -rf bin && \
-    chmod +x /usr/local/bin/micromamba
-
-# Set micromamba environment variables before initialization
-ENV MAMBA_ROOT_PREFIX=/opt/conda
-ENV PATH=/opt/conda/bin:$PATH
-ENV CONDA_AUTO_ACTIVATE_BASE=false
-
-# Initialize micromamba
-RUN /usr/local/bin/micromamba shell init -s bash --root-prefix /opt/conda
-
-# Setup polymetis conda environment using micromamba (Step 1: Create conda environment)
+# ============================================================================
+# Install Polymetis Python package in editable mode
+# ============================================================================
 WORKDIR ${POLYMETIS_DIR}
-RUN micromamba env create -f ./polymetis/environment.yml
+RUN python3.8 -m pip install -e ./polymetis
 
-# Step 1.5: Remove spdlog from conda environment to avoid symbol conflicts with ROS2
-# System spdlog (libspdlog-dev) will be used instead
-# This MUST be done after environment creation but before any imports
-# Remove library files, include files, AND cmake config files
-RUN rm -f /opt/conda/envs/polymetis-local/lib/libspdlog* && \
-    rm -rf /opt/conda/envs/polymetis-local/include/spdlog && \
-    rm -rf /opt/conda/envs/polymetis-local/lib/cmake/spdlog && \
-    rm -rf /opt/conda/envs/polymetis-local/lib/pkgconfig/spdlog.pc && \
-    echo "spdlog completely removed from conda environment - using system spdlog"
-
-# Verify spdlog is removed from conda
-RUN echo "Checking spdlog removal:" && \
-    (ls /opt/conda/envs/polymetis-local/lib/libspdlog* 2>/dev/null && echo "ERROR: spdlog lib still exists!" && exit 1) || \
-    (ls /opt/conda/envs/polymetis-local/lib/cmake/spdlog 2>/dev/null && echo "ERROR: spdlog cmake still exists!" && exit 1) || \
-    echo "OK: spdlog completely removed from conda"
-
-# Step 2: Install Python package in editable mode (before building C++)
-# Note: fairo directory already contains .git, so version detection will work automatically
-WORKDIR ${POLYMETIS_DIR}
-RUN micromamba run -n polymetis-local pip install -e ./polymetis
-
-# Copy robot config files from franka_hw_config to polymetis config directory
-# IMPORTANT: This must be done AFTER pip install -e ./polymetis to ensure conf directories exist
-# Config files are read at runtime, not during installation, but we copy them during build
-# for convenience. If franka_hw_config is not available during build, config files will be
-# copied at runtime via entrypoint script.
+# Copy robot config files to polymetis config directory
 WORKDIR /app
 RUN echo "Copying robot config files for ${ROBOT_TYPE}..." && \
     if [ -d "${ROBOT_CONFIG_DIR}" ]; then \
@@ -191,7 +365,6 @@ RUN echo "Copying robot config files for ${ROBOT_TYPE}..." && \
             fi; \
         else \
             echo "Error: Required directories ${POLYMETIS_CONFIG_DIR}/robot_client or ${POLYMETIS_CONFIG_DIR}/robot_model do not exist"; \
-            echo "  This should not happen if pip install -e ./polymetis completed successfully"; \
             exit 1; \
         fi; \
     else \
@@ -199,14 +372,9 @@ RUN echo "Copying robot config files for ${ROBOT_TYPE}..." && \
         echo "  Config files will be copied at runtime via entrypoint script if available"; \
     fi
 
-# Step 3: Build libfranka using polymetis script (optional, for Franka hardware)
-# Set paths to find pinocchio from robotpkg
-# The build_libfranka.sh script expects GIT_ROOT to be the parent of polymetis directory
-# It looks for: $GIT_ROOT/polymetis/polymetis/src/clients/franka_panda_client/third_party/libfranka
-# Since fairo is at /opt/fairo, GIT_ROOT=/opt/fairo (git rev-parse --show-toplevel will return /opt/fairo)
-
-# Initialize libfranka directory if it doesn't exist
-# The script expects: /opt/fairo/polymetis/polymetis/src/clients/franka_panda_client/third_party/libfranka
+# ============================================================================
+# Build libfranka
+# ============================================================================
 WORKDIR ${FAIRO_DIR}
 RUN LIBFRANKA_DIR="polymetis/polymetis/src/clients/franka_panda_client/third_party/libfranka" && \
     if [ ! -d "$LIBFRANKA_DIR" ] || [ -z "$(ls -A $LIBFRANKA_DIR 2>/dev/null)" ]; then \
@@ -224,85 +392,90 @@ RUN LIBFRANKA_DIR="polymetis/polymetis/src/clients/franka_panda_client/third_par
         echo "libfranka directory already exists at ${FAIRO_DIR}/$LIBFRANKA_DIR"; \
     fi
 
-# Build libfranka using the polymetis script
-# The script uses git rev-parse --show-toplevel to find GIT_ROOT
-# Run from ${FAIRO_DIR} so that GIT_ROOT=${FAIRO_DIR}
+# Build libfranka manually (instead of using polymetis script to fix CMake version issues)
 WORKDIR ${FAIRO_DIR}
-RUN micromamba run -n polymetis-local bash -c "\
-    export CMAKE_PREFIX_PATH=/opt/openrobots:\$CONDA_PREFIX:\$CMAKE_PREFIX_PATH && \
-    export PKG_CONFIG_PATH=/opt/openrobots/lib/pkgconfig:\$CONDA_PREFIX/lib/pkgconfig:\$PKG_CONFIG_PATH && \
-    export LD_LIBRARY_PATH=/opt/openrobots/lib:\$CONDA_PREFIX/lib:\$LD_LIBRARY_PATH && \
-    # Verify git repo is working \
-    git rev-parse --show-toplevel && \
-    # Verify libfranka directory exists before running script \
-    [ -d \"${POLYMETIS_DIR}/polymetis/src/clients/franka_panda_client/third_party/libfranka\" ] || mkdir -p \"${POLYMETIS_DIR}/polymetis/src/clients/franka_panda_client/third_party/libfranka\" && \
-    chmod +x ${POLYMETIS_DIR}/scripts/build_libfranka.sh && \
-    cd ${FAIRO_DIR} && \
-    ${POLYMETIS_DIR}/scripts/build_libfranka.sh ${LIBFRANKA_VERSION}"
+RUN export CMAKE_PREFIX_PATH=/opt/openrobots:/usr/local:$CMAKE_PREFIX_PATH && \
+    export PKG_CONFIG_PATH=/opt/openrobots/lib/pkgconfig:/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH && \
+    export LD_LIBRARY_PATH=/opt/openrobots/lib:/usr/local/lib:$LD_LIBRARY_PATH && \
+    LIBFRANKA_DIR="${POLYMETIS_DIR}/polymetis/src/clients/franka_panda_client/third_party/libfranka" && \
+    cd "$LIBFRANKA_DIR" && \
+    # Patch CMakeLists.txt to fix CMake version requirement
+    find . -name "CMakeLists.txt" -exec sed -i 's/cmake_minimum_required(VERSION [0-9.]*)/cmake_minimum_required(VERSION 3.5)/' {} \; && \
+    mkdir -p build && \
+    cd build && \
+    cmake .. \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_TESTS=OFF \
+    -DBUILD_EXAMPLES=OFF \
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 && \
+    make -j$(nproc)
 
-# Step 4: Build Polymetis from source
-# Note: Libraries are built in build directory, Python package uses them from there
-# Important: Use system spdlog (from libspdlog-dev) - conda spdlog was removed
+# ============================================================================
+# Create grpc_python_plugin stub script
+# This is a no-op script because we pre-generate Python files using grpcio-tools
+# The plugin receives input via stdin from protoc, so we just consume and ignore it
+# ============================================================================
+RUN echo '#!/bin/bash' > /usr/local/bin/grpc_python_plugin && \
+    echo '# No-op: Python files are pre-generated using grpcio-tools' >> /usr/local/bin/grpc_python_plugin && \
+    echo 'cat > /dev/null' >> /usr/local/bin/grpc_python_plugin && \
+    echo 'exit 0' >> /usr/local/bin/grpc_python_plugin && \
+    chmod +x /usr/local/bin/grpc_python_plugin
+
+# ============================================================================
+# Build Polymetis C++ components
+# ============================================================================
 WORKDIR ${POLYMETIS_DIR}
-RUN micromamba run -n polymetis-local bash -c "\
-    export CMAKE_PREFIX_PATH=/usr:/opt/openrobots:\$CONDA_PREFIX:\$CMAKE_PREFIX_PATH && \
-    export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/opt/openrobots/lib/pkgconfig:\$CONDA_PREFIX/lib/pkgconfig:\$PKG_CONFIG_PATH && \
-    export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/opt/openrobots/lib:\$CONDA_PREFIX/lib:\$LD_LIBRARY_PATH && \
+# Pre-generate Python gRPC files using grpcio-tools (since we don't have grpc_python_plugin binary)
+RUN cd ./polymetis && \
+    python3.8 -m grpc_tools.protoc \
+    --proto_path=protos \
+    --python_out=. \
+    --grpc_python_out=. \
+    protos/polymetis.proto && \
+    # Move generated files to expected location
+    mkdir -p build && \
+    cp polymetis_pb2.py build/ || true && \
+    cp polymetis_pb2_grpc.py build/ || true
+
+# Now build C++ components
+WORKDIR ${POLYMETIS_DIR}
+RUN TORCH_PATH=$(python3.8 -c "import torch; import os; print(os.path.dirname(torch.__file__))") && \
+    # protobuf was built from source and installed to /usr/local
+    export CMAKE_PREFIX_PATH=/usr/local:/usr:/opt/openrobots:${TORCH_PATH}/share/cmake:$CMAKE_PREFIX_PATH && \
+    export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/opt/openrobots/lib/pkgconfig:$PKG_CONFIG_PATH && \
+    export LD_LIBRARY_PATH=/usr/local/lib:/usr/lib/x86_64-linux-gnu:/opt/openrobots/lib:$LD_LIBRARY_PATH && \
+    # Set CONDA_PREFIX to help CMake find plugins in /usr/local/bin
+    export CONDA_PREFIX=/usr/local && \
+    # Also set PATH to ensure grpc plugins are found
+    export PATH=/usr/local/bin:$PATH && \
     mkdir -p ./polymetis/build && \
     cd ./polymetis/build && \
     cmake .. \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_FRANKA=ON \
-    -DBUILD_TESTS=ON \
-    -DBUILD_DOCS=ON \
-    -Dspdlog_DIR=/usr/lib/x86_64-linux-gnu/cmake/spdlog && \
-    make -j\$(nproc)"
+    -DBUILD_TESTS=OFF \
+    -DBUILD_DOCS=OFF \
+    -Dspdlog_DIR=/usr/lib/x86_64-linux-gnu/cmake/spdlog \
+    -DTorch_DIR=${TORCH_PATH}/share/cmake/Torch \
+    -DgRPC_DIR=/usr/local/lib/cmake/grpc \
+    -DProtobuf_DIR=/usr/local/lib/cmake/protobuf \
+    -DPROTOBUF_LIBRARY=/usr/local/lib/libprotobuf.so \
+    -DPROTOBUF_INCLUDE_DIR=/usr/local/include \
+    -DPROTOBUF_PROTOC_EXECUTABLE=/usr/local/bin/protoc && \
+    make -j$(nproc)
 
-# Install xacro for ROS2 launch files (required for URDF processing)
-# Install to both system Python (for ROS2 launch files) and conda environment
-# Also ensure lark is available in both system Python and conda environment (required for launch files)
-RUN pip3 install xacro lark && \
-    micromamba run -n polymetis-local pip install xacro lark
+# Create lib directory and symlinks for Python to find shared libraries
+# torchcontrol expects libraries at ${CONDA_PREFIX}/lib/
+WORKDIR ${POLYMETIS_DIR}/polymetis/build
+RUN mkdir -p lib && \
+    ln -sf ../torch_isolation/libtorchscript_pinocchio.so lib/libtorchscript_pinocchio.so && \
+    ln -sf ../torch_isolation/libtorch_server_ops.so lib/libtorch_server_ops.so && \
+    ln -sf ../torch_isolation/libpinocchio_wrapper.so lib/libpinocchio_wrapper.so && \
+    ln -sf ../torch_isolation/libtorchrot.so lib/libtorchrot.so || true
 
-# Note: role_ros2 package will be built inside container using colcon build
-# No need to install it here as it's defined in CMakeLists.txt
-
-# Install role_ros2 dependencies from pyproject.toml
-# Install core dependencies (excluding dm-control and mujoco which are installed separately)
-RUN micromamba run -n polymetis-local pip install \
-    boto3 \
-    customtkinter \
-    gym \
-    h5py \
-    imageio \
-    matplotlib \
-    numpy \
-    open3d \
-    opencv-python==4.6.0.66 \
-    opencv-contrib-python==4.6.0.66 \
-    Pillow \
-    protobuf==3.20.1 \
-    psutil \
-    pyrallis \
-    scipy \
-    torch \
-    tqdm \
-    || true
-
-# Install dm-control and mujoco (required for IK solver)
-# dm-control requires mujoco, so install mujoco first
-RUN micromamba run -n polymetis-local pip install mujoco==2.3.2 || true
-RUN micromamba run -n polymetis-local pip install dm-control==1.0.5 || true
-
-# Install dm-robotics packages in polymetis-local conda environment
-RUN micromamba run -n polymetis-local pip install dm-robotics-moma==0.5.0 --no-deps || true
-RUN micromamba run -n polymetis-local pip install dm-robotics-transformations==0.5.0 --no-deps || true
-RUN micromamba run -n polymetis-local pip install dm-robotics-agentflow==0.5.0 --no-deps || true
-RUN micromamba run -n polymetis-local pip install dm-robotics-geometry==0.5.0 --no-deps || true
-RUN micromamba run -n polymetis-local pip install dm-robotics-manipulation==0.5.0 --no-deps || true
-RUN micromamba run -n polymetis-local pip install dm-robotics-controllers==0.5.0 --no-deps || true
-
+# ============================================================================
 # Install ROS2 workspace dependencies
+# ============================================================================
 RUN apt-get update && \
     apt-get install -y \
     python3-rosdep \
@@ -311,23 +484,33 @@ RUN apt-get update && \
     rosdep update && \
     rm -rf /var/lib/apt/lists/*
 
-# Note: ROS2 workspace is NOT built during docker build
-# Users should build it manually after entering the container:
-#   1. source /app/ros2_ws/src/role-ros2/docker/polymetis_ros2.env
-#   2. cd /app/ros2_ws
-#   3. colcon build --symlink-install
+# Note: ROS2 workspace will be built at runtime after role-ros2 is mounted
+# Run: cd /app/ros2_ws && colcon build --symlink-install
+
+# Set library paths for runtime
+ENV LD_LIBRARY_PATH=/opt/openrobots/lib:/usr/local/lib:/opt/fairo/polymetis/polymetis/build/torch_isolation:${LD_LIBRARY_PATH}
+ENV CMAKE_PREFIX_PATH=/opt/openrobots:/usr/local:${CMAKE_PREFIX_PATH}
+ENV PKG_CONFIG_PATH=/opt/openrobots/lib/pkgconfig:/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH}
+# Add polymetis Python module to PYTHONPATH
+# The polymetis package is in /opt/fairo/polymetis/polymetis/python/
+ENV PYTHONPATH=/opt/fairo/polymetis/polymetis/python:/usr/lib/python3.8/site-packages:${PYTHONPATH}
+# Set CONDA_PREFIX to point to polymetis build directory (for torchcontrol to find shared libs)
+ENV CONDA_PREFIX=/opt/fairo/polymetis/polymetis/build
 
 # Set working directory
 WORKDIR /app
 
-# --- Final Setup ---
+# ============================================================================
 # Copy Docker configuration files to image
+# ============================================================================
 # Build context is ../../../../ (role_ws directory), so path is relative to that
 COPY src/role-ros2/docker/ros2_polymetis/entrypoint.sh /entrypoint.sh
 COPY src/role-ros2/docker/ros2_polymetis/polymetis_ros2.env /app/ros2_ws/src/role-ros2/docker/ros2_polymetis/polymetis_ros2.env
 COPY src/role-ros2/docker/ros2_polymetis/cyclonedds.xml /app/ros2_ws/src/role-ros2/docker/ros2_polymetis/cyclonedds.xml
-COPY src/role-ros2/docker/ros2_polymetis/fastrtps_profile.xml /app/ros2_ws/src/role-ros2/docker/ros2_polymetis/fastrtps_profile.xml
-RUN chmod +x /entrypoint.sh
+RUN chmod +x /entrypoint.sh && \
+    chmod +x /app/ros2_ws/src/role-ros2/docker/ros2_polymetis/polymetis_ros2.env && \
+    # Add polymetis_ros2.env to bashrc so environment variables are set in new shells
+    echo "if [ -f /app/ros2_ws/src/role-ros2/docker/ros2_polymetis/polymetis_ros2.env ]; then source /app/ros2_ws/src/role-ros2/docker/ros2_polymetis/polymetis_ros2.env; fi" >> /root/.bashrc
 
 # Use the entrypoint from image
 ENTRYPOINT ["/entrypoint.sh"]

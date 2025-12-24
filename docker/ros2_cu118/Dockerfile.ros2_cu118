@@ -65,7 +65,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-rmw-cyclonedds-cpp \
     ros-dev-tools \
     python3-colcon-common-extensions \
+    python3-argcomplete \
     && rm -rf /var/lib/apt/lists/*
+# Note: ros-humble-desktop includes FastRTPS by default (rmw_fastrtps_cpp)
+# ros-humble-rmw-cyclonedds-cpp is kept for optional future use
 
 # C. Network & Debugging Tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -82,7 +85,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # --- 5. ROS Dep & RMW ---
 RUN rosdep init || true && rosdep update
-ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+# 使用 FastRTPS (与官方镜像一致，已验证可工作)
+# 注意: ros-humble-desktop 默认包含 FastRTPS，无需额外安装
+ENV RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 
 # --- 6. Install ZED SDK ---
 # ZED SDK dependencies
@@ -201,9 +206,10 @@ RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc && \
 COPY src/role-ros2/docker/ros2_cu118/entrypoint.sh /entrypoint.sh
 COPY src/role-ros2/docker/ros2_cu118/ros2_cu118.env /app/ros2_ws/src/role-ros2/docker/ros2_cu118/ros2_cu118.env
 COPY src/role-ros2/docker/ros2_cu118/cyclonedds.xml /app/ros2_ws/src/role-ros2/docker/ros2_cu118/cyclonedds.xml
-COPY src/role-ros2/docker/ros2_cu118/fastrtps_profile.xml /app/ros2_ws/src/role-ros2/docker/ros2_cu118/fastrtps_profile.xml
 RUN chmod +x /entrypoint.sh && \
-    chmod +x /app/ros2_ws/src/role-ros2/docker/ros2_cu118/ros2_cu118.env
+    chmod +x /app/ros2_ws/src/role-ros2/docker/ros2_cu118/ros2_cu118.env && \
+    # Add ros2_cu118.env to bashrc so environment variables are set in new shells
+    echo "if [ -f /app/ros2_ws/src/role-ros2/docker/ros2_cu118/ros2_cu118.env ]; then source /app/ros2_ws/src/role-ros2/docker/ros2_cu118/ros2_cu118.env; fi" >> /root/.bashrc
 
 # Set working directory
 WORKDIR /app

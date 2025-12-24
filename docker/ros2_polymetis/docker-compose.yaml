@@ -11,6 +11,10 @@ services:
         ROBOT_IP: "172.17.0.2"
         NUC_IP: "172.17.0.1"
     network_mode: host
+    # Use host PID namespace for correct daemon PID detection
+    pid: host
+    # Use host IPC namespace for DDS zero-copy and shared memory
+    ipc: host
     # Keep container running (required for background mode)
     stdin_open: true
     tty: true
@@ -37,7 +41,7 @@ services:
       ROBOT_IP: "172.17.0.2"
       POLYMETIS_IP: "127.0.0.1"
       ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
-      RMW_IMPLEMENTATION: "rmw_cyclonedds_cpp"
+      RMW_IMPLEMENTATION: "rmw_fastrtps_cpp"  # 使用 FastRTPS (与官方镜像一致，已验证可工作)
       ROS_LOCALHOST_ONLY: "${ROS_LOCALHOST_ONLY:-0}"
       DISPLAY: "${DISPLAY}"
       # Set SKIP_AUTO_ENV=true to skip automatic environment configuration
@@ -45,6 +49,8 @@ services:
       SKIP_AUTO_ENV: "${SKIP_AUTO_ENV:-false}"
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # Shared memory for DDS (optional but recommended for FastDDS)
+      - /dev/shm:/dev/shm:rw
       # ========== 开发模式：挂载整个 role-ros2 源代码目录 ==========
       # 从 ros2_polymetis 目录，../ 指向 role-ros2 目录
       # 挂载整个 role-ros2 包，这样可以在容器外部修改代码，在容器内编译

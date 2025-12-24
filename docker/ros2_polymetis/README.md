@@ -1,431 +1,378 @@
-# Docker Setup for ROS2 Foxy with Polymetis
+# ROS2 Foxy + Polymetis Docker 环境
 
-This directory contains Docker configuration files for running ROS2 Foxy with Polymetis robot control.
+此目录包含用于运行 ROS2 Foxy 和 Polymetis 机器人控制的 Docker 配置文件。
 
-## Quick Start
+## 特性
 
-### First Time Setup
+- **ROS2 Foxy** + FastRTPS (与官方镜像一致)
+- **Polymetis** 机器人控制框架（源码构建）
+- **libfranka 0.14.1** Franka 机器人支持
+- **Python 3.8** + PyTorch 1.13.1
+- **无 conda/micromamba** - 所有包通过 apt/pip 安装
+
+## 快速开始
 
 ```bash
-# 1. Build Docker image (one-time, installs all dependencies)
-cd /path/to/ros2_ws/src/role-ros2/docker
+# 1. 构建镜像
+cd /home/yjin/repos/role_ws/src/role-ros2/docker/ros2_polymetis
 docker compose build ros2_polymetis
 
-# 2. Enter container (auto-configures environment)
+# 2. 启动容器（两种方式）
+
+# 方式 1: 使用 docker compose run（推荐用于首次启动）
 docker compose run --rm ros2_polymetis bash
 
-# 3. Build ROS2 workspace FIRST (inside container)
-#    This generates ROS2 messages and services
+# 方式 2: 使用 docker compose up + docker exec（推荐用于已运行的容器）
+docker compose up -d
+docker exec -it ros2_polymetis_container bash
+
+# 3. 在容器内构建 ROS2 workspace
 cd /app/ros2_ws
 colcon build --symlink-install
 
-# 4. Source ROS2 workspace (makes generated messages available)
+# 4. Source workspace（构建完成后）
 source install/setup.bash
-
-# 5. Source conda environment (if not already sourced by entrypoint)
-#    The entrypoint.sh should handle this, but you can manually source if needed:
-source /app/ros2_ws/src/role-ros2/docker/polymetis_ros2.env
 ```
 
-**Note**: The entrypoint script (`entrypoint.sh`) automatically sources the environment, but if you skip it with `SKIP_AUTO_ENV=true`, you must manually source in the correct order.
+**两种启动方式的区别：**
+- `docker compose run --rm`: 每次创建新容器，退出后自动删除（适合一次性任务）
+- `docker compose up -d` + `docker exec`: 容器持续运行，可多次进入（适合开发调试）
 
-### Rebuilding ROS2 Workspace (Recommended for Multiple Rebuilds)
+## 文件说明
 
-**Important**: Always build the workspace BEFORE sourcing the conda environment.
+| 文件 | 说明 |
+|------|------|
+| `Dockerfile.ros2_polymetis` | Docker 镜像定义 |
+| `docker-compose.yaml` | Docker Compose 配置 |
+| `entrypoint.sh` | 容器入口脚本（自动配置环境）|
+| `polymetis_ros2.env` | 环境配置脚本（可手动 source）|
+| `cyclonedds.xml` | CycloneDDS 配置文件（备用，当前使用 FastRTPS）|
+| `fastrtps_profile.xml` | FastRTPS 配置文件（备用）|
+
+## 环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `ROBOT_IP` | `172.17.0.2` | Franka 机器人 IP |
+| `POLYMETIS_IP` | `127.0.0.1` | Polymetis gRPC 服务器 IP |
+| `ROS_DOMAIN_ID` | `0` | ROS2 域 ID |
+| `RMW_IMPLEMENTATION` | `rmw_fastrtps_cpp` | DDS 实现（使用 FastRTPS，与官方镜像一致）|
+| `ROS_LOCALHOST_ONLY` | `0` | 是否仅本地通信（0=允许多机通信）|
+
+可在 `docker-compose.yaml` 中修改或运行时覆盖：
 
 ```bash
-# 1. Enter container (skip auto-configuration for faster startup)
-SKIP_AUTO_ENV=true docker compose run --rm ros2_polymetis bash
+ROBOT_IP=192.168.1.100 docker compose run --rm ros2_polymetis bash
+```
 
-# 2. Build workspace FIRST (generates ROS2 messages/services)
+## 目录结构
+
+```
+容器内目录:
+/app/ros2_ws/
+├── src/role-ros2/          # role_ros2 包（bind mount）
+└── install/                # 构建产物
+
+/opt/fairo/
+└── polymetis/              # Polymetis 安装目录
+    └── polymetis/
+        ├── python/         # Python 模块
+        └── build/          # C++ 构建产物
+```
+
+## 开发工作流
+
+### 修改代码后重新构建
+
+```bash
+# 在容器内
 cd /app/ros2_ws
 colcon build --symlink-install
-
-# 3. Source ROS2 workspace (makes generated messages available)
 source install/setup.bash
-
-# 4. Source conda environment (activates polymetis-local and sets library paths)
-source /app/ros2_ws/src/role-ros2/docker/polymetis_ros2.env
 ```
 
-**Why this order matters:**
-- `colcon build` generates Python modules for ROS2 messages (`role_ros2.msg`, `role_ros2.srv`)
-- `source install/setup.bash` makes these generated modules available to Python
-- `source polymetis_ros2.env` activates conda environment and sets library paths
-- If you source conda first, Python might find conda packages before ROS2-generated ones, causing import errors
-
-### Quick Commands
+### 清理重建
 
 ```bash
-# Enter container with auto-configuration
-docker compose run --rm ros2_polymetis bash
-
-# Enter container without auto-configuration (manual setup)
-SKIP_AUTO_ENV=true docker compose run --rm ros2_polymetis bash
-source /app/ros2_ws/src/role-ros2/docker/polymetis_ros2.env
-```
-
-**Note**: The ROS2 workspace is NOT built during docker build. This allows you to rebuild it multiple times without rebuilding the docker image.
-
-## Features
-
-- **ROS2 Foxy** with CycloneDDS
-- **Polymetis** robot control framework (built from source)
-- **libfranka 0.14.1** for Franka robot support
-- **Micromamba** isolated Python 3.8 environment
-- **✅ Resolved**: Polymetis and ROS2 compatibility (spdlog conflict fixed)
-
-## Files
-
-| File | Description |
-|------|-------------|
-| `Dockerfile.ros2_polymetis` | Docker image definition |
-| `docker-compose.yaml` | Docker Compose configuration |
-| `entrypoint.sh` | Container entrypoint script |
-| `cyclonedds.xml` | CycloneDDS configuration |
-| `fastrtps_profile.xml` | FastRTPS fallback configuration |
-| `polymetis_ros2.env` | Environment setup script (source this to configure environment) |
-
-## Configuration
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ROBOT_IP` | `172.17.0.2` | Franka robot IP |
-| `POLYMETIS_IP` | `127.0.0.1` | Polymetis gRPC server IP |
-| `ROS_DOMAIN_ID` | `0` | ROS2 domain ID |
-| `RMW_IMPLEMENTATION` | `rmw_cyclonedds_cpp` | DDS implementation |
-
-You can override these before sourcing the environment script:
-
-```bash
-export ROBOT_IP=192.168.1.100
-export ROS_DOMAIN_ID=1
-export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-source /app/ros2_ws/src/role-ros2/docker/polymetis_ros2.env
-```
-
-### Build Arguments
-
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `LIBFRANKA_VERSION` | `0.14.1` | libfranka version |
-| `ROBOT_TYPE` | `fr3` | Robot type (fr3 or panda) |
-
-## Environment Setup
-
-### Environment Configuration Script
-
-The `polymetis_ros2.env` script configures:
-
-- **Git configuration**: Sets safe directory (required for Polymetis version detection)
-- **ROS2 Foxy**: Sources `/opt/ros/foxy/setup.bash`
-- **ROS2 workspace**: Sources `/app/ros2_ws/install/setup.bash` (if built)
-- **Micromamba environment**: Activates `polymetis-local` conda environment
-- **Library paths**: Configures LD_LIBRARY_PATH (resolves spdlog conflicts)
-- **Build paths**: Configures CMAKE_PREFIX_PATH and PKG_CONFIG_PATH
-- **ROS2 DDS**: Configures CycloneDDS or FastRTPS
-- **Environment variables**: ROBOT_IP, POLYMETIS_IP, ROS_DOMAIN_ID, etc.
-
-### ⚠️ Important: Environment Configuration Order
-
-**For Debug/Testing Mode, always follow this order:**
-
-1. **Build workspace FIRST** → `colcon build --symlink-install`
-2. **Source ROS2 workspace** → `source install/setup.bash`
-3. **Source conda environment** → `source /app/ros2_ws/src/role-ros2/docker/polymetis_ros2.env`
-
-**Why this order matters:**
-- `colcon build` generates Python modules for ROS2 messages/services (`role_ros2.msg`, `role_ros2.srv`)
-- `source install/setup.bash` makes these generated modules available to Python (sets PYTHONPATH)
-- `source polymetis_ros2.env` activates conda environment and sets library paths
-- **If you source conda first**, Python might find conda packages before ROS2-generated ones, causing:
-  - `ImportError: No module named 'role_ros2.msg'`
-  - `ImportError: No module named 'role_ros2.srv'`
-
-**Note**: The `entrypoint.sh` script sources workspace first (if it exists), then activates conda. This is correct, but you must build the workspace before entering the container for the first time.
-
-### Manual Environment Configuration
-
-For rebuilding ros2_ws multiple times (recommended):
-
-**Correct Order** (build first, then source):
-
-```bash
-# Enter container without auto-configuration
-SKIP_AUTO_ENV=true docker compose run --rm ros2_polymetis bash
-
-# 1. Build ros2_ws FIRST (generates messages/services)
-cd /app/ros2_ws
-colcon build --symlink-install
-
-# 2. Source ROS2 workspace (makes generated messages available)
-source install/setup.bash
-
-# 3. Source conda environment (activates polymetis-local)
-source /app/ros2_ws/src/role-ros2/docker/polymetis_ros2.env
-```
-
-**Why this order?**
-- Building first ensures ROS2 messages/services are generated before Python tries to import them
-- Sourcing ROS2 workspace makes generated modules available to Python
-- Sourcing conda environment provides runtime dependencies (Polymetis, PyTorch) and sets library paths
-- If you source conda first, Python might find conda packages before ROS2-generated ones, causing `ImportError: No module named 'role_ros2.msg'`
-
-**Tip**: Add `source /app/ros2_ws/src/role-ros2/docker/polymetis_ros2.env` to `~/.bashrc` for automatic configuration.
-
-## Common Workflows
-
-### Scenario 1: First Time Use
-
-```bash
-# 1. Build image
-docker compose build ros2_polymetis
-
-# 2. Enter container (auto-configuration)
-docker compose run --rm ros2_polymetis bash
-
-# 3. Build workspace FIRST (generates messages/services)
-cd /app/ros2_ws
-colcon build --symlink-install
-
-# 4. Source ROS2 workspace (makes generated messages available)
-source install/setup.bash
-
-# 5. Source conda environment (if not already sourced by entrypoint)
-source /app/ros2_ws/src/role-ros2/docker/polymetis_ros2.env
-```
-
-**Note**: The entrypoint script automatically sources the environment, but after building, you may need to re-source to ensure everything is up to date.
-
-### Scenario 2: Rebuild After Code Changes
-
-```bash
-# 1. Enter container (manual configuration, faster)
-SKIP_AUTO_ENV=true docker compose run --rm ros2_polymetis bash
-
-# 2. Build FIRST (generates messages/services)
-cd /app/ros2_ws
-colcon build --symlink-install
-
-# 3. Source ROS2 workspace (makes generated messages available)
-source install/setup.bash
-
-# 4. Source conda environment (activates polymetis-local)
-source /app/ros2_ws/src/role-ros2/docker/polymetis_ros2.env
-```
-
-**Important**: Always build before sourcing conda environment to avoid import errors.
-
-### Scenario 3: Clean Rebuild
-
-```bash
-# Inside container
 cd /app/ros2_ws
 rm -rf build install log
 colcon build --symlink-install
 source install/setup.bash
 ```
 
-## Cross-Container Communication
-
-The container uses **CycloneDDS** for cross-version compatibility between ROS2 Foxy (container) and ROS2 Humble (host).
-
-### Host System Setup (Required for Cross-Container Communication)
-
-To enable communication between container and host:
+## 验证环境
 
 ```bash
-# Install CycloneDDS on host
-sudo apt install ros-humble-rmw-cyclonedds-cpp
-
-# Create CycloneDDS config
-mkdir -p ~/.ros
-cat > ~/.ros/cyclonedds.xml << 'EOF'
-<?xml version="1.0" encoding="UTF-8" ?>
-<CycloneDDS xmlns="https://cdds.io/config">
-    <Domain id="any">
-        <General>
-            <AllowMulticast>true</AllowMulticast>
-            <EnableMulticastLoopback>true</EnableMulticastLoopback>
-        </General>
-    </Domain>
-</CycloneDDS>
-EOF
-
-# Add to ~/.bashrc
-echo 'export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp' >> ~/.bashrc
-echo 'export CYCLONEDDS_URI=file://$HOME/.ros/cyclonedds.xml' >> ~/.bashrc
-echo 'export ROS_DOMAIN_ID=0' >> ~/.bashrc
-echo 'export ROS_LOCALHOST_ONLY=0' >> ~/.bashrc
-source ~/.bashrc
-```
-
-### Testing Communication
-
-**Terminal 1 (Container - Publish)**:
-```bash
-cd /home/yjin/repos/ros2_ws/src/role-ros2/docker
-docker compose run --rm ros2_polymetis bash
-# Inside container:
-python3 /app/ros2_ws/src/role-ros2/scripts/test_publish.py
-```
-
-**Terminal 2 (Host - Subscribe)**:
-```bash
-ros2 topic echo /test_topic
-```
-
-## Container Structure
-
-```
-/app/
-├── ros2_ws/
-│   ├── src/role-ros2/          # role_ros2 package
-│   └── install/                 # Built ROS2 packages
-/opt/
-├── ros/foxy/                    # ROS2 Foxy installation
-└── conda/                       # Micromamba installation
-```
-
-## Important Notes
-
-### ✅ Resolved: Polymetis-ROS2 Compatibility
-
-The container has been configured to resolve library conflicts between Polymetis and ROS2:
-
-- **spdlog conflict resolved**: Conda environment's spdlog removed, Polymetis uses system spdlog
-- **Both can be imported**: Polymetis SDK and ROS2 (rclpy) work simultaneously
-- **Verified**: `polymetis_bridge.py` can import both without conflicts
-
-**Solution applied**:
-- Removed spdlog from conda environment in Dockerfile
-- Configured Polymetis to use system spdlog via CMake
-- Added git safe directory configuration for version detection
-
-### Python Package Installation
-
-- **role_ros2** is installed to ROS2 install directory: `/app/ros2_ws/install/role_ros2/lib/python3.8/site-packages`
-- All modules including `robot_ik` are properly installed via `colcon build`
-- Conda environment (`polymetis-local`) provides Python dependencies (dm-control, dm-robotics, etc.)
-
-## Verification
-
-Run these commands to verify the environment is correctly configured:
-
-```bash
-# Check ROS2
-ros2 --version
+# 检查 ROS2
 ros2 pkg list | grep role_ros2
 
-# Check Polymetis
-python -c "from polymetis import RobotInterface; print('✅ Polymetis OK')"
+# 检查 Polymetis
+python3 -c "from polymetis import RobotInterface; print('✅ Polymetis OK')"
 
-# Check ROS2 + Polymetis compatibility (should work without errors)
-python -c "import rclpy; from polymetis import RobotInterface; print('✅ Both OK')"
+# 检查 torchcontrol
+python3 -c "from torchcontrol.models import RobotModelPinocchio; print('✅ torchcontrol OK')"
 
-# Verify role_ros2 installation
-python -c "from role_ros2.robot_ik.robot_ik_solver import RobotIKSolver; print('✅ robot_ik OK')"
-
-# Check environment variables
-echo "ROBOT_IP: $ROBOT_IP"
-echo "CONDA_PREFIX: $CONDA_PREFIX"
-echo "RMW_IMPLEMENTATION: $RMW_IMPLEMENTATION"
+# 检查 ROS2 + Polymetis 兼容性
+python3 -c "import rclpy; from polymetis import RobotInterface; print('✅ Both OK')"
 ```
 
-## Troubleshooting
+## 跨容器通信（ROS2 Foxy <-> Humble）
 
-### Problem: ros2 command not found
+容器使用 **FastRTPS** 作为默认 DDS 实现，与官方 ROS2 镜像一致。
 
-**Solution**: Ensure ROS2 environment is sourced
+### 网络配置
+
+- **网络模式**: `host` - 使用主机网络，便于 ROS2 节点间通信
+- **DDS 实现**: FastRTPS (`rmw_fastrtps_cpp`) - ros-foxy-desktop 的默认实现
+- **多机通信**: 确保所有设备使用相同的 `ROS_DOMAIN_ID`
+
+### 如果需要切换到 CycloneDDS（跨版本兼容）
+
+如果需要与使用 CycloneDDS 的容器通信，可以临时切换：
+
 ```bash
-source /app/ros2_ws/src/role-ros2/docker/polymetis_ros2.env
+# 在容器内
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI=file:///app/ros2_ws/src/role-ros2/docker/ros2_polymetis/cyclonedds.xml
+ros2 daemon stop
+ros2 daemon start
 ```
 
-### Problem: role_ros2 module not found
+**注意**: 所有节点必须使用相同的 RMW 实现才能通信。
 
-**Solution**: Ensure workspace is built and sourced
+## 使用 docker exec 管理容器
+
+### 检查容器状态
+
 ```bash
-cd /app/ros2_ws
-colcon build --symlink-install
-source install/setup.bash
+# 查看所有容器（包括停止的）
+docker ps -a | grep ros2_polymetis
+
+# 只查看运行中的容器
+docker ps | grep ros2_polymetis
 ```
 
-### Problem: ImportError for new messages/services (e.g., GripperCommand, ControllerStatus)
+### 启动容器
 
-**Symptom:**
-```
-ImportError: cannot import name 'GripperCommand' from 'role_ros2.msg'
-[ERROR] [polymetis_bridge-1]: process has died [pid XXX, exit code -11]
-```
+如果容器未运行，使用以下命令启动：
 
-**Cause**: New `.msg` or `.srv` files were added but workspace was not rebuilt.
-
-**Solution**: Rebuild workspace to generate new message/service modules
 ```bash
-cd /app/ros2_ws
-colcon build --symlink-install
-source install/setup.bash
-source /app/ros2_ws/src/role-ros2/docker/polymetis_ros2.env
-
-# Verify imports work
-python3 -c "from role_ros2.msg import GripperCommand, ControllerStatus; print('✓ Messages imported successfully')"
+cd /home/yjin/repos/role_ws/src/role-ros2/docker/ros2_polymetis
+docker compose up -d
 ```
 
-### Problem: URDF file not found
+### 进入容器
 
-**Symptom:**
-```
-FileNotFoundError: URDF file not found: .../fr3.urdf
-```
-
-**Solution**: 
-- **In mock mode**: The launch file will automatically use an empty robot description
-- **In real robot mode**: Ensure URDF file exists at `/app/ros2_ws/src/role-ros2/role_ros2/robot_ik/franka/fr3.urdf`
-- Check if file exists: `ls /app/ros2_ws/src/role-ros2/role_ros2/robot_ik/franka/fr3.urdf`
-- If missing, the launch file will try to generate it from XML automatically
-
-### Problem: Conda environment not activated
-
-**Solution**: Manually activate
 ```bash
-eval "$(micromamba shell hook --shell bash)"
-micromamba activate polymetis-local
+# 进入交互式 bash shell
+docker exec -it ros2_polymetis_container bash
+
+# 执行单个命令（不进入交互式 shell）
+docker exec ros2_polymetis_container ros2 node list
+
+# 在容器中执行命令并保持环境
+docker exec -it ros2_polymetis_container bash -c "cd /app/ros2_ws && source install/setup.bash && ros2 topic list"
 ```
 
-### Problem: Library path conflicts
+### 停止容器
 
-**Solution**: Re-source environment script
 ```bash
-source /app/ros2_ws/src/role-ros2/docker/polymetis_ros2.env
+# 停止容器（但保留容器）
+docker compose stop
+
+# 停止并删除容器
+docker compose down
 ```
 
-### Problem: Cross-container ROS2 communication not working
+### 查看容器日志
 
-**Solution**: 
-- Ensure host system has CycloneDDS installed and configured (see Cross-Container Communication section)
-- Verify both container and host use the same ROS_DOMAIN_ID
-- Check that ROS_LOCALHOST_ONLY=0 on both sides
+```bash
+# 查看实时日志
+docker compose logs -f
 
-### Problem: polymetis_bridge process crashes (exit code -11, SIGSEGV)
-
-**Symptom:**
-```
-[ERROR] [polymetis_bridge-1]: process has died [pid XXX, exit code -11]
+# 查看最近 100 行日志
+docker compose logs --tail=100
 ```
 
-**Causes and Solutions**:
-1. **New messages not compiled**: Rebuild workspace (see "ImportError for new messages/services" above)
-2. **Library version mismatch**: Ensure conda environment is activated and library paths are correct
+### 在容器中运行 ROS2 命令
+
+```bash
+# 列出所有节点
+docker exec ros2_polymetis_container ros2 node list
+
+# 列出所有话题
+docker exec ros2_polymetis_container ros2 topic list
+
+# 查看话题内容
+docker exec ros2_polymetis_container ros2 topic echo /test/string_topic
+
+# 运行 ROS2 节点
+docker exec -it ros2_polymetis_container bash -c "cd /app/ros2_ws && source install/setup.bash && ros2 run role_ros2 test_service_server"
+```
+
+### ROS2 常用命令测试
+
+在容器内直接运行 ROS2 命令进行测试：
+
+```bash
+# 进入容器
+docker exec -it ros2_polymetis_container bash
+
+# 测试基本命令
+ros2 node list
+ros2 topic list
+ros2 service list
+
+# 运行测试节点
+ros2 run demo_nodes_cpp talker &
+ros2 run demo_nodes_cpp listener &
+sleep 3
+ros2 node list
+```
+
+**提示：**
+- 使用 **Ctrl+C** 正常终止命令
+- 如果 Ctrl+C 无效，使用 **Ctrl+\\** (SIGQUIT) 强制终止
+- 使用 `timeout` 命令避免命令卡住：`timeout 5 ros2 topic list`
+
+### Docker 容器内信号处理（Ctrl+C 问题）
+
+**为什么 Ctrl+C 可能不管用？**
+
+Docker 容器内 Ctrl+C 失效的常见原因：
+
+1. **缺少 `-it` 标志** - 必须使用 `docker exec -it` 才能正确传递信号
+2. **进程组问题** - 子进程可能在不同的进程组，信号无法传递
+3. **信号传递延迟** - Docker daemon 转发信号时的延迟
+4. **Python 信号缓冲** - ROS2 Python 节点的信号处理延迟
+
+**解决方案：**
+
+```bash
+# ✅ 正确：使用 -it 标志
+docker exec -it ros2_polymetis_container bash
+
+# ❌ 错误：缺少 -it，信号无法传递
+docker exec ros2_polymetis_container bash
+```
+
+如果 Ctrl+C 无效：
+- 使用 **Ctrl+\\** (SIGQUIT) 强制终止（更可靠）
+- 使用 `timeout` 命令设置超时
+- 在另一个终端：`docker stop ros2_polymetis_container`
+
+详细说明请参考 [DOCKER_SIGNAL_HANDLING.md](./DOCKER_SIGNAL_HANDLING.md)
+
+## 故障排除
+
+### 快速诊断
+
+如果遇到问题，首先运行诊断脚本：
+
+```bash
+cd /home/yjin/repos/role_ws/src/role-ros2/scripts
+./diagnose_ros2.sh ros2_polymetis_container
+```
+
+### 常见问题
+
+#### Q: `ros2 topic list` 没有反应或卡住
+
+**A**: 这通常是 ROS2 daemon 或 DDS 配置问题。
+
+快速修复：
+```bash
+# 1. 检查环境变量
+docker exec ros2_polymetis_container bash -c "echo \$ROS_DOMAIN_ID \$RMW_IMPLEMENTATION"
+# 应该显示: 0 rmw_fastrtps_cpp
+
+# 2. 重启 daemon
+docker exec ros2_polymetis_container bash -c "ros2 daemon stop && sleep 2 && ros2 daemon start"
+
+# 3. 使用超时测试
+docker exec ros2_polymetis_container bash -c "cd /app/ros2_ws && source install/setup.bash && timeout 5 ros2 topic list"
+```
+
+#### Q: Ctrl+C 无法终止命令
+
+**A**: 这是一个常见的 Docker 信号处理问题。解决方法：
+
+1. **确保使用 `-it` 标志**：
    ```bash
-   source /app/ros2_ws/src/role-ros2/docker/polymetis_ros2.env
-   echo $CONDA_PREFIX  # Should show /opt/conda/envs/polymetis-local
+   docker exec -it ros2_polymetis_container bash
    ```
-3. **Memory issue**: Check system resources and restart container if needed
 
-## Tips
+2. **使用 `Ctrl+\` (SIGQUIT) 强制终止**（比 Ctrl+C 更可靠）：
+   ```bash
+   # 在运行命令时按 Ctrl+\
+   ```
 
-- Use `--symlink-install` for faster builds (symbolic links instead of copying)
-- If only Python code is modified, you can reinstall the package: `pip install -e /app/ros2_ws/src/role-ros2/role_ros2`
-- Add `source /app/ros2_ws/src/role-ros2/docker/polymetis_ros2.env` to `~/.bashrc` for automatic environment configuration
+3. **使用超时命令**：
+   ```bash
+   timeout 10 ros2 topic list
+   ```
+
+4. **重启容器**（最后手段）：
+   ```bash
+   docker compose restart ros2_polymetis
+   ```
+
+详细说明请参考：
+- [DOCKER_SIGNAL_HANDLING.md](./DOCKER_SIGNAL_HANDLING.md) - Docker 信号处理详细说明
+- [故障排除指南](../TROUBLESHOOTING.md) - 通用故障排除
+
+#### Q: 测试脚本显示 "No executable found"
+
+**A**: 需要重新构建工作空间：
+
+```bash
+docker exec -it ros2_polymetis_container bash
+cd /app/ros2_ws
+source /opt/ros/foxy/setup.bash
+colcon build --symlink-install
+source install/setup.bash
+ros2 pkg executables role_ros2 | grep test
+```
+
+### ros2 命令找不到
+
+```bash
+source /opt/ros/foxy/setup.bash
+```
+
+### role_ros2 模块找不到
+
+```bash
+cd /app/ros2_ws
+colcon build --symlink-install
+source install/setup.bash
+```
+
+### 新增消息/服务导入失败
+
+重新构建 workspace：
+```bash
+cd /app/ros2_ws
+colcon build --symlink-install
+source install/setup.bash
+```
+
+### Polymetis 导入失败
+
+检查 PYTHONPATH：
+```bash
+export PYTHONPATH=/opt/fairo/polymetis/polymetis/python:$PYTHONPATH
+```
+
+## 最新修复（2024）
+
+### DDS 实现切换（关键修复）
+- ✅ **切换到 FastRTPS** (`rmw_fastrtps_cpp`)，与官方 ROS2 Foxy 镜像一致
+- ✅ FastRTPS 是 ros-foxy-desktop 的默认实现，无需额外配置
+- ✅ 保留 `cyclonedds.xml` 作为备用配置，便于将来切换
+- ✅ 更新了所有配置文件（docker-compose.yaml, entrypoint.sh, polymetis_ros2.env）
+
+### 配置优化
+- ✅ 统一使用 FastRTPS 作为默认 DDS 实现
+- ✅ 简化了环境变量配置
+- ✅ 移除了临时测试脚本，保持代码库整洁
