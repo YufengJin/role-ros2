@@ -59,12 +59,12 @@ ensure_ros2_daemon() {
         
         retry_count=$((retry_count + 1))
         if [ $retry_count -lt $max_retries ]; then
-            echo "警告: ROS2 daemon 启动失败，重试 $retry_count/$max_retries..." >&2
+            echo "Warning: ROS2 daemon startup failed, retrying $retry_count/$max_retries..." >&2
             sleep 2
         fi
     done
     
-    echo "错误: 无法启动 ROS2 daemon 经过 $max_retries 次重试" >&2
+    echo "Error: Failed to start ROS2 daemon after $max_retries retries" >&2
     return 1
 }
 
@@ -86,8 +86,8 @@ fi
 
 # Initialize and start ROS2 daemon with robust error handling
 ensure_ros2_daemon || {
-    echo "警告: ROS2 daemon 初始化失败，但继续执行命令..." >&2
-    echo "提示: 如果遇到问题，可以手动运行 'ros2 daemon stop && ros2 daemon start'" >&2
+    echo "Warning: ROS2 daemon initialization failed, but continuing with command execution..." >&2
+    echo "Tip: If you encounter issues, you can manually run 'ros2 daemon stop && ros2 daemon start'" >&2
 }
 
 # Execute command passed to container

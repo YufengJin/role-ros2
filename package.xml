@@ -20,6 +20,8 @@
   <depend>franka_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>trajectory_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>example_interfaces</depend>
   <!-- Note: franka_gripper is optional - only needed if using franka_ros2 gripper instead of Polymetis -->
   <!-- <depend>franka_gripper</depend> -->
   <!-- Note: franka_msgs is still needed for message definitions used by robot.py -->

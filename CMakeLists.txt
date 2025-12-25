@@ -73,6 +73,11 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
   RENAME polymetis_bridge
 )
+# Install test scripts
+install(PROGRAMS
+  scripts/test_ros2_communication.py
+  DESTINATION lib/${PROJECT_NAME}
+)
 
 # Install Python package
 # Source directory is 'role_ros2' (underscore) matching Python import convention
