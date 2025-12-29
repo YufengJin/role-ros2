@@ -1,0 +1,2 @@
+- robot_client=franka_hardware
+- robot_client.executable_cfg.robot_ip=172.17.0.2

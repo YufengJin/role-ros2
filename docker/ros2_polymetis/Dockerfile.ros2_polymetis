@@ -20,7 +20,7 @@ ENV NUC_IP=${NUC_IP}
 ARG FAIRO_DIR=/opt/fairo
 ARG POLYMETIS_DIR=${FAIRO_DIR}/polymetis
 ARG POLYMETIS_CONFIG_DIR=${POLYMETIS_DIR}/polymetis/conf
-ARG ROBOT_CONFIG_DIR=/app/ros2_ws/src/role-ros2/franka_hw_config/${ROBOT_TYPE}
+ARG ROBOT_CONFIG_DIR=/app/ros2_ws/src/role-ros2/hardware/franka/config/${ROBOT_TYPE}
 
 # ============================================================================
 # Base System Installations
@@ -332,8 +332,8 @@ RUN if [ -f .git ]; then \
         git tag -a v0.2.0-0-glocal -m "Docker build version"; \
     fi
 
-# Copy franka_hw_config for robot configuration (needed for Polymetis config)
-COPY src/role-ros2/franka_hw_config /app/ros2_ws/src/role-ros2/franka_hw_config
+# Copy hardware config for robot configuration (needed for Polymetis config)
+COPY src/role-ros2/hardware/franka/config /app/ros2_ws/src/role-ros2/hardware/franka/config
 
 # Note: role-ros2 source code will be mounted via docker-compose volume at runtime
 # for development. ROS2 workspace should be built after container starts.
@@ -377,7 +377,7 @@ RUN echo "Copying robot config files for ${ROBOT_TYPE}..." && \
 # ============================================================================
 WORKDIR ${FAIRO_DIR}
 RUN LIBFRANKA_DIR="polymetis/polymetis/src/clients/franka_panda_client/third_party/libfranka" && \
-    if [ ! -d "$LIBFRANKA_DIR" ] || [ -z "$(ls -A $LIBFRANKA_DIR 2>/dev/null)" ]; then \
+    if [ ! -d "$LIBFRANKA_DIR" ] || [ -z "$(ls -A $LIBFRANKA_DIR 2>/dev/null)" ] || [ ! -d "$LIBFRANKA_DIR/.git" ]; then \
         echo "Initializing libfranka directory at ${FAIRO_DIR}/$LIBFRANKA_DIR" && \
         if [ -d "$LIBFRANKA_DIR" ]; then \
             rm -rf "$LIBFRANKA_DIR"; \
@@ -387,10 +387,19 @@ RUN LIBFRANKA_DIR="polymetis/polymetis/src/clients/franka_panda_client/third_par
         git init && \
         git remote add origin https://github.com/frankaemika/libfranka.git && \
         git fetch origin ${LIBFRANKA_VERSION}:${LIBFRANKA_VERSION} 2>/dev/null || git fetch origin && \
-        git checkout ${LIBFRANKA_VERSION} 2>/dev/null || git checkout master 2>/dev/null || git checkout main; \
+        git checkout ${LIBFRANKA_VERSION} 2>/dev/null || git checkout master 2>/dev/null || git checkout main && \
+        git submodule update --init --recursive; \
     else \
-        echo "libfranka directory already exists at ${FAIRO_DIR}/$LIBFRANKA_DIR"; \
-    fi
+        echo "libfranka directory already exists at ${FAIRO_DIR}/$LIBFRANKA_DIR, checking out to version ${LIBFRANKA_VERSION}" && \
+        cd "$LIBFRANKA_DIR" && \
+        git remote add origin https://github.com/frankaemika/libfranka.git 2>/dev/null || git remote set-url origin https://github.com/frankaemika/libfranka.git && \
+        git fetch origin ${LIBFRANKA_VERSION}:${LIBFRANKA_VERSION} 2>/dev/null || git fetch origin && \
+        git checkout ${LIBFRANKA_VERSION} 2>/dev/null || git checkout master 2>/dev/null || git checkout main && \
+        git submodule update --init --recursive; \
+    fi && \
+    cd "${FAIRO_DIR}/$LIBFRANKA_DIR" && \
+    LIBFRANKA_FINAL_VERSION=$(git describe --tags --exact-match 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo "unknown") && \
+    echo "libfranka final version: ${LIBFRANKA_FINAL_VERSION}"
 
 # Build libfranka manually (instead of using polymetis script to fix CMake version issues)
 WORKDIR ${FAIRO_DIR}

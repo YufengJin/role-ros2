@@ -1088,7 +1088,9 @@ class PolymetisCombinedNode(Node):
             # Get gripper state
             gripper_state = self._gripper.get_state()
             gripper_width = gripper_state.width
-            max_gripper_width = self._gripper.metadata.max_width
+            # Use the cached max_gripper_width (set during initialization)
+            # This avoids AttributeError if GripperInterface doesn't have metadata
+            max_gripper_width = self._max_gripper_width
             
             # Calculate gripper finger positions (each finger moves half the width)
             finger1_position = gripper_width / 2.0

@@ -20,9 +20,12 @@ from launch import LaunchContext, LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     OpaqueFunction,
+    ExecuteProcess,
+    TimerAction,
+    GroupAction,
 )
 from launch.conditions import IfCondition, UnlessCondition
-from launch.substitutions import LaunchConfiguration, Command
+from launch.substitutions import LaunchConfiguration, Command, PythonExpression
 from launch_ros.actions import Node
 
 
@@ -217,6 +220,7 @@ def generate_launch_description():
     fake_sensor_commands_parameter_name = 'fake_sensor_commands'
     controller_name_parameter_name = 'controller_name'
     use_mock_parameter_name = 'use_mock'
+    auto_launch_controller_parameter_name = 'auto_launch_controller'
 
     arm_id = LaunchConfiguration(arm_id_parameter_name)
     robot_ip = LaunchConfiguration(robot_ip_parameter_name)
@@ -227,6 +231,7 @@ def generate_launch_description():
     controller_name = LaunchConfiguration(controller_name_parameter_name)
     use_mock = LaunchConfiguration(use_mock_parameter_name)
     use_fake_joint_states = LaunchConfiguration('use_fake_joint_states')
+    auto_launch_controller = LaunchConfiguration(auto_launch_controller_parameter_name)
 
     robot_description_dependent_nodes_spawner_opaque_function = OpaqueFunction(
         function=robot_description_dependent_nodes_spawner,
@@ -274,8 +279,114 @@ def generate_launch_description():
             'use_fake_joint_states',
             default_value='false',
             description='Use fake_joint_states_publisher instead of polymetis_bridge for joint_states. Only valid in mock mode. Default: false'),
-        # Polymetis bridge node - replaces franka_ros2 hardware interface
-        # Real robot mode: connects to actual Polymetis server
+        DeclareLaunchArgument(
+            auto_launch_controller_parameter_name,
+            default_value=get_default('auto_launch_controller', 'true'),
+            description='Auto-launch robot and gripper servers before polymetis_bridge (only in real robot mode). Default: true'),
+        
+        # ========== Real Robot Mode: Auto-launch robot and gripper servers ==========
+        # Step 1: Kill any existing server processes (cleanup)
+        ExecuteProcess(
+            cmd=['pkill', '-9', 'run_server'],
+            output='screen',
+            condition=IfCondition(
+                PythonExpression(["'", use_mock, "' == 'false' and '", auto_launch_controller, "' == 'true'"])
+            ),
+        ),
+        ExecuteProcess(
+            cmd=['pkill', '-9', 'franka_panda_cl'],
+            output='screen',
+            condition=IfCondition(
+                PythonExpression(["'", use_mock, "' == 'false' and '", auto_launch_controller, "' == 'true'"])
+            ),
+        ),
+        ExecuteProcess(
+            cmd=['pkill', '-9', 'gripper'],
+            output='screen',
+            condition=IfCondition(
+                PythonExpression(["'", use_mock, "' == 'false' and '", auto_launch_controller, "' == 'true'"])
+            ),
+        ),
+        
+        # Step 2: Launch robot server (launch_robot.py)
+        # This needs to run in the polymetis conda/micromamba environment
+        # In Docker, the environment should already be activated via entrypoint.sh
+        ExecuteProcess(
+            cmd=[
+                'bash', '-c',
+                # Try micromamba first (Docker), then conda (host)
+                'if command -v micromamba &> /dev/null; then '
+                '  eval "$(micromamba shell hook --shell=bash)" && micromamba activate polymetis-local && '
+                '  launch_robot.py robot_client=franka_hardware robot_client.executable_cfg.robot_ip=' + '${ROBOT_IP}' + '; '
+                'elif command -v conda &> /dev/null; then '
+                '  source $(conda info --base)/etc/profile.d/conda.sh && conda activate polymetis-local && '
+                '  launch_robot.py robot_client=franka_hardware robot_client.executable_cfg.robot_ip=' + '${ROBOT_IP}' + '; '
+                'else '
+                '  launch_robot.py robot_client=franka_hardware robot_client.executable_cfg.robot_ip=' + '${ROBOT_IP}' + '; '
+                'fi'
+            ],
+            output='screen',
+            name='launch_robot_server',
+            additional_env={'ROBOT_IP': robot_ip},
+            condition=IfCondition(
+                PythonExpression(["'", use_mock, "' == 'false' and '", auto_launch_controller, "' == 'true'"])
+            ),
+        ),
+        
+        # Step 3: Launch gripper server (launch_gripper.py) - delayed 2 seconds after robot
+        TimerAction(
+            period=2.0,
+            actions=[
+                ExecuteProcess(
+                    cmd=[
+                        'bash', '-c',
+                        # Try micromamba first (Docker), then conda (host)
+                        'if command -v micromamba &> /dev/null; then '
+                        '  eval "$(micromamba shell hook --shell=bash)" && micromamba activate polymetis-local && '
+                        '  launch_gripper.py gripper=franka_hand gripper.executable_cfg.robot_ip=' + '${ROBOT_IP}' + '; '
+                        'elif command -v conda &> /dev/null; then '
+                        '  source $(conda info --base)/etc/profile.d/conda.sh && conda activate polymetis-local && '
+                        '  launch_gripper.py gripper=franka_hand gripper.executable_cfg.robot_ip=' + '${ROBOT_IP}' + '; '
+                        'else '
+                        '  launch_gripper.py gripper=franka_hand gripper.executable_cfg.robot_ip=' + '${ROBOT_IP}' + '; '
+                        'fi'
+                    ],
+                    output='screen',
+                    name='launch_gripper_server',
+                    additional_env={'ROBOT_IP': robot_ip},
+                    condition=IfCondition(
+                        PythonExpression(["'", use_mock, "' == 'false' and '", auto_launch_controller, "' == 'true' and '", load_gripper, "' == 'true'"])
+                    ),
+                ),
+            ],
+        ),
+        
+        # Step 4: Polymetis bridge node - delayed 5 seconds to wait for servers
+        # Real robot mode with auto_launch_controller: wait for servers to start
+        TimerAction(
+            period=5.0,
+            actions=[
+                Node(
+                    package='role_ros2',
+                    executable='polymetis_bridge',
+                    name='polymetis_bridge_node',
+                    output='screen',
+                    parameters=[
+                        {'use_mock': False},  # Real robot mode
+                        {'ip_address': 'localhost'},  # Connect to local polymetis server
+                        {'publish_rate': 50.0},
+                        {'auto_launch_controller': False},  # Don't launch again, already launched above
+                        {'robot_ip': robot_ip},
+                    ],
+                    condition=IfCondition(
+                        PythonExpression(["'", use_mock, "' == 'false' and '", auto_launch_controller, "' == 'true'"])
+                    ),
+                ),
+            ],
+        ),
+        
+        # Real robot mode WITHOUT auto_launch_controller: start immediately
+        # User is responsible for starting robot/gripper servers manually
         Node(
             package='role_ros2',
             executable='polymetis_bridge',
@@ -283,20 +394,19 @@ def generate_launch_description():
             output='screen',
             parameters=[
                 {'use_mock': False},  # Real robot mode
-                {'ip_address': robot_ip},
+                {'ip_address': 'localhost'},  # Connect to local polymetis server
                 {'publish_rate': 50.0},
-                {'arm_id': arm_id},
+                {'auto_launch_controller': False},  # Don't auto-launch
+                {'robot_ip': robot_ip},
             ],
-            condition=UnlessCondition(use_mock),  # Only run if NOT in mock mode
+            condition=IfCondition(
+                PythonExpression(["'", use_mock, "' == 'false' and '", auto_launch_controller, "' == 'false'"])
+            ),
         ),
+        
+        # ========== Mock Mode ==========
         # Polymetis bridge node in mock mode (uses MockRobotInterface)
         # This publishes joint_states, robot_state, and gripper_state
-        # Only runs if use_mock=true AND use_fake_joint_states=false
-        # We need to combine conditions: use_mock=true AND use_fake_joint_states=false
-        # Since launch doesn't support AND conditions easily, we use a workaround:
-        # If use_fake_joint_states=true, this node won't run (fake_joint_states_publisher will run instead)
-        # Note: In practice, if both run, the last publisher wins, but we prefer polymetis_bridge
-        # when use_fake_joint_states is false
         Node(
             package='role_ros2',
             executable='polymetis_bridge',
@@ -306,10 +416,11 @@ def generate_launch_description():
                 {'use_mock': True},  # Force mock mode
                 {'ip_address': 'localhost'},
                 {'publish_rate': 50.0},
-                {'arm_id': arm_id},
+                {'auto_launch_controller': False},  # No controller in mock mode
             ],
             condition=IfCondition(use_mock),  # Run in mock mode
         ),
+        
         # Fake joint states publisher (alternative to polymetis_bridge in mock mode)
         # Use this if you only want joint_states without full polymetis_bridge functionality
         # This is mainly for testing robot_state_publisher independently
@@ -324,9 +435,11 @@ def generate_launch_description():
             ],
             condition=IfCondition(use_fake_joint_states),  # Only if explicitly requested
         ),
+        
         # Robot state publisher - subscribes to /joint_states and publishes /tf
         # This is always launched to convert joint_states to TF
         robot_description_dependent_nodes_spawner_opaque_function,
+        
         # Note: Gripper is controlled via Polymetis (polymetis_bridge handles both arm and gripper)
         # If you need franka_gripper ROS2 node, uncomment below and add franka_gripper dependency
         # IncludeLaunchDescription(

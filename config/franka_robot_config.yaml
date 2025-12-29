@@ -53,6 +53,12 @@ controller_name: "fr3_arm_controller"  # Name of the arm controller to use
                                        #   - "cartesian_velocity_example_controller"
                                        #   - "gravity_compensation_example_controller"
 
+# Auto-launch settings
+auto_launch_controller: true  # Auto-launch robot and gripper servers before polymetis_bridge
+                              # Only applies in real robot mode (use_mock: false)
+                              # If true: launch_robot.py and launch_gripper.py are started automatically
+                              # If false: user must start robot/gripper servers manually
+
 # ============================================================================
 # URDF File Requirements
 # ============================================================================
