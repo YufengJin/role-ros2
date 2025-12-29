@@ -8,7 +8,9 @@ robot_ip: "172.17.0.2"   # REQUIRED: Robot IP address or hostname
 
 # Robot identification
 arm_id: "fr3"  # Robot arm ID. Supported values: fer, fr3, fp3
-               # NOTE: URDF file must exist at: role_ros2/robot_ik/franka/{arm_id}.urdf
+               # NOTE: URDF file must be installed to workspace install directory
+               # The URDF file is loaded from: install/role_ros2/share/role_ros2/urdf/{arm_id}.urdf
+               # Make sure to build the workspace: colcon build --packages-select role_ros2
                # To generate URDF from MuJoCo XML, run:
                #   python3 scripts/mujoco_to_urdf.py role_ros2/robot_ik/franka/{arm_id}.xml role_ros2/robot_ik/franka/{arm_id}.urdf {arm_id}
 

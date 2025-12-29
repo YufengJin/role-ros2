@@ -15,7 +15,9 @@ services:
     # Keep container running (required for background mode)
     stdin_open: true
     tty: true
-    # Enable NVIDIA GPU support (required for CUDA)
+    # Enable privileged mode for hardware access (USB devices, video devices, etc.)
+    privileged: true
+    # Enable NVIDIA GPU support (required for CUDA and ZED camera)
     deploy:
       resources:
         reservations:
@@ -36,11 +38,15 @@ services:
       NUC_IP: "${NUC_IP:-172.17.0.1}"
       LAPTOP_IP: "${LAPTOP_IP:-172.17.0.1}"
       ROBOT_TYPE: "${ROBOT_TYPE:-fr3}"
+      # ZED SDK environment variables
+      ZED_SDK_ROOT: "/usr/local/zed"
     volumes:
       # X11 forwarding for GUI applications
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       # Shared memory for DDS (optional but recommended for FastDDS)
       - /dev/shm:/dev/shm:rw
+      # Note: USB and video devices are accessible via privileged: true
+      # No need to explicitly mount /dev/bus/usb or /dev/video* when privileged mode is enabled
       # Development mode: Mount role-ros2 source code directory
       # This allows editing code outside the container and building inside
       # Path: from ros2_cu118 directory, ../../ points to role-ros2 directory (up 2 levels)

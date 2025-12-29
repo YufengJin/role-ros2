@@ -22,7 +22,7 @@ from launch.actions import (
     OpaqueFunction,
 )
 from launch.conditions import IfCondition, UnlessCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, Command
 from launch_ros.actions import Node
 
 
@@ -78,110 +78,123 @@ def robot_description_dependent_nodes_spawner(
     else:
         use_mock_str = context.launch_configurations.get('use_mock', 'false')
 
-    # Load URDF from role_ros2 package (converted from MuJoCo XML)
-    # Try multiple paths to find URDF file (works in both source and install contexts)
+    # Load URDF from install directory only (must be built first)
     package_share_dir = get_package_share_directory('role_ros2')
+    urdf_filepath = os.path.join(package_share_dir, 'robot', 'franka', arm_id_str, f'{arm_id_str}.urdf')
     
-    # Path 1: Try source directory (for development with volume mounts)
-    src_dir = os.path.join(package_share_dir, '..', '..', 'src', 'role_ros2')
-    urdf_filepath = os.path.join(src_dir, 'role_ros2', 'robot_ik', 'franka', f'{arm_id_str}.urdf')
-    
-    # Path 2: If not found, try direct source path (when running from source)
+    # Check if URDF file exists in install directory
     if not os.path.exists(urdf_filepath):
-        # Try /app/ros2_ws/src/role-ros2/role_ros2/robot_ik/franka/fr3.urdf
-        direct_path = f'/app/ros2_ws/src/role-ros2/role_ros2/robot_ik/franka/{arm_id_str}.urdf'
-        if os.path.exists(direct_path):
-            urdf_filepath = direct_path
-            src_dir = '/app/ros2_ws/src/role-ros2'
-    
-    # Path 3: If still not found, try relative to launch file location
-    if not os.path.exists(urdf_filepath):
-        launch_file_dir = os.path.dirname(os.path.abspath(__file__))
-        relative_path = os.path.join(launch_file_dir, '..', 'role_ros2', 'robot_ik', 'franka', f'{arm_id_str}.urdf')
-        relative_path = os.path.abspath(relative_path)
-        if os.path.exists(relative_path):
-            urdf_filepath = relative_path
-            src_dir = os.path.join(os.path.dirname(launch_file_dir), 'role_ros2')
-    
-    # Check if URDF file exists - if not, raise error with helpful message
-    if not os.path.exists(urdf_filepath):
-        # Find XML file path for conversion script reference
-        xml_filepath = os.path.join(os.path.dirname(urdf_filepath), f'{arm_id_str}.xml')
-        convert_script_path = os.path.join(src_dir, 'scripts', 'mujoco_to_urdf.py')
-        
         error_msg = f"""
 ================================================================================
-ERROR: URDF file not found: {urdf_filepath}
+ERROR: URDF file not found in install directory: {urdf_filepath}
 ================================================================================
 
-To generate the URDF file, run the conversion script:
+The URDF file must be installed to the workspace install directory.
+Please rebuild the workspace:
 
-    python3 {convert_script_path} {xml_filepath} {urdf_filepath} {arm_id_str}
+    cd /app/ros2_ws
+    colcon build --packages-select role_ros2
+    source install/setup.bash
 
-Or from the role_ros2 package directory:
+The URDF file should be installed to:
+    install/role_ros2/share/role_ros2/robot/franka/{arm_id_str}/{arm_id_str}.urdf
 
-    python3 scripts/mujoco_to_urdf.py \\
-        role_ros2/robot_ik/franka/{arm_id_str}.xml \\
-        role_ros2/robot_ik/franka/{arm_id_str}.urdf \\
-        {arm_id_str}
+Make sure the source URDF file exists at:
+    src/role-ros2/role_ros2/robot_ik/franka/{arm_id_str}.urdf
 
-Note: The URDF file must conform to ROS standards and include proper mesh links.
-Make sure the mesh directory exists at: {os.path.dirname(urdf_filepath)}/mesh/
+And that CMakeLists.txt includes the install rule for URDF files.
 ================================================================================
 """
         raise FileNotFoundError(error_msg)
     
     # Read URDF file
-    with open(urdf_filepath, 'r') as f:
-        robot_description = f.read()
+    try:
+        with open(urdf_filepath, 'r') as f:
+            robot_description = f.read()
+        
+        if not robot_description or len(robot_description.strip()) == 0:
+            raise ValueError(f"URDF file is empty: {urdf_filepath}")
+        
+        print(f"Info: Successfully loaded URDF from {urdf_filepath}")
+        print(f"Info: URDF length: {len(robot_description)} characters")
+    except Exception as e:
+        error_msg = f"""
+================================================================================
+ERROR: Failed to read URDF file: {urdf_filepath}
+================================================================================
+
+Error: {e}
+
+Please check:
+  1. File exists and is readable
+  2. File is not empty
+  3. File is valid XML/URDF format
+================================================================================
+"""
+        raise FileNotFoundError(error_msg)
     
     # Handle mesh paths for rviz visualization
-    # Option 1: Use package:// paths (requires mesh files to be installed via CMakeLists.txt)
-    # Option 2: Use absolute file:// paths (works in development mode)
-    # We try package:// first, then fall back to absolute paths if needed
+    # Mesh files must be installed to install directory (use package:// paths only)
+    installed_mesh_dir = os.path.join(package_share_dir, 'robot', 'franka', arm_id_str, 'mesh')
     
-    mesh_dir = os.path.join(os.path.dirname(urdf_filepath), 'mesh')
-    mesh_dir = os.path.abspath(mesh_dir)  # Ensure absolute path
-    
-    # Check if we're running from install space (mesh files should be installed)
-    # or from source space (use absolute paths)
-    package_share_dir = get_package_share_directory('role_ros2')
-    installed_mesh_dir = os.path.join(package_share_dir, 'robot_ik', 'franka', 'mesh')
-    
-    if os.path.exists(installed_mesh_dir):
-        # Mesh files are installed, use package:// paths (standard ROS2 way)
-        # Keep package:// paths as-is - ROS2 will resolve them correctly
-        print(f"Info: Using package:// paths for mesh files (installed at {installed_mesh_dir})")
-        # No replacement needed - package:// paths work when files are installed
-    elif os.path.exists(mesh_dir):
-        # Running from source, replace with absolute file:// paths
-        mesh_file_prefix = f'file://{mesh_dir}/'
-        robot_description = robot_description.replace(
-            'package://role_ros2/meshes/franka/',
-            mesh_file_prefix
-        )
-        robot_description = robot_description.replace(
-            'package://role_ros2/robot_ik/franka/mesh/',
-            mesh_file_prefix
-        )
-        print(f"Info: Mesh directory found at {mesh_dir}. Using absolute file:// paths for rviz.")
-    else:
-        print(f"Warning: Mesh directory not found at {mesh_dir} or {installed_mesh_dir}.")
+    if not os.path.exists(installed_mesh_dir):
+        print(f"Warning: Mesh directory not found in install directory: {installed_mesh_dir}")
         print(f"  URDF may not display correctly in rviz.")
-        print(f"  Expected mesh files at:")
-        print(f"    - Source: {mesh_dir}/")
-        print(f"    - Install: {installed_mesh_dir}/")
-        print(f"  URDF file location: {urdf_filepath}")
-
+        print(f"  Please rebuild the workspace:")
+        print(f"    cd /app/ros2_ws")
+        print(f"    colcon build --packages-select role_ros2")
+        print(f"    source install/setup.bash")
+        print(f"  Expected mesh files at: {installed_mesh_dir}/")
+    else:
+        # Mesh files are installed, update URDF mesh paths to match new install location
+        # Replace old path: package://role_ros2/robot_ik/franka/mesh/
+        # With new path: package://role_ros2/robot/franka/{arm_id}/mesh/
+        old_mesh_path = 'package://role_ros2/robot_ik/franka/mesh/'
+        new_mesh_path = f'package://role_ros2/robot/franka/{arm_id_str}/mesh/'
+        
+        # Count replacements to verify they happened
+        count_before = robot_description.count(old_mesh_path)
+        robot_description = robot_description.replace(old_mesh_path, new_mesh_path)
+        count_after = robot_description.count(new_mesh_path)
+        
+        # Also handle alternative path pattern if it exists
+        old_mesh_path_alt = 'package://role_ros2/meshes/franka/'
+        count_alt_before = robot_description.count(old_mesh_path_alt)
+        robot_description = robot_description.replace(old_mesh_path_alt, new_mesh_path)
+        
+        print(f"Info: Using package:// paths for mesh files (installed at {installed_mesh_dir})")
+        print(f"Info: Updated mesh paths in URDF:")
+        print(f"  - Replaced {count_before} occurrences of '{old_mesh_path}'")
+        print(f"  - Replaced {count_alt_before} occurrences of '{old_mesh_path_alt}'")
+        print(f"  - Total '{new_mesh_path}' occurrences: {count_after}")
+    
+    # Verify robot_description is valid before passing to node
+    if not robot_description or len(robot_description.strip()) == 0:
+        raise ValueError("robot_description is empty after processing!")
+    
+    # Check if robot_description contains basic URDF structure
+    if '<robot' not in robot_description:
+        print(f"Warning: URDF may be invalid - '<robot' tag not found")
+    
+    print(f"Info: robot_description ready, length: {len(robot_description)} characters")
+    
+    # robot_state_publisher automatically publishes /robot_description topic when robot_description parameter is set
+    # It uses TransientLocal durability QoS, so subscribers can get the message even if they connect late
+    # The parameter must be a string containing the URDF XML content
+    # Standard ROS2 pattern: read URDF file and pass as string parameter
+    
     return [
         Node(
             package='robot_state_publisher',
             executable='robot_state_publisher',
             name='robot_state_publisher',
             output='screen',
-            parameters=[{'robot_description': robot_description}],
-            # robot_state_publisher subscribes to /joint_states and publishes /tf
-            # This will convert joint_states from polymetis_manager to TF transforms
+            parameters=[{
+                'robot_description': robot_description,  # String parameter containing URDF XML
+            }],
+            # robot_state_publisher will:
+            # 1. Use robot_description parameter to publish /robot_description topic (std_msgs/String) with TransientLocal QoS
+            # 2. Subscribe to /joint_states and publish /tf transforms
         )]
 
 

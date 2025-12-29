@@ -73,9 +73,14 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
   RENAME polymetis_bridge
 )
+install(PROGRAMS
+  scripts/fake_joint_states_publisher.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME fake_joint_states_publisher
+)
 # Install test scripts
 install(PROGRAMS
-  scripts/test_ros2_communication.py
+  tests/test_ros2_communication.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -103,16 +108,15 @@ install(DIRECTORY config
   DESTINATION share/${PROJECT_NAME}/
 )
 
-# Install URDF files
+# Install URDF files to robot/franka/fr3/
 install(FILES
   role_ros2/robot_ik/franka/fr3.urdf
-  DESTINATION share/${PROJECT_NAME}/urdf
+  DESTINATION share/${PROJECT_NAME}/robot/franka/fr3
 )
 
-# Install mesh files for robot visualization in rviz
-# This allows using package://role_ros2/robot_ik/franka/mesh/ paths in URDF
+# Install mesh files to robot/franka/fr3/mesh/
 install(DIRECTORY role_ros2/robot_ik/franka/mesh
-  DESTINATION share/${PROJECT_NAME}/robot_ik/franka
+  DESTINATION share/${PROJECT_NAME}/robot/franka/fr3
   FILES_MATCHING
     PATTERN "*.obj"
 )
