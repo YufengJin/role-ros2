@@ -30,7 +30,8 @@ services:
     # Environment variables
     environment:
       ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
-      RMW_IMPLEMENTATION: "rmw_fastrtps_cpp"  # 使用 FastRTPS (与官方镜像一致，已验证可工作)
+      RMW_IMPLEMENTATION: "rmw_fastrtps_cpp"
+      FASTDDS_BUILTIN_TRANSPORTS: "UDPv4"
       ROS_LOCALHOST_ONLY: "${ROS_LOCALHOST_ONLY:-0}"
       DISPLAY: "${DISPLAY}"
       # Robot configuration (can be overridden)

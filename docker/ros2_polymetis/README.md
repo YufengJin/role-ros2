@@ -293,6 +293,28 @@ docker exec ros2_polymetis_container bash -c "ros2 daemon stop && sleep 2 && ros
 docker exec ros2_polymetis_container bash -c "cd /app/ros2_ws && source install/setup.bash && timeout 5 ros2 topic list"
 ```
 
+#### Q: `robot_state_publisher` 或 `polymetis_bridge` 进程崩溃（SIGSEGV, exit code -11）
+
+**A**: 这通常是由于在节点初始化时执行阻塞操作导致的。
+
+**解决方案**：`polymetis_bridge_node` 现在使用延迟 reset 机制来避免这个问题。
+
+```bash
+# 禁用自动 reset（如果仍有问题）
+ros2 run role_ros2 polymetis_bridge --ros-args -p auto_reset_on_startup:=false
+
+# 或者增加延迟时间
+ros2 run role_ros2 polymetis_bridge --ros-args -p auto_reset_delay:=5.0
+
+# 手动调用 reset service
+ros2 service call /polymetis/reset role_ros2/srv/Reset "{randomize: false}"
+```
+
+**说明**：
+- 默认情况下，节点会在启动后 2 秒自动 reset 机器人
+- 这避免了在初始化阶段执行阻塞操作导致的 SIGSEGV
+- 可以通过参数 `auto_reset_on_startup` 和 `auto_reset_delay` 控制行为
+
 #### Q: Ctrl+C 无法终止命令
 
 **A**: 这是一个常见的 Docker 信号处理问题。解决方法：
@@ -376,3 +398,9 @@ export PYTHONPATH=/opt/fairo/polymetis/polymetis/python:$PYTHONPATH
 - ✅ 统一使用 FastRTPS 作为默认 DDS 实现
 - ✅ 简化了环境变量配置
 - ✅ 移除了临时测试脚本，保持代码库整洁
+
+### Reset 功能增强（2024-12-29）
+- ✅ **延迟自动 reset**：避免初始化时的 SIGSEGV 问题
+- ✅ **支持随机化 reset**：Reset service 现在支持 `randomize` 参数
+- ✅ **可配置参数**：`auto_reset_on_startup` 和 `auto_reset_delay` 参数
+- ✅ **与 robot_env.py 一致**：使用相同的 reset_joints 角度和噪声范围

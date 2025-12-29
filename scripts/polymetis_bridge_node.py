@@ -34,6 +34,7 @@ import numpy as np
 
 import rclpy
 from rclpy.node import Node
+from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
 from sensor_msgs.msg import JointState
 from geometry_msgs.msg import PoseStamped
 
@@ -60,7 +61,7 @@ from role_ros2.msg import (
 
 # Import services
 from role_ros2.srv import (
-    Reset, Home, StartCartesianImpedance, StartJointImpedance,
+    Reset, StartCartesianImpedance, StartJointImpedance,
     TerminatePolicy, MoveToJointPositions, MoveToEEPose,
     SolveIK, ComputeFK, ComputeTimeToGo
 )
@@ -407,6 +408,8 @@ class PolymetisCombinedNode(Node):
         self.declare_parameter('auto_launch_controller', True)  # Auto-launch robot/gripper servers
         self.declare_parameter('sudo_password', '')  # Sudo password for launching servers (empty = no sudo)
         self.declare_parameter('robot_ip', '172.17.0.2')  # Robot IP for launch scripts
+        self.declare_parameter('auto_reset_on_startup', False)  # Auto-reset robot on startup
+        self.declare_parameter('auto_reset_delay', 5.0)  # Delay before auto-reset (seconds)
         
         # Load joint names from config file (required, will raise error if not found or invalid)
         try:
@@ -497,6 +500,12 @@ class PolymetisCombinedNode(Node):
         self._command_lock = threading.Lock()
         self._last_command_time = None
         
+        # Callback groups for parallel execution with MultiThreadedExecutor
+        # ReentrantCallbackGroup: allows timer to run in parallel with services
+        # MutuallyExclusiveCallbackGroup: blocking services execute one at a time
+        self._timer_callback_group = ReentrantCallbackGroup()
+        self._service_callback_group = MutuallyExclusiveCallbackGroup()
+        
         # Subscriber for impedance commands (low-level)
         self._cmd_subscriber = self.create_subscription(
             PolymetisCommand,
@@ -555,62 +564,79 @@ class PolymetisCombinedNode(Node):
         )
         
         # Timer for publishing joint states and robot state at high frequency
+        # Uses ReentrantCallbackGroup so it can run in parallel with blocking services
         timer_period = 1.0 / self.publish_rate  # Convert Hz to seconds
-        self._state_timer = self.create_timer(timer_period, self._publish_states)
+        self._state_timer = self.create_timer(
+            timer_period, 
+            self._publish_states,
+            callback_group=self._timer_callback_group
+        )
         
-        # Service servers for reset and home
-        self._reset_service = self.create_service(Reset, '/polymetis/reset', self._reset_service_callback)
-        self._home_service = self.create_service(Home, '/polymetis/home', self._home_service_callback)
+        # Service server for reset (uses separate callback group for blocking operations)
+        self._reset_service = self.create_service(
+            Reset, 
+            '/polymetis/reset', 
+            self._reset_service_callback,
+            callback_group=self._service_callback_group
+        )
         
         # Service servers for controller management
         self._start_cartesian_impedance_service = self.create_service(
             StartCartesianImpedance,
             '/polymetis/arm/start_cartesian_impedance',
-            self._start_cartesian_impedance_callback
+            self._start_cartesian_impedance_callback,
+            callback_group=self._service_callback_group
         )
         
         self._start_joint_impedance_service = self.create_service(
             StartJointImpedance,
             '/polymetis/arm/start_joint_impedance',
-            self._start_joint_impedance_callback
+            self._start_joint_impedance_callback,
+            callback_group=self._service_callback_group
         )
         
         self._terminate_policy_service = self.create_service(
             TerminatePolicy,
             '/polymetis/arm/terminate_policy',
-            self._terminate_policy_callback
+            self._terminate_policy_callback,
+            callback_group=self._service_callback_group
         )
         
-        # Service servers for motion control
+        # Service servers for motion control (BLOCKING - uses separate callback group)
         self._move_to_joint_positions_service = self.create_service(
             MoveToJointPositions,
             '/polymetis/arm/move_to_joint_positions',
-            self._move_to_joint_positions_callback
+            self._move_to_joint_positions_callback,
+            callback_group=self._service_callback_group
         )
         
         self._move_to_ee_pose_service = self.create_service(
             MoveToEEPose,
             '/polymetis/arm/move_to_ee_pose',
-            self._move_to_ee_pose_callback
+            self._move_to_ee_pose_callback,
+            callback_group=self._service_callback_group
         )
         
-        # Service servers for computation
+        # Service servers for computation (fast, non-blocking)
         self._solve_ik_service = self.create_service(
             SolveIK,
             '/polymetis/arm/solve_ik',
-            self._solve_ik_callback
+            self._solve_ik_callback,
+            callback_group=self._service_callback_group
         )
         
         self._compute_fk_service = self.create_service(
             ComputeFK,
             '/polymetis/arm/compute_fk',
-            self._compute_fk_callback
+            self._compute_fk_callback,
+            callback_group=self._service_callback_group
         )
         
         self._compute_time_to_go_service = self.create_service(
             ComputeTimeToGo,
             '/polymetis/arm/compute_time_to_go',
-            self._compute_time_to_go_callback
+            self._compute_time_to_go_callback,
+            callback_group=self._service_callback_group
         )
         
         # Store controller mode for status publishing
@@ -655,7 +681,48 @@ class PolymetisCombinedNode(Node):
         )
         self.get_logger().info('Publishers: /joint_states, /polymetis/robot_state, /polymetis/gripper_state, /polymetis/arm/ee_pose, /polymetis/controller/status')
         self.get_logger().info('Subscribers: /polymetis_cmd, /polymetis/robot_command, /polymetis/gripper/command')
-        self.get_logger().info('Services: /polymetis/reset, /polymetis/home, /polymetis/arm/start_cartesian_impedance, /polymetis/arm/start_joint_impedance, /polymetis/arm/terminate_policy, /polymetis/arm/move_to_joint_positions, /polymetis/arm/move_to_ee_pose, /polymetis/arm/solve_ik, /polymetis/arm/compute_fk, /polymetis/arm/compute_time_to_go')
+        self.get_logger().info('Services: /polymetis/reset, /polymetis/arm/start_cartesian_impedance, /polymetis/arm/start_joint_impedance, /polymetis/arm/terminate_policy, /polymetis/arm/move_to_joint_positions, /polymetis/arm/move_to_ee_pose, /polymetis/arm/solve_ik, /polymetis/arm/compute_fk, /polymetis/arm/compute_time_to_go')
+        
+        # Auto-reset robot on startup (delayed to avoid SIGSEGV and wait for servers)
+        auto_reset_on_startup = self.get_parameter('auto_reset_on_startup').get_parameter_value().bool_value
+        auto_reset_delay = self.get_parameter('auto_reset_delay').get_parameter_value().double_value
+        
+        if auto_reset_on_startup:
+            self.get_logger().info(f"Auto-reset enabled. Will reset robot after {auto_reset_delay} seconds...")
+            # Use timer to delay reset until servers are ready
+            # ROS2 Foxy doesn't support oneshot=True, so we use a flag
+            self._auto_reset_executed = False
+            self._auto_reset_timer = self.create_timer(auto_reset_delay, self._delayed_auto_reset)
+        else:
+            self.get_logger().info("Auto-reset disabled. Use /polymetis/reset service to reset manually.")
+    
+    def _delayed_auto_reset(self):
+        """
+        Delayed auto-reset callback - called after servers are ready.
+        
+        This avoids SIGSEGV issues by:
+        1. Waiting for robot/gripper servers to fully initialize
+        2. Executing reset in a separate thread (non-blocking)
+        """
+        if self._auto_reset_executed:
+            return  # Already executed, skip
+        
+        self._auto_reset_executed = True
+        
+        # Cancel timer (ROS2 Foxy compatible)
+        if hasattr(self, '_auto_reset_timer') and self._auto_reset_timer is not None:
+            self._auto_reset_timer.cancel()
+        
+        # Execute reset in separate thread to avoid blocking
+        def reset_thread():
+            try:
+                self.get_logger().info("Executing delayed auto-reset to home position...")
+                self._reset_robot()
+                self.get_logger().info("Auto-reset completed successfully")
+            except Exception as e:
+                self.get_logger().error(f"Auto-reset failed: {e}\n{traceback.format_exc()}")
+        
+        threading.Thread(target=reset_thread, daemon=True).start()
     
     def _start_impedance_controller(self):
         """Start the impedance controller for continuous control."""
@@ -1332,62 +1399,170 @@ class PolymetisCombinedNode(Node):
         except Exception as e:
             self.get_logger().error(f"Error processing gripper command: {e}\n{traceback.format_exc()}")
     
-    def _reset_service_callback(self, request, response):
+    def _reset_robot(self, randomize=False):
         """
-        Service callback for reset - move robot to reset/home position.
+        Internal method to reset robot to home position.
         
-        This safely moves the robot to a known safe position, similar to robot.py reset.
+        This safely moves the robot to a known safe position, matching robot_env.py reset logic:
+        1. Close gripper first (blocking)
+        2. If randomize=True, generate cartesian noise
+        3. Move to reset_joints position (blocking), optionally with noise
+        
+        Args:
+            randomize: If True, add random cartesian noise to reset position
+                      (same as robot_env.py randomize parameter)
         """
         try:
-            self.get_logger().info("Reset service called - moving robot to home position")
+            self.get_logger().info(f"Resetting robot to home position (randomize={randomize})...")
             
-            # Close gripper first
-            if not isinstance(self._gripper, MockGripperInterface):
-                self._gripper.goto(width=0.0, speed=0.05, force=0.1, blocking=True)
-            else:
-                self._gripper.goto(width=0.0, speed=0.05, force=0.1, blocking=True)
+            # Step 1: Close gripper first (blocking) - same as robot_env.py
+            self.get_logger().debug("Closing gripper...")
+            self._gripper.goto(width=0.0, speed=0.05, force=0.1, blocking=True)  # Slow speed for safety
             
-            # Move to reset joint positions (blocking for safety)
+            # Step 2: Generate cartesian noise if randomize=True (same as robot_env.py)
+            cartesian_noise = None
+            if randomize:
+                # Same noise range as robot_env.py
+                randomize_low = np.array([-0.1, -0.2, -0.1, -0.3, -0.3, -0.3])
+                randomize_high = np.array([0.1, 0.2, 0.1, 0.3, 0.3, 0.3])
+                cartesian_noise = np.random.uniform(low=randomize_low, high=randomize_high)
+                self.get_logger().info(f"Generated cartesian noise: {cartesian_noise}")
+            
+            # Step 3: Move to reset joint positions (blocking for safety)
+            target_joints = self._reset_joints.copy()
+            
+            # Apply cartesian noise if provided (similar to robot.py add_noise_to_joints)
+            if cartesian_noise is not None and TORCH_AVAILABLE and not isinstance(self._robot, MockRobotInterface):
+                try:
+                    target_joints = self._add_cartesian_noise_to_joints(target_joints, cartesian_noise)
+                except Exception as e:
+                    self.get_logger().warn(f"Failed to add cartesian noise: {e}. Using original joints.")
+            
+            # Move to target position
             if TORCH_AVAILABLE:
-                reset_joints_tensor = torch.tensor(self._reset_joints, dtype=torch.float32)
+                target_joints_tensor = torch.tensor(target_joints, dtype=torch.float32)
                 if not isinstance(self._robot, MockRobotInterface):
                     # Terminate any running policy
                     if self._robot.is_running_policy():
                         self._robot.terminate_current_policy()
                     
-                    # Calculate time to go
+                    # Calculate time to go (slow speed for safety: 0.1 rad/s)
                     curr_joints = self._robot.get_joint_positions()
-                    displacement = torch.abs(reset_joints_tensor - curr_joints)
+                    displacement = torch.abs(target_joints_tensor - curr_joints)
                     max_displacement = torch.max(displacement).item()
-                    time_to_go = min(4.0, max(0.5, max_displacement / 1.0))  # 1 rad/s max velocity
+                    time_to_go = min(40.0, max(5.0, max_displacement / 0.1))  # 0.1 rad/s max velocity (10x slower)
                     
-                    # Move to reset position
-                    self._robot.move_to_joint_positions(reset_joints_tensor, time_to_go=time_to_go)
+                    self.get_logger().debug(f"Moving to reset position (time_to_go={time_to_go:.2f}s)...")
+                    
+                    # Move to reset position (blocking)
+                    self._robot.move_to_joint_positions(target_joints_tensor, time_to_go=time_to_go)
                     
                     # Restart impedance controller
                     self._robot.start_joint_impedance()
                 else:
-                    # Mock interface
-                    self._robot.move_to_joint_positions(reset_joints_tensor, time_to_go=2.0)
+                    # Mock interface (slow speed for consistency)
+                    self._robot.move_to_joint_positions(target_joints_tensor, time_to_go=20.0)
             else:
                 # Fallback without torch
-                reset_joints_list = self._reset_joints.tolist()
+                target_joints_list = target_joints.tolist() if hasattr(target_joints, 'tolist') else list(target_joints)
                 if not isinstance(self._robot, MockRobotInterface):
                     if self._robot.is_running_policy():
                         self._robot.terminate_current_policy()
-                    # Use numpy-based approach
                     curr_joints = np.array(self._robot.get_joint_positions())
-                    displacement = np.abs(self._reset_joints - curr_joints)
+                    displacement = np.abs(np.array(target_joints) - curr_joints)
                     max_displacement = np.max(displacement)
-                    time_to_go = min(4.0, max(0.5, max_displacement / 1.0))
-                    self._robot.move_to_joint_positions(reset_joints_list, time_to_go=time_to_go)
+                    time_to_go = min(40.0, max(5.0, max_displacement / 0.1))  # 0.1 rad/s max velocity (10x slower)
+                    self._robot.move_to_joint_positions(target_joints_list, time_to_go=time_to_go)
                     self._robot.start_joint_impedance()
                 else:
-                    self._robot.move_to_joint_positions(reset_joints_list, time_to_go=2.0)
+                    self._robot.move_to_joint_positions(target_joints_list, time_to_go=20.0)  # Slow speed for consistency
+            
+            self.get_logger().info("Robot reset to home position successfully")
+            
+        except Exception as e:
+            self.get_logger().error(f"Reset error: {e}\n{traceback.format_exc()}")
+            # Don't raise exception - log and continue
+    
+    def _add_cartesian_noise_to_joints(self, original_joints, cartesian_noise):
+        """
+        Add cartesian noise to joint positions.
+        
+        Similar to robot.py add_noise_to_joints():
+        1. Forward kinematics to get current pose
+        2. Add cartesian noise to pose
+        3. Inverse kinematics to get new joints
+        
+        Args:
+            original_joints: Original joint positions (numpy array)
+            cartesian_noise: Cartesian noise [x, y, z, roll, pitch, yaw]
+        
+        Returns:
+            New joint positions with noise applied
+        """
+        if not TORCH_AVAILABLE or isinstance(self._robot, MockRobotInterface):
+            return original_joints
+        
+        try:
+            original_joints_tensor = torch.tensor(original_joints, dtype=torch.float32)
+            
+            # Forward kinematics to get current pose
+            if hasattr(self._robot, 'robot_model'):
+                pos, quat = self._robot.robot_model.forward_kinematics(original_joints_tensor)
+                curr_pose = pos.tolist() + quat_to_euler(quat.numpy()).tolist()
+            else:
+                pos, quat = self._robot.get_ee_pose()
+                if isinstance(quat, torch.Tensor):
+                    curr_pose = pos.tolist() + quat_to_euler(quat.numpy()).tolist()
+                else:
+                    curr_pose = pos.tolist() + quat_to_euler(quat).tolist()
+            
+            # Add cartesian noise to pose
+            new_pose = add_poses(cartesian_noise, curr_pose)
+            
+            # Inverse kinematics to get new joints
+            new_pos = torch.tensor(new_pose[:3], dtype=torch.float32)
+            new_quat = torch.tensor(euler_to_quat(new_pose[3:6]), dtype=torch.float32)
+            
+            noisy_joints, success = self._robot.solve_inverse_kinematics(new_pos, new_quat, original_joints_tensor)
+            
+            if success:
+                if isinstance(noisy_joints, torch.Tensor):
+                    return noisy_joints.numpy()
+                return np.array(noisy_joints)
+            else:
+                self.get_logger().warn("IK failed for noisy pose, using original joints")
+                return original_joints
+                
+        except Exception as e:
+            self.get_logger().warn(f"Error adding cartesian noise: {e}")
+            return original_joints
+    
+    def _reset_service_callback(self, request, response):
+        """
+        Service callback for reset - move robot to reset/home position.
+        
+        This safely moves the robot to a known safe position, similar to robot_env.py reset.
+        Supports randomize option (matching robot_env.py behavior).
+        
+        Reset is executed in a separate thread to avoid blocking and SIGSEGV issues.
+        """
+        try:
+            # Get randomize parameter from request (if available)
+            randomize = getattr(request, 'randomize', False)
+            
+            # Execute reset in separate thread to avoid blocking service callback
+            def reset_thread():
+                try:
+                    self._reset_robot(randomize=randomize)
+                except Exception as e:
+                    self.get_logger().error(f"Reset thread error: {e}\n{traceback.format_exc()}")
+            
+            threading.Thread(target=reset_thread, daemon=True).start()
             
             response.success = True
-            response.message = "Robot reset to home position successfully"
-            self.get_logger().info("Reset completed successfully")
+            response.message = "Reset command accepted, executing in background"
+            if randomize:
+                response.message += " (with randomization)"
             
         except Exception as e:
             response.success = False
@@ -1395,13 +1570,6 @@ class PolymetisCombinedNode(Node):
             self.get_logger().error(f"Reset service error: {e}\n{traceback.format_exc()}")
         
         return response
-    
-    def _home_service_callback(self, request, response):
-        """
-        Service callback for home - same as reset.
-        """
-        # Home is the same as reset
-        return self._reset_service_callback(request, response)
     
     def _start_cartesian_impedance_callback(self, request, response):
         """
@@ -1512,7 +1680,15 @@ class PolymetisCombinedNode(Node):
     
     def _move_to_joint_positions_callback(self, request, response):
         """
-        Service callback for moving to joint positions (blocking).
+        Service callback for moving to joint positions (BLOCKING).
+        
+        This is a blocking service - it waits until movement completes.
+        Use MultiThreadedExecutor to allow /joint_states to continue publishing.
+        
+        Same pattern as robot.py update_joints(blocking=True):
+        1. Terminate current policy
+        2. move_to_joint_positions (blocking)
+        3. Restart impedance controller
         """
         try:
             if len(request.joint_positions) != 7:
@@ -1534,7 +1710,7 @@ class PolymetisCombinedNode(Node):
                 if TORCH_AVAILABLE:
                     pos_tensor = torch.tensor(request.joint_positions, dtype=torch.float32)
                     
-                    # Terminate current policy
+                    # Step 1: Terminate current policy (same as robot.py)
                     if self._robot.is_running_policy():
                         self._robot.terminate_current_policy()
                     
@@ -1547,10 +1723,10 @@ class PolymetisCombinedNode(Node):
                         max_displacement = torch.max(displacement).item()
                         time_to_go = min(4.0, max(0.5, max_displacement / 1.0))
                     
-                    # BLOCKING: Move to position (waits until complete)
+                    # Step 2: BLOCKING move to position (same as robot.py)
                     self._robot.move_to_joint_positions(pos_tensor, time_to_go=time_to_go)
                     
-                    # Restart impedance controller after blocking move
+                    # Step 3: Restart impedance controller (same as robot.py)
                     self._robot.start_cartesian_impedance()
                     self._controller_mode = "cartesian_impedance"
                     
@@ -1562,7 +1738,7 @@ class PolymetisCombinedNode(Node):
                         response.final_joint_positions = final_pos.tolist() if hasattr(final_pos, 'tolist') else list(final_pos)
                     
                     response.success = True
-                    response.message = "Moved to joint positions (blocking)"
+                    response.message = f"Moved to joint positions (time_to_go={time_to_go:.1f}s)"
                 else:
                     response.success = False
                     response.message = "PyTorch not available"
@@ -1576,7 +1752,14 @@ class PolymetisCombinedNode(Node):
     
     def _move_to_ee_pose_callback(self, request, response):
         """
-        Service callback for moving to end-effector pose (blocking).
+        Service callback for moving to end-effector pose (BLOCKING).
+        
+        This is a blocking service - it waits until movement completes.
+        Use MultiThreadedExecutor to allow /joint_states to continue publishing.
+        
+        Same pattern as robot.py update_pose(blocking=True):
+        1. Solve IK to get joint positions
+        2. Call update_joints(blocking=True)
         """
         try:
             if len(request.position) != 3:
@@ -1593,58 +1776,61 @@ class PolymetisCombinedNode(Node):
                 response.success = True
                 response.message = "Mock: Moved to EE pose"
                 response.final_joint_positions = [0.0] * 7
+                return response
+            
+            if not TORCH_AVAILABLE:
+                response.success = False
+                response.message = "PyTorch not available"
+                return response
+            
+            pos = torch.tensor(request.position, dtype=torch.float32)
+            quat = torch.tensor(request.orientation, dtype=torch.float32)
+            
+            # Get initial joint guess
+            if len(request.q0) == 7:
+                q0 = torch.tensor(request.q0, dtype=torch.float32)
             else:
-                if TORCH_AVAILABLE:
-                    pos = torch.tensor(request.position, dtype=torch.float32)
-                    quat = torch.tensor(request.orientation, dtype=torch.float32)
-                    
-                    # Get initial joint guess
-                    if len(request.q0) == 7:
-                        q0 = torch.tensor(request.q0, dtype=torch.float32)
-                    else:
-                        q0 = self._robot.get_joint_positions()
-                    
-                    # Solve IK
-                    desired_joints, success = self._robot.solve_inverse_kinematics(pos, quat, q0)
-                    
-                    if not success:
-                        response.success = False
-                        response.message = "IK solution not found"
-                        response.final_joint_positions = []
-                        return response
-                    
-                    # Terminate current policy
-                    if self._robot.is_running_policy():
-                        self._robot.terminate_current_policy()
-                    
-                    # Calculate time to go
-                    if request.time_to_go > 0:
-                        time_to_go = request.time_to_go
-                    else:
-                        curr_pos = self._robot.get_joint_positions()
-                        displacement = torch.abs(desired_joints - curr_pos)
-                        max_displacement = torch.max(displacement).item()
-                        time_to_go = min(4.0, max(0.5, max_displacement / 1.0))
-                    
-                    # BLOCKING: Move to position (waits until complete)
-                    self._robot.move_to_joint_positions(desired_joints, time_to_go=time_to_go)
-                    
-                    # Restart impedance controller after blocking move
-                    self._robot.start_cartesian_impedance()
-                    self._controller_mode = "cartesian_impedance"
-                    
-                    # Get final position
-                    final_pos = self._robot.get_joint_positions()
-                    if isinstance(final_pos, torch.Tensor):
-                        response.final_joint_positions = final_pos.cpu().numpy().tolist()
-                    else:
-                        response.final_joint_positions = final_pos.tolist() if hasattr(final_pos, 'tolist') else list(final_pos)
-                    
-                    response.success = True
-                    response.message = "Moved to EE pose (blocking)"
-                else:
-                    response.success = False
-                    response.message = "PyTorch not available"
+                q0 = self._robot.get_joint_positions()
+            
+            # Solve IK (same as robot.py update_pose blocking)
+            desired_joints, ik_success = self._robot.solve_inverse_kinematics(pos, quat, q0)
+            
+            if not ik_success:
+                response.success = False
+                response.message = "IK solution not found"
+                response.final_joint_positions = []
+                return response
+            
+            # Step 1: Terminate current policy (same as robot.py)
+            if self._robot.is_running_policy():
+                self._robot.terminate_current_policy()
+            
+            # Calculate time to go
+            if request.time_to_go > 0:
+                time_to_go = request.time_to_go
+            else:
+                curr_pos = self._robot.get_joint_positions()
+                displacement = torch.abs(desired_joints - curr_pos)
+                max_displacement = torch.max(displacement).item()
+                time_to_go = min(4.0, max(0.5, max_displacement / 1.0))
+            
+            # Step 2: BLOCKING move to position (same as robot.py)
+            self._robot.move_to_joint_positions(desired_joints, time_to_go=time_to_go)
+            
+            # Step 3: Restart impedance controller (same as robot.py)
+            self._robot.start_cartesian_impedance()
+            self._controller_mode = "cartesian_impedance"
+            
+            # Get final position
+            final_pos = self._robot.get_joint_positions()
+            if isinstance(final_pos, torch.Tensor):
+                response.final_joint_positions = final_pos.cpu().numpy().tolist()
+            else:
+                response.final_joint_positions = final_pos.tolist() if hasattr(final_pos, 'tolist') else list(final_pos)
+            
+            response.success = True
+            response.message = f"Moved to EE pose (time_to_go={time_to_go:.1f}s)"
+            
         except Exception as e:
             response.success = False
             response.message = f"Failed to move to EE pose: {str(e)}"
@@ -1990,13 +2176,20 @@ class PolymetisCombinedNode(Node):
 
 def main(args=None):
     """Main function to run the Polymetis Combined Node."""
+    from rclpy.executors import MultiThreadedExecutor
+    
     rclpy.init(args=args)
     
     # Create node
     node = PolymetisCombinedNode(use_mock=not POLYMETIS_AVAILABLE)
     
+    # Use MultiThreadedExecutor to allow timer callbacks to run during blocking service calls
+    # This ensures /joint_states continues publishing during robot movement
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
+    
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:

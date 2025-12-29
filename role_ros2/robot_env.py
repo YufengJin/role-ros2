@@ -67,13 +67,21 @@ class RobotEnv(gym.Env):
         return action_info
 
     def reset(self, randomize=False):
-        # Use reset service instead of manual joint updates
-        self._robot.reset(randomize=randomize)
+        """
+        Reset robot to home position.
         
-        # If randomize is needed, update joints with noise after reset
-        if randomize:
-            noise = np.random.uniform(low=self.randomize_low, high=self.randomize_high)
-            self._robot.update_joints(self.reset_joints, velocity=False, blocking=True, cartesian_noise=noise)
+        Args:
+            randomize: If True, add random cartesian noise to reset position.
+                      The randomization is handled by polymetis_bridge_node's reset service,
+                      which applies noise using the same randomize_low/randomize_high range.
+        
+        Note: The reset service executes asynchronously in the background.
+              This method returns immediately after the command is accepted.
+        """
+        # Use reset service - randomization is handled internally by polymetis_bridge_node
+        # The service applies cartesian noise via _add_cartesian_noise_to_joints()
+        # using the same noise range as this class (randomize_low, randomize_high)
+        self._robot.reset(randomize=randomize)
 
     def update_robot(self, action, action_space="cartesian_velocity", gripper_action_space=None, blocking=False):
         action_info = self._robot.update_command(

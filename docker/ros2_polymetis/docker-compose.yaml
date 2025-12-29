@@ -41,7 +41,10 @@ services:
       ROBOT_IP: "172.17.0.2"
       POLYMETIS_IP: "127.0.0.1"
       ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
-      RMW_IMPLEMENTATION: "rmw_fastrtps_cpp"  # 使用 FastRTPS (与官方镜像一致，已验证可工作)
+      # DDS Configuration: FastRTPS with shared memory disabled
+      # This avoids SIGSEGV issues in Docker environment
+      RMW_IMPLEMENTATION: "rmw_fastrtps_cpp"
+      FASTDDS_BUILTIN_TRANSPORTS: "UDPv4"
       ROS_LOCALHOST_ONLY: "${ROS_LOCALHOST_ONLY:-0}"
       DISPLAY: "${DISPLAY}"
       # Set SKIP_AUTO_ENV=true to skip automatic environment configuration

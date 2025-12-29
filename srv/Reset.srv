@@ -1,4 +1,5 @@
 # Reset service - Move robot to reset/home position
+bool randomize  # If true, add random cartesian noise to reset position
 ---
 bool success
 string message

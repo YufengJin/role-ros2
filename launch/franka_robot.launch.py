@@ -377,6 +377,8 @@ def generate_launch_description():
                         {'publish_rate': 50.0},
                         {'auto_launch_controller': False},  # Don't launch again, already launched above
                         {'robot_ip': robot_ip},
+                        {'auto_reset_on_startup': config.get('auto_reset_on_startup', True)},  # From config
+                        {'auto_reset_delay': config.get('auto_reset_delay', 5.0)},  # From config (5s default to wait for servers)
                     ],
                     condition=IfCondition(
                         PythonExpression(["'", use_mock, "' == 'false' and '", auto_launch_controller, "' == 'true'"])
@@ -398,6 +400,8 @@ def generate_launch_description():
                 {'publish_rate': 50.0},
                 {'auto_launch_controller': False},  # Don't auto-launch
                 {'robot_ip': robot_ip},
+                {'auto_reset_on_startup': config.get('auto_reset_on_startup', True)},  # From config
+                {'auto_reset_delay': config.get('auto_reset_delay', 5.0)},  # From config
             ],
             condition=IfCondition(
                 PythonExpression(["'", use_mock, "' == 'false' and '", auto_launch_controller, "' == 'false'"])
@@ -417,6 +421,8 @@ def generate_launch_description():
                 {'ip_address': 'localhost'},
                 {'publish_rate': 50.0},
                 {'auto_launch_controller': False},  # No controller in mock mode
+                {'auto_reset_on_startup': config.get('auto_reset_on_startup', True)},  # From config
+                {'auto_reset_delay': config.get('auto_reset_delay', 5.0)},  # From config
             ],
             condition=IfCondition(use_mock),  # Run in mock mode
         ),

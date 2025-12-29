@@ -59,6 +59,15 @@ auto_launch_controller: true  # Auto-launch robot and gripper servers before pol
                               # If true: launch_robot.py and launch_gripper.py are started automatically
                               # If false: user must start robot/gripper servers manually
 
+# Auto-reset settings (for polymetis_bridge_node)
+auto_reset_on_startup: true   # Auto-reset robot to home position on startup
+                              # If true: robot will automatically reset after auto_reset_delay seconds
+                              # If false: use /polymetis/reset service to reset manually
+                              # NOTE: Delayed reset avoids SIGSEGV issues during initialization
+auto_reset_delay: 5.0         # Delay before auto-reset (seconds)
+                              # Recommended: 5.0 seconds to wait for robot/gripper servers to initialize
+                              # Can also call manually: ros2 service call /polymetis/reset role_ros2/srv/Reset "{randomize: false}"
+
 # ============================================================================
 # URDF File Requirements
 # ============================================================================

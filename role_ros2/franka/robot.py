@@ -14,7 +14,7 @@ from role_ros2.msg import (
     GripperCommand
 )
 from role_ros2.srv import (
-    Reset, Home, StartCartesianImpedance, StartJointImpedance,
+    Reset, StartCartesianImpedance, StartJointImpedance,
     TerminatePolicy, MoveToJointPositions, MoveToEEPose,
     SolveIK, ComputeFK, ComputeTimeToGo
 )
@@ -31,7 +31,7 @@ class FrankaRobot:
     This class replaces direct Polymetis calls with ROS2 topic communication:
     - Subscribes to /polymetis/robot_state and /polymetis/gripper_state for state
     - Publishes to /polymetis/robot_command for control commands
-    - Uses services /polymetis/reset and /polymetis/home for robot initialization
+    - Uses service /polymetis/reset for robot initialization (home is alias for reset)
     """
     
     def __init__(self, node: Optional[Node] = None):
@@ -89,9 +89,8 @@ class FrankaRobot:
             10
         )
         
-        # Service clients for reset/home
+        # Service client for reset
         self._reset_client = self._node.create_client(Reset, '/polymetis/reset')
-        self._home_client = self._node.create_client(Home, '/polymetis/home')
         
         # Service clients for controller management
         self._start_cartesian_impedance_client = self._node.create_client(
@@ -134,8 +133,6 @@ class FrankaRobot:
         self._node.get_logger().info("Waiting for polymetis services...")
         if not self._reset_client.wait_for_service(timeout_sec=5.0):
             self._node.get_logger().warn("Reset service not available")
-        if not self._home_client.wait_for_service(timeout_sec=5.0):
-            self._node.get_logger().warn("Home service not available")
         
         # Spin thread for callbacks
         self._spin_thread = threading.Thread(target=self._spin_node, daemon=True)
@@ -178,24 +175,38 @@ class FrankaRobot:
         with self._robot_state_lock:
             return self._robot_state, self._gripper_state
     
-    def reset(self, randomize=False):
+    def reset(self, randomize=False, wait_for_completion=True, wait_time_sec=30.0):
         """
         Reset robot to home position.
         
         Args:
-            randomize: If True, add random noise to reset position (not implemented via service)
-        """
-        if randomize:
-            self._node.get_logger().warn("Randomize not supported via service, using default reset")
+            randomize: If True, add random cartesian noise to reset position (matching robot_env.py behavior)
+            wait_for_completion: If True, wait for reset to complete (default: True)
+            wait_time_sec: Time to wait for reset completion (default: 30.0s)
+                          Reset moves at 0.1 rad/s, typical displacement is 1-2 rad, so ~10-20s
+                          Adding buffer for gripper close time.
         
+        Note: The reset service in polymetis_bridge_node executes asynchronously.
+              The service call returns immediately with "accepted", then executes in background.
+              If wait_for_completion=True, this method will wait for the robot to reach home position.
+        """
         request = Reset.Request()
+        request.randomize = randomize
         future = self._reset_client.call_async(request)
-        rclpy.spin_until_future_complete(self._node, future, timeout_sec=10.0)
+        
+        # Wait for service to accept the request
+        rclpy.spin_until_future_complete(self._node, future, timeout_sec=5.0)
         
         if future.done():
             response = future.result()
             if response.success:
-                self._node.get_logger().info("Robot reset successful")
+                self._node.get_logger().info(f"Robot reset command accepted: {response.message}")
+                
+                # Wait for reset to complete (reset executes in background thread)
+                if wait_for_completion:
+                    self._node.get_logger().info(f"Waiting {wait_time_sec}s for reset to complete...")
+                    time.sleep(wait_time_sec)
+                    self._node.get_logger().info("Reset wait complete")
             else:
                 self._node.get_logger().error(f"Robot reset failed: {response.message}")
         else:
@@ -203,18 +214,8 @@ class FrankaRobot:
     
     def home(self):
         """Move robot to home position (alias for reset)."""
-        request = Home.Request()
-        future = self._home_client.call_async(request)
-        rclpy.spin_until_future_complete(self._node, future, timeout_sec=10.0)
-        
-        if future.done():
-            response = future.result()
-            if response.success:
-                self._node.get_logger().info("Robot home successful")
-            else:
-                self._node.get_logger().error(f"Robot home failed: {response.message}")
-        else:
-            self._node.get_logger().error("Home service call timed out")
+        # Home is the same as reset, so just call reset
+        self.reset()
     
     def update_command(self, command, action_space="cartesian_velocity", gripper_action_space=None, blocking=False):
         """

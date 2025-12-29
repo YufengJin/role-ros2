@@ -99,10 +99,11 @@ export LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/opt/openrobots/lib:/usr/local/lib:/op
 export ROBOT_IP=${ROBOT_IP:-172.17.0.2}
 export POLYMETIS_IP=${POLYMETIS_IP:-127.0.0.1}
 
-# ROS2 DDS configuration - using FastRTPS (matches official image)
-# FastRTPS is the default RMW implementation for ROS2 Foxy
+# ROS2 DDS configuration - using FastRTPS with shared memory disabled
+# This avoids SIGSEGV issues in Docker environment
 export ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
 export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+export FASTDDS_BUILTIN_TRANSPORTS=${FASTDDS_BUILTIN_TRANSPORTS:-UDPv4}
 export ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY:-0}
 
 # ROS2 logging
