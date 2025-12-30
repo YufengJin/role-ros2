@@ -108,6 +108,22 @@ class RobotIKSolver:
         lin_delta = lin_vel * self.max_lin_delta
         rot_delta = rot_vel * self.max_rot_delta
 
+        # Debug: Log conversion for verification
+        # Note: This is called frequently, so only log occasionally
+        if hasattr(self, '_debug_count'):
+            self._debug_count += 1
+        else:
+            self._debug_count = 0
+        
+        if self._debug_count % 15 == 0:  # Log every 15 calls (~1 second at 15 Hz)
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.debug(
+                f"🔧 IK: cartesian_velocity_to_delta:\n"
+                f"   Input velocity: {cartesian_velocity[:3]} (norm: {lin_vel_norm:.4f})\n"
+                f"   Output delta: {lin_delta} (max_lin_delta: {self.max_lin_delta:.4f})"
+            )
+
         return np.concatenate([lin_delta, rot_delta])
 
     def joint_velocity_to_delta(self, joint_velocity):

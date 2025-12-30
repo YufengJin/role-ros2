@@ -60,29 +60,22 @@ class FrankaRobot:
         self._gripper_state: Optional[PolymetisGripperState] = None
         self._max_gripper_width = 0.08  # Default for Franka hand
         
-        # QoS profile for state subscribers (best effort, keep last)
-        state_qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=1
-        )
-        
-        # Subscribers for robot state
+        # Subscribers for robot state (default RELIABLE QoS)
         self._robot_state_sub = self._node.create_subscription(
             PolymetisRobotState,
             '/polymetis/robot_state',
             self._robot_state_callback,
-            state_qos
+            1
         )
         
         self._gripper_state_sub = self._node.create_subscription(
             PolymetisGripperState,
             '/polymetis/gripper_state',
             self._gripper_state_callback,
-            state_qos
+            1
         )
         
-        # Publisher for robot commands
+        # Publisher for robot commands (default RELIABLE QoS)
         self._command_pub = self._node.create_publisher(
             PolymetisRobotCommand,
             '/polymetis/robot_command',
@@ -122,7 +115,7 @@ class FrankaRobot:
             ComputeTimeToGo, '/polymetis/arm/compute_time_to_go'
         )
         
-        # Publisher for gripper commands
+        # Publisher for gripper commands (default RELIABLE QoS)
         self._gripper_cmd_pub = self._node.create_publisher(
             GripperCommand,
             '/polymetis/gripper/command',
@@ -207,9 +200,19 @@ class FrankaRobot:
               The service call returns immediately with "accepted", then executes in background.
               If wait_for_completion=True, this method will wait for the robot to reach home position.
         """
+        import inspect
+        caller_info = inspect.stack()[1]
+        caller_name = caller_info.filename.split('/')[-1] + ':' + str(caller_info.lineno)
+        
+        self._node.get_logger().info("=" * 70)
+        self._node.get_logger().info(f"🔄 FrankaRobot.reset() called from: {caller_name}")
+        self._node.get_logger().info(f"   Parameters: randomize={randomize}, wait_for_completion={wait_for_completion}, wait_time_sec={wait_time_sec}")
+        
         request = Reset.Request()
         request.randomize = randomize
         future = self._reset_client.call_async(request)
+        
+        self._node.get_logger().info("   Waiting for reset service to accept request (timeout: 5.0s)...")
         
         # Wait for service to accept the request
         rclpy.spin_until_future_complete(self._node, future, timeout_sec=5.0)
@@ -217,17 +220,22 @@ class FrankaRobot:
         if future.done():
             response = future.result()
             if response.success:
-                self._node.get_logger().info(f"Robot reset command accepted: {response.message}")
+                self._node.get_logger().info(f"✅ Robot reset command accepted: {response.message}")
                 
                 # Wait for reset to complete (reset executes in background thread)
                 if wait_for_completion:
-                    self._node.get_logger().info(f"Waiting {wait_time_sec}s for reset to complete...")
+                    self._node.get_logger().info(f"⏳ Waiting {wait_time_sec}s for reset to complete...")
+                    self._node.get_logger().info(f"   (Reset executes in background thread in polymetis_bridge_node)")
                     time.sleep(wait_time_sec)
-                    self._node.get_logger().info("Reset wait complete")
+                    self._node.get_logger().info("✅ Reset wait complete")
+                else:
+                    self._node.get_logger().info("ℹ️  Reset command sent (not waiting for completion)")
             else:
-                self._node.get_logger().error(f"Robot reset failed: {response.message}")
+                self._node.get_logger().error(f"❌ Robot reset failed: {response.message}")
         else:
-            self._node.get_logger().error("Reset service call timed out")
+            self._node.get_logger().error("❌ Reset service call timed out (5.0s)")
+        
+        self._node.get_logger().info("=" * 70)
     
     def home(self):
         """Move robot to home position (alias for reset)."""
@@ -246,8 +254,27 @@ class FrankaRobot:
         """
         action_dict = self.create_action_dict(command, action_space=action_space, gripper_action_space=gripper_action_space)
         
-        self.update_joints(action_dict["joint_position"], velocity=False, blocking=blocking)
-        self.update_gripper(action_dict["gripper_position"], velocity=False, blocking=blocking)
+        # Determine velocity mode based on action_space
+        is_velocity = "velocity" in action_space
+        
+        # Update arm based on action_space
+        if "cartesian" in action_space:
+            # Use update_pose for cartesian commands
+            cartesian_cmd = action_dict["cartesian_position"]
+            self.update_pose(cartesian_cmd, velocity=is_velocity, blocking=blocking)
+        else:
+            # Use update_joints for joint commands
+            joint_cmd = action_dict["joint_position"]
+            self.update_joints(joint_cmd, velocity=is_velocity, blocking=blocking)
+        
+        # Update gripper - determine velocity mode
+        if gripper_action_space is None:
+            gripper_velocity = is_velocity  # Default to same as arm
+        else:
+            gripper_velocity = (gripper_action_space == "velocity")
+        
+        gripper_cmd = action_dict["gripper_position"]
+        self.update_gripper(gripper_cmd, velocity=gripper_velocity, blocking=blocking)
         
         return action_dict
     
@@ -328,10 +355,11 @@ class FrankaRobot:
             curr_pose = self.get_ee_pose()
             cartesian_delta = pose_diff(command, curr_pose)
             command = self._ik_solver.cartesian_delta_to_velocity(cartesian_delta)
+            velocity = True  # After conversion, we're sending velocity
         
         # Publish non-blocking command via Topic
         msg = PolymetisRobotCommand()
-        msg.action_space = "cartesian_velocity"
+        msg.action_space = "cartesian_velocity" if velocity else "cartesian_position"
         msg.command = list(command) + [0.0]  # Add gripper (no change)
         msg.blocking = False  # Topic commands are always non-blocking
         

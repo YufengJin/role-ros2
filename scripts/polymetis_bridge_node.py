@@ -1423,12 +1423,34 @@ class PolymetisCombinedNode(Node):
                         "joint_velocities": robot_state_dict["joint_velocities"]
                     }
                     # Use robot_ik_solver.cartesian_velocity_to_joint_velocity
+                    # Log input command for debugging
+                    if hasattr(self, '_debug_cmd_count'):
+                        self._debug_cmd_count += 1
+                    else:
+                        self._debug_cmd_count = 0
+                    
+                    if self._debug_cmd_count % 15 == 0:  # Log every 15 commands (~1 second at 15 Hz)
+                        self.get_logger().info(
+                            f"🔧 Command Processing:\n"
+                            f"   Input cartesian_velocity: {arm_cmd[:3]} (norm: {np.linalg.norm(arm_cmd[:3]):.4f})\n"
+                            f"   Current EE position: {robot_state_dict.get('cartesian_position', [0,0,0])[:3]}"
+                        )
+                    
                     joint_velocity = self._ik_solver.cartesian_velocity_to_joint_velocity(
                         arm_cmd, robot_state=robot_state
                     )
                     # Use robot_ik_solver.joint_velocity_to_delta
                     joint_delta = self._ik_solver.joint_velocity_to_delta(joint_velocity)
                     joint_position = (np.array(robot_state_dict["joint_positions"]) + joint_delta).tolist()
+                    
+                    if self._debug_cmd_count % 15 == 0:
+                        # Get expected EE delta from cartesian velocity
+                        cartesian_delta = self._ik_solver.cartesian_velocity_to_delta(arm_cmd)
+                        self.get_logger().info(
+                            f"   Computed cartesian_delta: {cartesian_delta[:3]} (norm: {np.linalg.norm(cartesian_delta[:3]):.4f})\n"
+                            f"   Joint velocity norm: {np.linalg.norm(joint_velocity):.4f}\n"
+                            f"   Joint delta norm: {np.linalg.norm(joint_delta):.4f}"
+                        )
                 else:
                     # Cartesian position -> joint position via iterative IK
                     # Note: robot_ik_solver.py doesn't have direct position IK, so we use velocity-based approach

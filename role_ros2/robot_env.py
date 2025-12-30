@@ -48,7 +48,11 @@ class RobotEnv(gym.Env):
 
         # Reset Robot
         if do_reset:
+            if node is not None:
+                node.get_logger().info("🔄 RobotEnv: Calling reset() during initialization...")
             self.reset()
+            if node is not None:
+                node.get_logger().info("✅ RobotEnv: Reset completed during initialization")
 
     def step(self, action):
         # Check Action
@@ -78,10 +82,15 @@ class RobotEnv(gym.Env):
         Note: The reset service executes asynchronously in the background.
               This method returns immediately after the command is accepted.
         """
+        # Log reset call
+        import inspect
+        caller_info = inspect.stack()[1]
+        caller_name = caller_info.filename.split('/')[-1] + ':' + str(caller_info.lineno)
+        
         # Use reset service - randomization is handled internally by polymetis_bridge_node
         # The service applies cartesian noise via _add_cartesian_noise_to_joints()
         # using the same noise range as this class (randomize_low, randomize_high)
-        self._robot.reset(randomize=randomize)
+        self._robot.reset(randomize=randomize, wait_for_completion=True, wait_time_sec=30.0)
 
     def update_robot(self, action, action_space="cartesian_velocity", gripper_action_space=None, blocking=False):
         action_info = self._robot.update_command(
@@ -138,11 +147,18 @@ class RobotEnv(gym.Env):
         extrinsics = self.get_camera_extrinsics(state_dict)
         obs_dict["camera_extrinsics"] = extrinsics
 
+        # Handle camera intrinsics - return None if no cameras available
         intrinsics = {}
-        for cam in self.camera_reader.camera_dict.values():
-            cam_intr_info = cam.get_intrinsics()
-            for (full_cam_id, info) in cam_intr_info.items():
-                intrinsics[full_cam_id] = info["cameraMatrix"]
+        if self.camera_reader is not None and hasattr(self.camera_reader, 'camera_dict'):
+            try:
+                for cam in self.camera_reader.camera_dict.values():
+                    cam_intr_info = cam.get_intrinsics()
+                    for (full_cam_id, info) in cam_intr_info.items():
+                        intrinsics[full_cam_id] = info["cameraMatrix"]
+            except Exception:
+                intrinsics = None
+        else:
+            intrinsics = None
         obs_dict["camera_intrinsics"] = intrinsics
 
         return obs_dict

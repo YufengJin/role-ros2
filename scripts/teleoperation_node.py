@@ -1,286 +1,249 @@
 #!/usr/bin/env python3
 """
-Teleoperation Node (Oculus -> Polymetis)
+Teleoperation Node (VR Policy Action -> Robot Execution)
+
+This node subscribes to VR policy actions from vr_policy_node and
+executes them on the robot using RobotEnv.
+
+Architecture:
+    vr_policy_node (publishes /vr_policy/action)
+        ↓
+    teleoperation_node (subscribes to /vr_policy/action, executes on robot)
+        ↓
+    RobotEnv (executes actions on robot)
 
 Usage:
-  # 1) Start robot + TF (Polymetis manager + robot_state_publisher)
-  ros2 launch role_ros2 franka_robot.launch.py
+  # 1) Start robot bridge
+  ros2 run role_ros2 polymetis_bridge_node
 
   # 2) Start Oculus reader (publishes /oculus/* topics)
   ros2 run role_ros2 oculus_reader_node --ros-args -p publish_rate:=50.0
 
-  # 3) Start teleop (publishes PolymetisRobotCommand to polymetis_manager)
-  ros2 run role_ros2 teleoperation_node --ros-args -p arm_id:=fr3 -p right_controller:=true
+  # 3) Start VR policy node (computes actions from VR input)
+  ros2 run role_ros2 vr_policy_node --ros-args -p right_controller:=true
 
-Controls (default):
-  - Hold controller GRIP to enable motion ("deadman").
-  - Trigger controls gripper open/close (normalized 0..1 mapped to velocity).
-  - Press joystick (RJ/LJ) to reset VR orientation mapping.
+  # 4) Start teleop (executes actions on robot)
+  ros2 run role_ros2 teleoperation_node
+
+Teleoperation Control:
+  - START: Hold controller GRIP button to enable motion (movement_enabled=True)
+  - STOP: Release GRIP button to disable motion (movement_enabled=False)
+  - Trigger: Controls gripper open/close (normalized 0..1 mapped to velocity)
+  - Joystick (RJ/LJ): Reset VR orientation mapping (in vr_policy_node)
+
+Reset Triggers:
+  - On startup: If do_reset_on_start=True (default: True)
+  - On success button (A/X): If reset_on_success=True (default: True)
+  - On failure button (B/Y): If reset_on_failure=True (default: True)
+
+Parameters:
+  - action_space: Action space type (default: "cartesian_velocity")
+  - action_topic: Topic to subscribe to (default: "vr_policy/action")
+  - do_reset_on_start: Reset robot on startup (default: True)
+  - reset_randomize: Randomize reset position (default: False)
+  - reset_on_success: Reset when success button pressed (default: True)
+  - reset_on_failure: Reset when failure button pressed (default: True)
 """
 
 import numpy as np
+import time
 import rclpy
 from rclpy.node import Node
 
-from geometry_msgs.msg import PoseStamped
-from std_msgs.msg import Header
-
-from role_ros2.msg import OculusButtons, PolymetisRobotCommand, PolymetisRobotState
-from role_ros2.misc.transformations import (
-    add_angles,
-    euler_to_quat,
-    quat_diff,
-    quat_to_euler,
-)
-
-from scipy.spatial.transform import Rotation as R
-
-
-def _vec_to_reorder_mat(vec):
-    """Same as droid.controllers.oculus_controller.vec_to_reorder_mat"""
-    X = np.zeros((len(vec), len(vec)))
-    for i in range(X.shape[0]):
-        ind = int(abs(vec[i])) - 1
-        X[i, ind] = np.sign(vec[i])
-    return X
-
-
-def _pose_to_mat(pose_msg: PoseStamped) -> np.ndarray:
-    """PoseStamped -> 4x4 transform matrix."""
-    q = pose_msg.pose.orientation
-    t = pose_msg.pose.position
-    rot = R.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
-    T = np.eye(4)
-    T[:3, :3] = rot
-    T[:3, 3] = [t.x, t.y, t.z]
-    return T
+from role_ros2.robot_env import RobotEnv
+from role_ros2.msg import VRPolicyAction
 
 
 class TeleoperationNode(Node):
     """
-    Subscribes:
-      - oculus right/left controller pose (PoseStamped)
-      - oculus buttons (OculusButtons)
-      - polymetis_manager robot_state (PolymetisRobotState)
-
-    Publishes:
-      - polymetis_manager/robot_command (PolymetisRobotCommand) with action_space=cartesian_velocity
+    Teleoperation node that subscribes to VR policy actions and executes them.
+    
+    This node:
+    1. Subscribes to VR policy actions from vr_policy_node
+    2. Executes actions on the robot using RobotEnv
+    3. Provides robot control execution layer
     """
 
     def __init__(self):
         super().__init__("teleoperation_node")
 
         # Parameters
-        self.declare_parameter("arm_id", "fr3")
-        self.declare_parameter("right_controller", True)
+        self.declare_parameter("action_space", "cartesian_velocity")
+        self.declare_parameter("action_topic", "vr_policy/action")
+        
+        # Robot reset parameters
+        self.declare_parameter("do_reset_on_start", True)
+        self.declare_parameter("reset_randomize", False)
+        self.declare_parameter("reset_on_success", True)  # Reset when success button pressed
+        self.declare_parameter("reset_on_failure", True)  # Reset when failure button pressed
 
-        self.declare_parameter("control_rate", 15.0)
-        self.declare_parameter("max_lin_vel", 1.0)
-        self.declare_parameter("max_rot_vel", 1.0)
-        self.declare_parameter("max_gripper_vel", 1.0)
-        self.declare_parameter("spatial_coeff", 1.0)
-        self.declare_parameter("pos_action_gain", 5.0)
-        self.declare_parameter("rot_action_gain", 2.0)
-        self.declare_parameter("gripper_action_gain", 3.0)
-        # Coordinate reorder (same default as droid VRPolicy)
-        self.declare_parameter("rmat_reorder", [-2, -1, -3, 4])
+        # Get parameters
+        action_space = str(self.get_parameter("action_space").value)
+        action_topic = str(self.get_parameter("action_topic").value)
+        do_reset = bool(self.get_parameter("do_reset_on_start").value)
+        reset_randomize = bool(self.get_parameter("reset_randomize").value)
+        reset_on_success = bool(self.get_parameter("reset_on_success").value)
+        reset_on_failure = bool(self.get_parameter("reset_on_failure").value)
 
-        self.declare_parameter("oculus_right_pose_topic", "oculus/right_controller/pose")
-        self.declare_parameter("oculus_left_pose_topic", "oculus/left_controller/pose")
-        self.declare_parameter("oculus_buttons_topic", "oculus/buttons")
-        self.declare_parameter("robot_state_topic", "polymetis_manager/robot_state")
-        self.declare_parameter("robot_command_topic", "polymetis_manager/robot_command")
+        self.get_logger().info("=" * 70)
+        self.get_logger().info("TeleoperationNode Initialization")
+        self.get_logger().info("=" * 70)
+        self.get_logger().info(f"  action_space: {action_space}")
+        self.get_logger().info(f"  action_topic: {action_topic}")
+        self.get_logger().info(f"  do_reset_on_start: {do_reset}")
+        self.get_logger().info(f"  reset_randomize: {reset_randomize}")
+        self.get_logger().info(f"  reset_on_success: {reset_on_success}")
+        self.get_logger().info(f"  reset_on_failure: {reset_on_failure}")
+        self.get_logger().info("=" * 70)
+        self.get_logger().info("📋 Teleoperation Control:")
+        self.get_logger().info("   • Teleoperation STARTS when: grip button is pressed (movement_enabled=True)")
+        self.get_logger().info("   • Teleoperation STOPS when: grip button is released (movement_enabled=False)")
+        self.get_logger().info("   • Reset triggers:")
+        self.get_logger().info(f"     - On startup: {do_reset}")
+        self.get_logger().info(f"     - On success button (A/X): {reset_on_success}")
+        self.get_logger().info(f"     - On failure button (B/Y): {reset_on_failure}")
+        self.get_logger().info("=" * 70)
 
-        self.arm_id = self.get_parameter("arm_id").value
-        self.right_controller = bool(self.get_parameter("right_controller").value)
-        self.controller_side = "right" if self.right_controller else "left"
-
-        self.control_rate = float(self.get_parameter("control_rate").value)
-        self.max_lin_vel = float(self.get_parameter("max_lin_vel").value)
-        self.max_rot_vel = float(self.get_parameter("max_rot_vel").value)
-        self.max_gripper_vel = float(self.get_parameter("max_gripper_vel").value)
-        self.spatial_coeff = float(self.get_parameter("spatial_coeff").value)
-        self.pos_action_gain = float(self.get_parameter("pos_action_gain").value)
-        self.rot_action_gain = float(self.get_parameter("rot_action_gain").value)
-        self.gripper_action_gain = float(self.get_parameter("gripper_action_gain").value)
-        self.rmat_reorder = list(self.get_parameter("rmat_reorder").value)
-
-        self.oculus_right_pose_topic = str(self.get_parameter("oculus_right_pose_topic").value)
-        self.oculus_left_pose_topic = str(self.get_parameter("oculus_left_pose_topic").value)
-        self.oculus_buttons_topic = str(self.get_parameter("oculus_buttons_topic").value)
-        self.robot_state_topic = str(self.get_parameter("robot_state_topic").value)
-        self.robot_command_topic = str(self.get_parameter("robot_command_topic").value)
-
-        # Internal state
-        self._last_pose_msg: PoseStamped | None = None
-        self._last_buttons_msg: OculusButtons | None = None
-        self._last_robot_state_msg: PolymetisRobotState | None = None
-
-        # VRPolicy-like state
-        self._movement_enabled = False
-        self._update_sensor = True
-        self._reset_origin = True
-        self._reset_orientation = True
-        self._vr_to_global_mat = np.eye(4)
-        self._global_to_env_mat = _vec_to_reorder_mat(self.rmat_reorder)
-
-        self._robot_origin = None  # {"pos": np.ndarray(3), "quat": np.ndarray(4)}
-        self._vr_origin = None     # {"pos": np.ndarray(3), "quat": np.ndarray(4)}
-        self._vr_state = None      # {"pos": np.ndarray(3), "quat": np.ndarray(4), "gripper": float}
-
-        # Pub/Sub
-        pose_topic = self.oculus_right_pose_topic if self.right_controller else self.oculus_left_pose_topic
-        self._pose_sub = self.create_subscription(PoseStamped, pose_topic, self._pose_cb, 10)
-        self._buttons_sub = self.create_subscription(OculusButtons, self.oculus_buttons_topic, self._buttons_cb, 10)
-        self._robot_state_sub = self.create_subscription(PolymetisRobotState, self.robot_state_topic, self._robot_state_cb, 10)
-
-        self._cmd_pub = self.create_publisher(PolymetisRobotCommand, self.robot_command_topic, 10)
-
-        self._timer = self.create_timer(1.0 / max(self.control_rate, 1e-6), self._tick)
-
-        self.get_logger().info(
-            f"TeleoperationNode ready. controller={self.controller_side}, "
-            f"pose_topic={pose_topic}, buttons_topic={self.oculus_buttons_topic}, "
-            f"robot_state_topic={self.robot_state_topic}, cmd_topic={self.robot_command_topic}"
+        # Initialize RobotEnv (uses shared node)
+        # NOTE: RobotEnv.__init__ will call reset() if do_reset=True
+        # So we pass do_reset=False here to avoid double reset
+        self.get_logger().info("Initializing RobotEnv...")
+        self.get_logger().info(f"  Creating RobotEnv with do_reset={do_reset} (will reset in RobotEnv.__init__ if True)")
+        
+        self.env = RobotEnv(
+            action_space=action_space,
+            gripper_action_space="velocity",
+            do_reset=do_reset,  # RobotEnv will handle reset
+            node=self  # Share node for callbacks
         )
+        self.get_logger().info("✅ RobotEnv initialized successfully")
 
-    def _pose_cb(self, msg: PoseStamped):
-        self._last_pose_msg = msg
-
-    def _buttons_cb(self, msg: OculusButtons):
-        self._last_buttons_msg = msg
-
-    def _robot_state_cb(self, msg: PolymetisRobotState):
-        self._last_robot_state_msg = msg
-
-    def _get_deadman_and_reset_flags(self, buttons: OculusButtons):
-        if self.right_controller:
-            grip_pressed = bool(buttons.right_grip_pressed)
-            joystick_pressed = bool(buttons.right_joystick_pressed)
-            trigger_value = float(buttons.right_trigger_value)
+        # Subscribe to VR policy actions (default RELIABLE QoS)
+        self._action_sub = self.create_subscription(
+            VRPolicyAction, action_topic, self._action_callback, 10
+        )
+        self.get_logger().info(f"✅ Subscribed to action topic: {action_topic}")
+        
+        # NOTE: Do NOT reset again here - RobotEnv.__init__ already called reset() if do_reset=True
+        # This was causing double reset and long wait times
+        if do_reset:
+            self.get_logger().info("ℹ️  Robot reset was already performed during RobotEnv initialization")
+            self.get_logger().info("   (Skipping duplicate reset to avoid double reset)")
         else:
-            grip_pressed = bool(buttons.left_grip_pressed)
-            joystick_pressed = bool(buttons.left_joystick_pressed)
-            trigger_value = float(buttons.left_trigger_value)
-        return grip_pressed, joystick_pressed, trigger_value
+            self.get_logger().info("ℹ️  Robot reset was skipped (do_reset_on_start=False)")
 
-    def _process_reading(self):
-        """Update self._vr_state from latest pose/buttons."""
-        assert self._last_pose_msg is not None
-        assert self._last_buttons_msg is not None
+        self.get_logger().info("=" * 70)
+        self.get_logger().info("✅ TeleoperationNode ready!")
+        self.get_logger().info(f"   Waiting for VR policy actions on topic: {action_topic}")
+        self.get_logger().info("=" * 70)
+        
+        # Track last action time for safety
+        self._last_action_time = 0.0
+        self._action_timeout = 1.0  # seconds
+        self._action_count = 0
+        self._last_log_time = time.time()
+        
+        # Teleoperation state tracking
+        self._teleoperation_active = False  # Whether teleoperation is currently active
+        self._last_movement_enabled = False
+        self._reset_on_success = reset_on_success  # Reset robot when success button is pressed
+        self._reset_on_failure = reset_on_failure  # Reset robot when failure button is pressed
+        self._last_success_state = False
+        self._last_failure_state = False
 
-        rot_mat = _pose_to_mat(self._last_pose_msg)
-
-        grip_pressed, joystick_pressed, trigger_value = self._get_deadman_and_reset_flags(self._last_buttons_msg)
-
-        toggled = (self._movement_enabled != grip_pressed)
-        self._update_sensor = self._update_sensor or grip_pressed
-        self._reset_orientation = self._reset_orientation or joystick_pressed
-        self._reset_origin = self._reset_origin or toggled
-        self._movement_enabled = grip_pressed
-
-        stop_updating = joystick_pressed or self._movement_enabled
-        if self._reset_orientation:
-            if stop_updating:
-                self._reset_orientation = False
-            try:
-                self._vr_to_global_mat = np.linalg.inv(rot_mat)
-            except Exception:
-                self._vr_to_global_mat = np.eye(4)
-                self._reset_orientation = True
-
-        rot_mat = self._global_to_env_mat @ self._vr_to_global_mat @ rot_mat
-        vr_pos = self.spatial_coeff * rot_mat[:3, 3]
-        vr_quat = R.from_matrix(rot_mat[:3, :3]).as_quat()  # [x, y, z, w]
-        vr_gripper = float(np.clip(trigger_value, 0.0, 1.0))
-
-        self._vr_state = {"pos": vr_pos, "quat": vr_quat, "gripper": vr_gripper}
-
-    def _limit_velocity(self, lin_vel, rot_vel, gripper_vel):
-        lin_norm = float(np.linalg.norm(lin_vel))
-        rot_norm = float(np.linalg.norm(rot_vel))
-        grip_norm = float(np.linalg.norm([gripper_vel]))
-
-        if lin_norm > self.max_lin_vel and lin_norm > 1e-9:
-            lin_vel = lin_vel * (self.max_lin_vel / lin_norm)
-        if rot_norm > self.max_rot_vel and rot_norm > 1e-9:
-            rot_vel = rot_vel * (self.max_rot_vel / rot_norm)
-        if grip_norm > self.max_gripper_vel and grip_norm > 1e-9:
-            gripper_vel = gripper_vel * (self.max_gripper_vel / grip_norm)
-        return lin_vel, rot_vel, gripper_vel
-
-    def _compute_action(self) -> np.ndarray:
-        """
-        Return action in [-1, 1]:
-          [vx, vy, vz, wx, wy, wz, gripper_vel]
-        """
-        if self._last_pose_msg is None or self._last_buttons_msg is None or self._last_robot_state_msg is None:
-            return np.zeros(7, dtype=np.float64)
-
-        # Update VR state if needed
-        if self._update_sensor:
-            self._process_reading()
-            self._update_sensor = False
-
-        if not self._movement_enabled or self._vr_state is None:
-            return np.zeros(7, dtype=np.float64)
-
-        # Read robot state (from PolymetisRobotState)
-        rs = self._last_robot_state_msg
-        robot_pos = np.array(rs.ee_position[:3], dtype=np.float64)
-        robot_euler = np.array(rs.ee_euler[:3], dtype=np.float64)
-        robot_quat = euler_to_quat(robot_euler).astype(np.float64)
-        robot_gripper = float(rs.gripper_position)
-
-        # Reset origin on grip toggle release/press
-        if self._reset_origin:
-            self._robot_origin = {"pos": robot_pos.copy(), "quat": robot_quat.copy()}
-            self._vr_origin = {"pos": self._vr_state["pos"].copy(), "quat": self._vr_state["quat"].copy()}
-            self._reset_origin = False
-
-        # Pos action
-        robot_pos_offset = robot_pos - self._robot_origin["pos"]
-        target_pos_offset = self._vr_state["pos"] - self._vr_origin["pos"]
-        pos_action = target_pos_offset - robot_pos_offset
-
-        # Rot action (quaternion diff -> euler)
-        robot_quat_offset = quat_diff(robot_quat, self._robot_origin["quat"])
-        target_quat_offset = quat_diff(self._vr_state["quat"], self._vr_origin["quat"])
-        quat_action = quat_diff(target_quat_offset, robot_quat_offset)
-        euler_action = quat_to_euler(quat_action)
-
-        # Gripper action (velocity-like)
-        gripper_action = (self._vr_state["gripper"] * 1.5) - robot_gripper
-
-        # Scale
-        pos_action *= self.pos_action_gain
-        euler_action *= self.rot_action_gain
-        gripper_action *= self.gripper_action_gain
-
-        lin_vel, rot_vel, gripper_vel = self._limit_velocity(pos_action, euler_action, gripper_action)
-
-        action = np.concatenate([lin_vel, rot_vel, [gripper_vel]]).clip(-1.0, 1.0)
-        return action.astype(np.float64)
-
-    def _publish_action(self, action: np.ndarray):
-        now = self.get_clock().now()
-        msg = PolymetisRobotCommand()
-        msg.header = Header()
-        msg.header.stamp = now.to_msg()
-        msg.header.frame_id = ""  # base frame handled in polymetis_manager
-
-        msg.action_space = "cartesian_velocity"
-        msg.gripper_action_space = "velocity"
-        msg.command = [float(x) for x in action.tolist()]
-        msg.blocking = False
-        msg.velocity = True
-        msg.cartesian_noise = []
-
-        self._cmd_pub.publish(msg)
-
-    def _tick(self):
-        action = self._compute_action()
-        self._publish_action(action)
+    def _action_callback(self, msg: VRPolicyAction):
+        """Callback for VR policy action messages."""
+        try:
+            self._action_count += 1
+            current_time = time.time()
+            
+            # Check if action is valid
+            if len(msg.action) != 7:
+                self.get_logger().warn(
+                    f"❌ Invalid action length: {len(msg.action)}, expected 7. "
+                    f"Action: {msg.action}"
+                )
+                return
+            
+            # Convert action to numpy array
+            action = np.array(msg.action, dtype=np.float64)
+            
+            # Handle reset triggers (success/failure buttons)
+            if self._reset_on_success and msg.success and not self._last_success_state:
+                self.get_logger().info("🔄 Success button pressed - Resetting robot...")
+                self.env.reset(randomize=False)
+                self.get_logger().info("✅ Robot reset complete (success button)")
+            
+            if self._reset_on_failure and msg.failure and not self._last_failure_state:
+                self.get_logger().info("🔄 Failure button pressed - Resetting robot...")
+                self.env.reset(randomize=False)
+                self.get_logger().info("✅ Robot reset complete (failure button)")
+            
+            self._last_success_state = msg.success
+            self._last_failure_state = msg.failure
+            
+            # Detect teleoperation start/stop
+            movement_enabled_changed = (msg.movement_enabled != self._last_movement_enabled)
+            
+            if movement_enabled_changed:
+                if msg.movement_enabled:
+                    self.get_logger().info("=" * 70)
+                    self.get_logger().info("▶️  TELEOPERATION STARTED")
+                    self.get_logger().info("   Grip button pressed - movement enabled")
+                    self.get_logger().info("=" * 70)
+                    self._teleoperation_active = True
+                else:
+                    self.get_logger().info("=" * 70)
+                    self.get_logger().info("⏸️  TELEOPERATION STOPPED")
+                    self.get_logger().info("   Grip button released - movement disabled")
+                    self.get_logger().info("=" * 70)
+                    self._teleoperation_active = False
+            
+            self._last_movement_enabled = msg.movement_enabled
+            
+            # Log first action and periodically (every 1 second)
+            if self._action_count == 1 or (current_time - self._last_log_time) >= 1.0:
+                self.get_logger().info(
+                    f"📥 Received action #{self._action_count}: "
+                    f"action=[{action[0]:.3f}, {action[1]:.3f}, {action[2]:.3f}, "
+                    f"{action[3]:.3f}, {action[4]:.3f}, {action[5]:.3f}, {action[6]:.3f}], "
+                    f"movement_enabled={msg.movement_enabled}, "
+                    f"controller_on={msg.controller_on}, "
+                    f"success={msg.success}, failure={msg.failure}"
+                )
+                self._last_log_time = current_time
+            
+            # Safety check: only execute if movement is enabled
+            if not msg.movement_enabled:
+                # Still update last action time to show we're receiving messages
+                self._last_action_time = current_time
+                if self._action_count <= 3:  # Log first few disabled actions
+                    self.get_logger().debug(
+                        f"⏸️  Movement disabled (grip not pressed), skipping action execution"
+                    )
+                return
+            
+            # Execute action
+            self.get_logger().debug(
+                f"▶️  Executing action: {[f'{x:.3f}' for x in action[:3]]}..."
+            )
+            self.env.step(action)
+            self._last_action_time = current_time
+            
+            # Log execution periodically
+            if self._action_count % 15 == 0:  # Every ~1 second at 15 Hz
+                self.get_logger().info(
+                    f"✅ Action executed #{self._action_count}: "
+                    f"movement_enabled={msg.movement_enabled}, "
+                    f"success={msg.success}, failure={msg.failure}"
+                )
+        
+        except Exception as e:
+            import traceback
+            self.get_logger().error(
+                f"❌ Error executing action #{self._action_count}: {e}\n"
+                f"{traceback.format_exc()}"
+            )
 
 
 def main(args=None):

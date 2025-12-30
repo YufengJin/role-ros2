@@ -40,6 +40,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PolymetisCommand.msg"
   "msg/GripperCommand.msg"
   "msg/ControllerStatus.msg"
+  "msg/VRPolicyAction.msg"
   "srv/Reset.srv"
   "srv/Home.srv"
   "srv/StartCartesianImpedance.srv"
@@ -69,6 +70,11 @@ install(PROGRAMS
   RENAME teleoperation_node
 )
 install(PROGRAMS
+  scripts/vr_policy_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME vr_policy_node
+)
+install(PROGRAMS
   scripts/polymetis_bridge_node.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME polymetis_bridge
@@ -77,6 +83,11 @@ install(PROGRAMS
   scripts/fake_joint_states_publisher.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME fake_joint_states_publisher
+)
+install(PROGRAMS
+  scripts/test_vr_action_follow.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME test_vr_action_follow
 )
 # Install test scripts
 install(PROGRAMS

@@ -188,15 +188,7 @@ class OculusReaderNode(Node):
             self.get_logger().error(f'Failed to initialize Oculus Reader: {e}')
             raise
         
-        # Create publishers
-        # Use BEST_EFFORT for real-time controller data (lower latency)
-        qos_profile_best_effort = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            durability=DurabilityPolicy.VOLATILE,
-            depth=10
-        )
-        
-        # Use RELIABLE for visualization markers (RViz requires RELIABLE)
+        # Create publishers with explicit RELIABLE QoS
         qos_profile_reliable = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
@@ -206,17 +198,17 @@ class OculusReaderNode(Node):
         self.right_pose_pub = self.create_publisher(
             PoseStamped, 
             'oculus/right_controller/pose', 
-            qos_profile_best_effort
+            qos_profile_reliable
         )
         self.left_pose_pub = self.create_publisher(
             PoseStamped, 
             'oculus/left_controller/pose', 
-            qos_profile_best_effort
+            qos_profile_reliable
         )
         self.buttons_pub = self.create_publisher(
             OculusButtons, 
             'oculus/buttons', 
-            qos_profile_best_effort
+            qos_profile_reliable
         )
         
         # Marker publisher for RViz visualization
