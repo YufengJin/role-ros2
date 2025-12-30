@@ -23,7 +23,9 @@ from launch.actions import (
     ExecuteProcess,
     TimerAction,
     GroupAction,
+    RegisterEventHandler,
 )
+from launch.event_handlers import OnShutdown, OnProcessExit
 from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import LaunchConfiguration, Command, PythonExpression
 from launch_ros.actions import Node
@@ -286,22 +288,23 @@ def generate_launch_description():
         
         # ========== Real Robot Mode: Auto-launch robot and gripper servers ==========
         # Step 1: Kill any existing server processes (cleanup)
+        # More comprehensive cleanup - match multiple possible process names
         ExecuteProcess(
-            cmd=['pkill', '-9', 'run_server'],
+            cmd=['bash', '-c', 'pkill -9 -f "run_server" || pkill -9 -f "polymetis.*server" || true'],
             output='screen',
             condition=IfCondition(
                 PythonExpression(["'", use_mock, "' == 'false' and '", auto_launch_controller, "' == 'true'"])
             ),
         ),
         ExecuteProcess(
-            cmd=['pkill', '-9', 'franka_panda_cl'],
+            cmd=['bash', '-c', 'pkill -9 -f "franka_panda_cl" || pkill -9 -f "franka_panda_client" || true'],
             output='screen',
             condition=IfCondition(
                 PythonExpression(["'", use_mock, "' == 'false' and '", auto_launch_controller, "' == 'true'"])
             ),
         ),
         ExecuteProcess(
-            cmd=['pkill', '-9', 'gripper'],
+            cmd=['bash', '-c', 'pkill -9 -f "franka_hand_cl" || pkill -9 -f "franka_hand_client" || pkill -9 -f "launch_gripper" || true'],
             output='screen',
             condition=IfCondition(
                 PythonExpression(["'", use_mock, "' == 'false' and '", auto_launch_controller, "' == 'true'"])
@@ -333,9 +336,10 @@ def generate_launch_description():
             ),
         ),
         
-        # Step 3: Launch gripper server (launch_gripper.py) - delayed 2 seconds after robot
+        # Step 3: Launch gripper server (launch_gripper.py) - delayed to allow robot to fully initialize
+        # Increased delay to 5 seconds to ensure robot server is ready before gripper commands
         TimerAction(
-            period=2.0,
+            period=5.0,
             actions=[
                 ExecuteProcess(
                     cmd=[
@@ -456,6 +460,33 @@ def generate_launch_description():
         #                       arm_id_parameter_name: arm_id}.items(),
         #     condition=IfCondition(load_gripper)
         # ),
+        
+        # ========== Cleanup on shutdown ==========
+        # Register event handler to cleanup robot and gripper servers on launch shutdown
+        RegisterEventHandler(
+            OnShutdown(
+                on_shutdown=[
+                    ExecuteProcess(
+                        cmd=['bash', '-c', 
+                            'echo "Cleaning up robot and gripper servers..." && '
+                            'pkill -9 -f "run_server" || true && '
+                            'pkill -9 -f "polymetis.*server" || true && '
+                            'pkill -9 -f "franka_panda_cl" || true && '
+                            'pkill -9 -f "franka_panda_client" || true && '
+                            'pkill -9 -f "franka_hand_cl" || true && '
+                            'pkill -9 -f "franka_hand_client" || true && '
+                            'pkill -9 -f "launch_gripper" || true && '
+                            'pkill -9 -f "launch_robot" || true && '
+                            'echo "Cleanup complete."'
+                        ],
+                        output='screen',
+                        condition=IfCondition(
+                            PythonExpression(["'", use_mock, "' == 'false' and '", auto_launch_controller, "' == 'true'"])
+                        ),
+                    ),
+                ],
+            ),
+        ),
     ])
 
     return launch_description

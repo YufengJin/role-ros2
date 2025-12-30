@@ -38,7 +38,32 @@ class RobotIKSolver:
         self._cart_effector_6d = cartesian_6d_velocity_effector.Cartesian6dVelocityEffector(
             self._arm.name, self._effector, self._effector_model, self._effector_control
         )
-        self._cart_effector_6d.after_compile(self._arm.mjcf_model, self._physics)
+        # Fix for MuJoCo 2.3.2 and dm-robotics compatibility issue with eq_active
+        # Try-except to handle version compatibility
+        try:
+            self._cart_effector_6d.after_compile(self._arm.mjcf_model, self._physics)
+        except AttributeError as e:
+            if 'eq_active' in str(e) or 'MjModel' in str(e):
+                # Workaround: Recompile physics after creating effector
+                # This is a known issue with MuJoCo 2.3.2 and dm-robotics 0.5.0
+                import warnings
+                warnings.warn(
+                    f"MuJoCo/dm_control version compatibility issue detected: {e}\n"
+                    "Attempting workaround by recompiling physics..."
+                )
+                # Recreate physics after effector creation
+                self._physics = mjcf.Physics.from_mjcf_model(self._arm.mjcf_model)
+                # Try after_compile again
+                try:
+                    self._cart_effector_6d.after_compile(self._arm.mjcf_model, self._physics)
+                except Exception as e2:
+                    raise RuntimeError(
+                        f"Failed to initialize Cartesian6dVelocityEffector after workaround: {e2}\n"
+                        "This may be due to incompatible MuJoCo/dm_control/dm_robotics versions.\n"
+                        "Recommended versions: mujoco==2.3.2, dm-control==1.0.5, dm-robotics-moma==0.5.0"
+                    ) from e2
+            else:
+                raise
 
     ### Inverse Kinematics ###
     def cartesian_velocity_to_joint_velocity(self, cartesian_velocity, robot_state):

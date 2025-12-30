@@ -110,6 +110,10 @@ export ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY:-0}
 export RCUTILS_LOGGING_SEVERITY=INFO
 export RCUTILS_LOGGING_USE_STDOUT=1
 
+# Set DISPLAY environment variable to suppress GLFW X11 warnings in Docker
+# This prevents "X11: Failed to open display" warnings when running in headless mode
+export DISPLAY=${DISPLAY:-:0}
+
 # Initialize and start ROS2 daemon with robust error handling
 ensure_ros2_daemon || {
     echo "Warning: ROS2 daemon initialization failed, but continuing with command execution..." >&2

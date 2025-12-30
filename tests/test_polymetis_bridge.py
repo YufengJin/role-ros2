@@ -170,7 +170,7 @@ class PolymetisBridgeTester(Node):
         if not self.topics_received[topic_name]:
             self.topics_received[topic_name] = True
             self.get_logger().info(f"✓ Received first message from {topic_name}")
-        
+            
         # Store state for later use
         if topic_name == '/joint_states':
             self.current_joint_positions = list(msg.position)

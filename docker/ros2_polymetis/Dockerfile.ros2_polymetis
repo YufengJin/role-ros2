@@ -108,6 +108,19 @@ RUN apt-get update && \
     liburdfdom-dev \
     liburdfdom-headers-dev \
     libyaml-cpp-dev \
+    # MuJoCo dependencies (for headless rendering and physics simulation)
+    libgl1-mesa-dev \
+    libglew-dev \
+    libosmesa6-dev \
+    libglfw3-dev \
+    # X11 libraries (for headless X server support, required by MuJoCo/dm-control)
+    libx11-dev \
+    libxext-dev \
+    libxrender-dev \
+    libxi-dev \
+    libxrandr-dev \
+    libxinerama-dev \
+    libxcursor-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Build protobuf from source (version 3.18.1, matching environment.yml)
@@ -266,17 +279,24 @@ RUN python3.8 -m pip install \
     python3.8 -m pip install omegaconf==2.0.6 && \
     python3.8 -m pip install hydra-core==1.0.6
 
-# Install mujoco (required for IK solver)
-RUN python3.8 -m pip install mujoco
+# ============================================================================
+# Install MuJoCo and dm-control dependencies (required for IK solver)
+# ============================================================================
+# Install MuJoCo 2.3.2 (matching pyproject.toml and robot_ik_solver requirements)
+# MuJoCo 2.3.2 is required for compatibility with dm-control 1.0.5 and dm-robotics 0.5.0
+RUN python3.8 -m pip install mujoco==2.3.2
 
-# Install dm-control (required for IK solver)
+# Install dm-control 1.0.5 (required for IK solver, matching pyproject.toml)
+# dm-control depends on MuJoCo and provides the mjcf.Physics interface
 RUN python3.8 -m pip install dm-control==1.0.5
 
 # Install habitat-sim (optional, but in environment.yml)
 # Note: This is a large package, may take time
 RUN python3.8 -m pip install habitat-sim==0.2.1 || echo "Warning: habitat-sim installation failed, continuing..."
 
+# ============================================================================
 # Install additional role_ros2 dependencies
+# ============================================================================
 # Use --ignore-installed to handle system-installed packages like PyYAML
 RUN python3.8 -m pip install --ignore-installed \
     boto3 \
@@ -294,13 +314,31 @@ RUN python3.8 -m pip install --ignore-installed \
     lark \
     xacro
 
-# Install dm-robotics packages
-RUN python3.8 -m pip install dm-robotics-moma==0.5.0 --no-deps || true
-RUN python3.8 -m pip install dm-robotics-transformations==0.5.0 --no-deps || true
-RUN python3.8 -m pip install dm-robotics-agentflow==0.5.0 --no-deps || true
-RUN python3.8 -m pip install dm-robotics-geometry==0.5.0 --no-deps || true
-RUN python3.8 -m pip install dm-robotics-manipulation==0.5.0 --no-deps || true
-RUN python3.8 -m pip install dm-robotics-controllers==0.5.0 --no-deps || true
+# ============================================================================
+# Install dm-robotics packages (required for IK solver)
+# ============================================================================
+# dm-robotics packages provide Cartesian6dVelocityEffector for IK computation
+# Install with --no-deps to avoid dependency conflicts, but ensure core dependencies are installed first
+# Core dependencies (numpy, scipy, dm-control) are already installed above
+# Note: dm-robotics-moma 0.5.0 requires:
+#   - dm-control (already installed)
+#   - numpy (already installed)
+#   - scipy (already installed)
+#   - mujoco (already installed)
+RUN python3.8 -m pip install \
+    dm-robotics-moma==0.5.0 \
+    dm-robotics-transformations==0.5.0 \
+    dm-robotics-agentflow==0.5.0 \
+    dm-robotics-geometry==0.5.0 \
+    dm-robotics-manipulation==0.5.0 \
+    dm-robotics-controllers==0.5.0 \
+    --no-deps || echo "Warning: Some dm-robotics packages may have failed, continuing..."
+
+# Verify MuJoCo installation and version compatibility
+RUN python3.8 -c "import mujoco; print(f'MuJoCo version: {mujoco.__version__}')" && \
+    python3.8 -c "import dm_control; print(f'dm-control version: {dm_control.__version__}')" && \
+    python3.8 -c "from dm_robotics.moma.effectors import cartesian_6d_velocity_effector; print('dm-robotics-moma imported successfully')" || \
+    echo "Warning: MuJoCo/dm-control/dm-robotics verification failed, but continuing..."
 
 # ============================================================================
 # Create ROS2 Workspace Structure
