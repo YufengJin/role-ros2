@@ -8,6 +8,10 @@
 
 - **Dockerfile.ros2_cu118**: 基于 NVIDIA CUDA 11.8 和 Ubuntu 22.04 的 Docker 镜像
 - **docker-compose.yaml**: Docker Compose 配置文件，包含 GPU 支持、网络配置和开发模式挂载
+- **docker-compose-no-gpu.yaml**: 无 GPU 模式的 Docker Compose 配置（用于没有 nvidia-container-toolkit 的系统）
+- **run_container.sh**: 辅助脚本，自动检测 docker compose 版本并支持 GPU/无 GPU 模式切换
+- **install_nvidia_toolkit.sh**: 自动安装 nvidia-container-toolkit 的脚本
+- **setup_x11.sh**: X11 转发配置脚本，用于在容器内运行 GUI 应用程序（rviz2、rqt 等）
 - **entrypoint.sh**: 容器入口脚本，自动配置 ROS2 环境并管理 daemon
 - **ros2_cu118.env**: 环境配置脚本，包含 ROS2 和 DDS 环境变量设置
 - **fix_daemon.sh**: ROS2 daemon 修复和清理脚本（合并了原 force_cleanup.sh 的功能）
@@ -22,25 +26,94 @@
 
 ## 快速开始
 
+### 0. 前置要求
+
+#### X11 转发配置（用于 GUI 应用程序如 rviz）
+
+如果需要在容器内运行 GUI 应用程序（如 rviz2、rqt），需要配置 X11 转发：
+
+```bash
+# 方法 1: 使用自动配置脚本（推荐）
+cd /home/yjin/repos/ros2_ws/src/role-ros2/docker/ros2_cu118
+source setup_x11.sh
+
+# 方法 2: 手动设置
+export DISPLAY=:0  # 或您的实际 DISPLAY 值
+xhost +local:      # 允许本地 X11 连接
+```
+
+**注意**：
+- 确保 X 服务器正在运行（通常在桌面环境中自动运行）
+- 如果使用 SSH 连接，需要启用 X11 转发：`ssh -X user@host`
+- `run_container.sh` 脚本会自动检查 X11 配置
+
+#### GPU 支持（可选，但推荐用于 ZED 相机）
+
+#### GPU 支持（可选，但推荐用于 ZED 相机）
+
+如果您的系统有 NVIDIA GPU 并需要使用 ZED 相机，需要安装 `nvidia-container-toolkit`：
+
+```bash
+cd /home/yjin/repos/ros2_ws/src/role-ros2/docker/ros2_cu118
+sudo ./install_nvidia_toolkit.sh
+```
+
+**如果没有 GPU 或不想安装 nvidia-container-toolkit**，可以使用无 GPU 模式（ZED 相机将无法工作）：
+
+```bash
+# 使用无 GPU 模式的 docker-compose 配置
+docker compose -f docker-compose-no-gpu.yaml up -d
+```
+
+#### Docker Compose 命令
+
+系统可能使用 `docker compose` (v2) 或 `docker-compose` (v1)。我们提供了辅助脚本来自动检测：
+
+```bash
+# 使用辅助脚本（推荐）
+./run_container.sh up
+
+# 或手动使用
+docker compose up -d        # Docker Compose v2
+# 或
+docker-compose up -d        # Docker Compose v1
+```
+
 ### 1. 构建镜像
 
 ```bash
-cd /home/yjin/repos/role_ws/src/role-ros2/docker/ros2_cu118
+cd /home/yjin/repos/ros2_ws/src/role-ros2/docker/ros2_cu118
 docker compose build
 ```
 
 ### 2. 运行容器
 
-有两种方式运行容器：
+有三种方式运行容器：
 
-#### 方式 1: 使用 docker compose run（推荐用于首次启动）
+#### 方式 1: 使用辅助脚本（推荐）
+
+```bash
+# 启动容器（自动检测 GPU 支持）
+./run_container.sh up
+
+# 启动容器（无 GPU 模式）
+./run_container.sh up --no-gpu
+
+# 查看容器状态
+./run_container.sh status
+
+# 进入容器
+./run_container.sh exec
+```
+
+#### 方式 2: 使用 docker compose run（推荐用于首次启动）
 
 ```bash
 # 启动并进入容器（自动配置环境）
 docker compose run --rm ros2_cu118 bash
 ```
 
-#### 方式 2: 使用 docker compose up + docker exec（推荐用于已运行的容器）
+#### 方式 3: 使用 docker compose up + docker exec（推荐用于已运行的容器）
 
 ```bash
 # 1. 启动容器（后台运行）
@@ -348,6 +421,119 @@ source /opt/ros/humble/setup.bash
 colcon build --symlink-install
 source install/setup.bash
 ros2 pkg executables role_ros2 | grep test
+```
+
+### Q: 容器启动失败，错误 "could not select device driver \"nvidia\" with capabilities: [[gpu]]"
+
+**A**: 这表示系统未安装 `nvidia-container-toolkit`。有两种解决方案：
+
+**方案 1: 安装 nvidia-container-toolkit（推荐，如果使用 ZED 相机）**
+
+```bash
+cd /home/yjin/repos/ros2_ws/src/role-ros2/docker/ros2_cu118
+sudo ./install_nvidia_toolkit.sh
+```
+
+安装完成后，重新启动容器：
+```bash
+docker compose up -d
+```
+
+**方案 2: 使用无 GPU 模式（如果不需要 ZED 相机）**
+
+```bash
+# 使用无 GPU 配置
+docker compose -f docker-compose-no-gpu.yaml up -d
+
+# 或使用辅助脚本
+./run_container.sh up --no-gpu
+```
+
+**注意**: 无 GPU 模式下，ZED 相机将无法工作，但机器人控制功能正常。
+
+### Q: rviz2 或其他 GUI 应用程序无法启动，显示 "cannot connect to X server"
+
+**A**: 这是 X11 转发配置问题。按以下步骤解决：
+
+**步骤 1: 检查 DISPLAY 环境变量**
+
+```bash
+echo $DISPLAY
+# 应该显示类似 :0 或 :1 的值
+```
+
+如果没有设置，设置它：
+```bash
+export DISPLAY=:0
+```
+
+**步骤 2: 配置 X11 授权**
+
+```bash
+cd /home/yjin/repos/ros2_ws/src/role-ros2/docker/ros2_cu118
+source setup_x11.sh
+```
+
+**步骤 3: 允许本地 X11 连接**
+
+```bash
+xhost +local:
+```
+
+**步骤 4: 重新启动容器**
+
+```bash
+./run_container.sh restart
+```
+
+**步骤 5: 在容器内测试 X11**
+
+```bash
+docker exec -it ros2_cu118_container bash
+xeyes  # 应该显示一个眼睛窗口
+# 如果 xeyes 工作，rviz2 也应该工作
+```
+
+**如果仍然不工作**：
+
+1. 检查 X 服务器是否运行：
+   ```bash
+   ps aux | grep Xorg
+   ```
+
+2. 检查 X11 socket 是否挂载：
+   ```bash
+   docker exec ros2_cu118_container ls -la /tmp/.X11-unix/
+   ```
+
+3. 检查容器内的 DISPLAY 环境变量：
+   ```bash
+   docker exec ros2_cu118_container echo $DISPLAY
+   ```
+
+4. 如果使用 SSH，确保启用 X11 转发：
+   ```bash
+   ssh -X user@host
+   ```
+
+### Q: 命令 "docker-compose" 未找到
+
+**A**: 系统可能使用 `docker compose` (v2) 而不是 `docker-compose` (v1)。使用辅助脚本自动检测：
+
+```bash
+./run_container.sh up
+```
+
+或手动使用：
+```bash
+docker compose up -d    # Docker Compose v2
+# 或
+docker-compose up -d     # Docker Compose v1
+```
+
+如果都没有，安装 docker-compose：
+```bash
+sudo apt install docker-compose
 ```
 
 ### Q: 构建时出现链接错误（undefined reference to cuvidDestroyVideoParser）

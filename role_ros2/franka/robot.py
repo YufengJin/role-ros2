@@ -135,10 +135,19 @@ class FrankaRobot:
             self._node.get_logger().warn("Reset service not available")
         
         # Spin thread for callbacks
-        self._spin_thread = threading.Thread(target=self._spin_node, daemon=True)
-        self._spin_thread.start()
+        # Only start spin thread if we own the node (not shared)
+        # If node is shared, the main thread should handle spinning
+        self._spin_thread = None
+        if self._own_node:
+            self._spin_thread = threading.Thread(target=self._spin_node, daemon=True)
+            self._spin_thread.start()
+        else:
+            # For shared nodes, we need to periodically spin in the main thread
+            # This will be handled by the caller (e.g., test script or main executor)
+            self._node.get_logger().debug("Using shared node - caller should handle spinning")
         
         # Wait for initial state
+        # For shared nodes, _wait_for_state will handle spinning
         self._wait_for_state(timeout=5.0)
         
         self._node.get_logger().info("FrankaRobot interface initialized")
@@ -164,6 +173,14 @@ class FrankaRobot:
         """Wait for initial state to be received."""
         start_time = time.time()
         while time.time() - start_time < timeout:
+            # For shared nodes, spin occasionally to process callbacks
+            if not self._own_node:
+                try:
+                    rclpy.spin_once(self._node, timeout_sec=0.05)
+                except Exception:
+                    # Ignore errors (e.g., "generator already executing")
+                    pass
+            
             with self._robot_state_lock:
                 if self._robot_state is not None and self._gripper_state is not None:
                     return
@@ -782,6 +799,12 @@ class FrankaRobot:
     
     def shutdown(self):
         """Clean up resources."""
+        # Stop spin thread if it exists
+        if self._spin_thread is not None and self._spin_thread.is_alive():
+            # Thread is daemon, so it will be cleaned up automatically
+            # But we should wait a bit for it to finish current spin
+            pass
+        
         if self._own_node:
             self._node.destroy_node()
             if rclpy.ok():

@@ -71,6 +71,47 @@ ensure_ros2_daemon() {
 # Source ROS2 Humble
 source /opt/ros/humble/setup.bash
 
+# Auto-install role_ros2 and oculus_reader if source is available (development mode)
+# This allows automatic installation when source is mounted via volume
+if [ -d "/app/ros2_ws/src/role-ros2" ]; then
+    # Install oculus_reader (if not already installed)
+    if [ -f "/app/ros2_ws/src/role-ros2/role_ros2/oculus_reader/setup.py" ]; then
+        if ! python3 -c "import oculus_reader" 2>/dev/null; then
+            echo "Installing oculus_reader..." >&2
+            cd /app/ros2_ws/src/role-ros2/role_ros2/oculus_reader && \
+            python3 -m pip install -e . >/dev/null 2>&1 || \
+            echo "Warning: oculus_reader installation failed" >&2
+        fi
+    fi
+    
+    # Install role_ros2 Python package (if not already installed)
+    if [ -f "/app/ros2_ws/src/role-ros2/role_ros2/pyproject.toml" ]; then
+        if ! python3 -c "import role_ros2" 2>/dev/null; then
+            echo "Installing role_ros2 Python package..." >&2
+            cd /app/ros2_ws/src/role-ros2/role_ros2 && \
+            python3 -m pip install --no-build-isolation -e . >/dev/null 2>&1 || \
+            echo "Warning: role_ros2 Python package installation failed" >&2
+        fi
+    fi
+fi
+
+# Check if workspace needs to be built
+# If role_ros2 source exists but install/setup.bash doesn't, workspace needs building
+if [ -d "/app/ros2_ws/src/role-ros2" ] && [ ! -f "/app/ros2_ws/install/setup.bash" ]; then
+    # Check if we should auto-build (only in interactive mode to avoid blocking)
+    if [ -t 0 ] && [ "${AUTO_BUILD_WORKSPACE:-0}" = "1" ]; then
+        echo "Workspace not built yet. Building role_ros2 package..." >&2
+        cd /app/ros2_ws && \
+        . /opt/ros/humble/setup.bash && \
+        colcon build --packages-select role_ros2 --symlink-install >/dev/null 2>&1 || \
+        echo "Warning: Auto-build failed. Please run 'colcon build --packages-select role_ros2 --symlink-install' manually" >&2
+    elif [ -t 0 ]; then
+        echo "⚠️  Warning: ROS2 workspace not built. role_ros2.msg will not be available." >&2
+        echo "   To build: cd /app/ros2_ws && colcon build --packages-select role_ros2 --symlink-install" >&2
+        echo "   Or set AUTO_BUILD_WORKSPACE=1 to auto-build on container start" >&2
+    fi
+fi
+
 # Source ROS2 workspace if it exists
 if [ -f "/app/ros2_ws/install/setup.bash" ]; then
     source /app/ros2_ws/install/setup.bash
@@ -83,6 +124,10 @@ if [ -f "/app/ros2_ws/src/role-ros2/docker/ros2_cu118/ros2_cu118.env" ]; then
     source /app/ros2_ws/src/role-ros2/docker/ros2_cu118/ros2_cu118.env >/dev/null 2>&1 || \
     source /app/ros2_ws/src/role-ros2/docker/ros2_cu118/ros2_cu118.env
 fi
+
+# Set DISPLAY environment variable to suppress GLFW X11 warnings in Docker
+# This prevents "X11: Failed to open display" warnings when running in headless mode
+export DISPLAY=${DISPLAY:-:0}
 
 # Initialize and start ROS2 daemon with robust error handling
 ensure_ros2_daemon || {

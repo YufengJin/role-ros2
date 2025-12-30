@@ -60,15 +60,21 @@ RUN apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # B. ROS 2 Core（ros-dev-tools 包含了 rosdep 和 vcstool）
+# ros-humble-desktop includes rviz2, rqt, and other GUI tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-desktop \
     ros-humble-rmw-cyclonedds-cpp \
     ros-dev-tools \
     python3-colcon-common-extensions \
     python3-argcomplete \
+    # X11 utilities for GUI applications
+    x11-apps \
+    x11-utils \
+    x11-xserver-utils \
     && rm -rf /var/lib/apt/lists/*
 # Note: ros-humble-desktop includes FastRTPS by default (rmw_fastrtps_cpp)
 # ros-humble-rmw-cyclonedds-cpp is kept for optional future use
+# x11-apps includes xeyes, xclock, etc. for testing X11 forwarding
 
 # C. Network & Debugging Tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -115,9 +121,11 @@ RUN cd / && \
 
 # Install ZED Python API
 # Fix setuptools version compatibility issue (humble-v4.1.4 requires older setuptools)
+# Fix NumPy version to 1.26.4 to avoid ABI compatibility issues with compiled extensions
+# Fix OpenCV version to 4.6.0.66 for aruco module compatibility (aruco API changed in 4.7+)
 RUN python3 -m pip install --upgrade pip wheel && \
     python3 -m pip install "setuptools<70.0.0" && \
-    python3 -m pip install numpy opencv-python && \
+    python3 -m pip install "numpy==1.26.4" "opencv-python==4.6.0.66" && \
     (python3 /usr/local/zed/get_python_api.py && \
      (python3 -m pip install --ignore-installed /tmp/pyzed-*.whl 2>/dev/null || \
       python3 -m pip install --ignore-installed $(ls -t /tmp/pyzed*.whl 2>/dev/null | head -1) 2>/dev/null || \
@@ -196,7 +204,82 @@ RUN . /opt/ros/humble/setup.bash && \
     fi && \
     echo "zed-ros2-wrapper packages built successfully!"
 
-# --- 10. Setup ROS2 environment in bashrc ---
+# --- 10. Install role_ros2 Python dependencies ---
+# Note: role_ros2 and oculus_reader source code will be mounted as volume at runtime
+# User will install them manually inside the container
+# These installations only prepare the Python environment with dependencies
+
+# 10.1 Install android-tools-adb (required for Oculus reader)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    android-tools-adb \
+    && rm -rf /var/lib/apt/lists/*
+
+# 10.2 Install PyTorch (required by role_ros2)
+# Install PyTorch with CUDA support (matching CUDA 11.8 in base image)
+# Use --ignore-installed to handle distutils-installed packages like sympy
+RUN python3 -m pip install --upgrade pip wheel && \
+    python3 -m pip install --ignore-installed torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+# 10.3 Install MuJoCo (required for IK solver and dm-control)
+# MuJoCo 2.3.2 is required for compatibility with dm-control 1.0.5 and dm-robotics 0.5.0
+RUN python3 -m pip install mujoco==2.3.2
+
+# 10.4 Install dm-control (required for IK solver and dm-robotics)
+RUN python3 -m pip install dm-control==1.0.5
+
+# 10.5 Install core Python dependencies for role_ros2 (from pyproject.toml)
+# Install scipy and other dependencies first (numpy will be installed last to prevent auto-upgrade)
+# Fix scipy version to 1.11.4 for compatibility with numpy 1.26.4
+RUN python3 -m pip install "scipy==1.11.4" matplotlib tqdm
+
+# 10.6 Install role_ros2 dependencies from pyproject.toml
+# Use --ignore-installed to handle system-installed packages
+RUN python3 -m pip install --ignore-installed \
+    boto3 \
+    customtkinter \
+    gym \
+    h5py \
+    imageio \
+    open3d \
+    opencv-python==4.6.0.66 \
+    opencv-contrib-python==4.6.0.66 \
+    Pillow \
+    protobuf==3.20.1 \
+    psutil \
+    pyrallis
+
+# 10.7 Install dm-robotics packages (required for IK solver)
+# Done with --no-deps to avoid dependency conflicts
+# Core dependencies (numpy, scipy, dm-control, mujoco) are already installed above
+RUN python3 -m pip install dm-robotics-moma==0.5.0 --no-deps && \
+    python3 -m pip install dm-robotics-transformations==0.5.0 --no-deps && \
+    python3 -m pip install dm-robotics-agentflow==0.5.0 --no-deps && \
+    python3 -m pip install dm-robotics-geometry==0.5.0 --no-deps && \
+    python3 -m pip install dm-robotics-manipulation==0.5.0 --no-deps && \
+    python3 -m pip install dm-robotics-controllers==0.5.0 --no-deps && \
+    echo "✓ dm-robotics packages installed successfully"
+
+# 10.8 Install NumPy last to prevent other packages from auto-upgrading it to 2.x
+# This must be done after all other packages to ensure NumPy 1.26.4 is the final version
+# Then reinstall scipy to ensure it's compiled against the correct NumPy version
+RUN python3 -m pip install --force-reinstall --no-deps "numpy==1.26.4" || \
+    python3 -m pip install --force-reinstall "numpy==1.26.4" && \
+    python3 -m pip install --force-reinstall --no-deps "scipy==1.11.4" || \
+    python3 -m pip install --force-reinstall "scipy==1.11.4"
+
+# 10.9 Verify key installations
+RUN python3 -c "import numpy; print(f'✓ NumPy version: {numpy.__version__}')" && \
+    python3 -c "import mujoco; print(f'✓ MuJoCo version: {mujoco.__version__}')" && \
+    python3 -c "import dm_control; print(f'✓ dm-control version: {dm_control.__version__}')" && \
+    python3 -c "import torch; print(f'✓ PyTorch version: {torch.__version__}')" || \
+    echo "Warning: Some verification checks failed, continuing..."
+
+# Note: oculus_reader and role_ros2 are NOT installed here
+# User will install them manually inside the container after mounting the source:
+#   pip install -e ./role_ros2/oculus_reader
+#   pip install --no-build-isolation -e role_ros2
+
+# --- 11. Setup ROS2 environment in bashrc ---
 RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc && \
     echo "if [ -f /app/ros2_ws/install/setup.bash ]; then source /app/ros2_ws/install/setup.bash; fi" >> /root/.bashrc
 
@@ -205,7 +288,6 @@ RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc && \
 # Build context is ../../../../ (role_ws directory), so path is relative to that
 COPY src/role-ros2/docker/ros2_cu118/entrypoint.sh /entrypoint.sh
 COPY src/role-ros2/docker/ros2_cu118/ros2_cu118.env /app/ros2_ws/src/role-ros2/docker/ros2_cu118/ros2_cu118.env
-COPY src/role-ros2/docker/ros2_cu118/cyclonedds.xml /app/ros2_ws/src/role-ros2/docker/ros2_cu118/cyclonedds.xml
 RUN chmod +x /entrypoint.sh && \
     chmod +x /app/ros2_ws/src/role-ros2/docker/ros2_cu118/ros2_cu118.env && \
     # Add ros2_cu118.env to bashrc so environment variables are set in new shells

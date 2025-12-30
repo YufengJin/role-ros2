@@ -221,29 +221,62 @@ class MockRobotInterface:
     Mock implementation of Polymetis RobotInterface for testing without hardware.
     
     Mimics the behavior of polymetis.RobotInterface, allowing development and testing
-    without physical robot hardware.
+    without physical robot hardware. State updates based on commands, simulating realistic motion.
     """
     
-    def __init__(self, num_dofs: int = 7):
+    def __init__(self, num_dofs: int = 7, update_rate: float = 50.0):
         """
         Initialize mock robot interface.
         
         Args:
             num_dofs: Number of degrees of freedom (default: 7 for Franka arm)
+            update_rate: Update rate in Hz for state simulation (default: 50.0)
         """
         self.num_dofs = num_dofs
+        self.update_rate = update_rate
+        self.dt = 1.0 / update_rate
+        
+        # Franka rest pose (home position) - from default_metadata.yaml
+        # This is the typical starting position for Franka robots
+        rest_pose = [
+            -0.13935425877571106,
+            -0.020481698215007782,
+            -0.05201413854956627,
+            -2.0691256523132324,
+            0.05058913677930832,
+            2.0028650760650635,
+            -0.9167874455451965
+        ]
+        
+        # Current state (actual positions/velocities) - initialize to rest pose
         if TORCH_AVAILABLE:
-            self._joint_positions = torch.zeros(num_dofs, dtype=torch.float32)
+            self._joint_positions = torch.tensor(rest_pose[:num_dofs], dtype=torch.float32)
             self._joint_velocities = torch.zeros(num_dofs, dtype=torch.float32)
             self._kp = torch.ones(num_dofs, dtype=torch.float32) * 40.0
             self._kd = torch.ones(num_dofs, dtype=torch.float32) * 4.0
+            # Target state (desired positions/velocities from commands) - initialize to rest pose
+            self._target_joint_positions = torch.tensor(rest_pose[:num_dofs], dtype=torch.float32)
+            self._target_joint_velocities = torch.zeros(num_dofs, dtype=torch.float32)
         else:
-            self._joint_positions = np.zeros(num_dofs)
+            self._joint_positions = np.array(rest_pose[:num_dofs], dtype=np.float32)
             self._joint_velocities = np.zeros(num_dofs)
             self._kp = np.ones(num_dofs) * 40.0
             self._kd = np.ones(num_dofs) * 4.0
+            self._target_joint_positions = np.array(rest_pose[:num_dofs], dtype=np.float32)
+            self._target_joint_velocities = np.zeros(num_dofs)
         
-        self._is_running_policy = False
+        # In mock mode, we want state to update even without explicit policy start
+        # This allows the robot to respond to commands immediately
+        self._is_running_policy = True  # Changed from False to True for mock mode
+        self._last_update_time = time.time()
+        
+        # Thread safety for state updates
+        self._state_lock = threading.Lock()
+        
+        # Motion parameters (simulate impedance control response)
+        self._max_velocity = 1.0  # rad/s
+        self._position_gain = 5.0  # How fast to reach target position
+        self._velocity_gain = 2.0  # How fast to reach target velocity
     
     def send_torch_policy(
         self,
@@ -257,7 +290,7 @@ class MockRobotInterface:
         Send impedance control command (mock implementation).
         
         In real RobotInterface, this would create and send a TorchScript policy.
-        For mock, we directly update the internal state.
+        For mock, we update target positions/velocities which will be gradually reached.
         
         Args:
             q: Desired joint positions (7 DOF) in radians
@@ -268,18 +301,18 @@ class MockRobotInterface:
         """
         if TORCH_AVAILABLE:
             if q is not None:
-                self._joint_positions = torch.tensor(q, dtype=torch.float32)
+                self._target_joint_positions = torch.tensor(q, dtype=torch.float32)
             if qd is not None:
-                self._joint_velocities = torch.tensor(qd, dtype=torch.float32)
+                self._target_joint_velocities = torch.tensor(qd, dtype=torch.float32)
             if Kq is not None:
                 self._kp = torch.tensor(Kq, dtype=torch.float32)
             if Kqd is not None:
                 self._kd = torch.tensor(Kqd, dtype=torch.float32)
         else:
             if q is not None:
-                self._joint_positions = np.array(q)
+                self._target_joint_positions = np.array(q)
             if qd is not None:
-                self._joint_velocities = np.array(qd)
+                self._target_joint_velocities = np.array(qd)
             if Kq is not None:
                 self._kp = np.array(Kq)
             if Kqd is not None:
@@ -287,16 +320,87 @@ class MockRobotInterface:
         
         self._is_running_policy = True
     
+    def update_state(self, dt=None):
+        """
+        Update robot state based on target positions/velocities.
+        
+        Simulates impedance control: gradually moves toward target positions/velocities.
+        This should be called periodically (e.g., in the state publishing loop).
+        
+        Args:
+            dt: Time delta in seconds. If None, computed from last update time.
+        """
+        if not self._is_running_policy:
+            return
+        
+        with self._state_lock:
+            if dt is None:
+                current_time = time.time()
+                dt = min(current_time - self._last_update_time, 0.1)  # Cap dt to avoid large jumps
+                self._last_update_time = current_time
+            
+            if TORCH_AVAILABLE:
+                # Compute position error
+                pos_error = self._target_joint_positions - self._joint_positions
+                
+                # Compute desired velocity (proportional control + target velocity)
+                desired_velocity = self._position_gain * pos_error + self._target_joint_velocities
+                
+                # Limit velocity
+                vel_norm = torch.norm(desired_velocity)
+                if vel_norm > self._max_velocity:
+                    desired_velocity = desired_velocity * (self._max_velocity / vel_norm)
+                
+                # Update velocity (exponential approach to desired velocity)
+                vel_error = desired_velocity - self._joint_velocities
+                self._joint_velocities += self._velocity_gain * vel_error * dt
+                
+                # Update position
+                self._joint_positions += self._joint_velocities * dt
+            else:
+                # NumPy version
+                pos_error = self._target_joint_positions - self._joint_positions
+                desired_velocity = self._position_gain * pos_error + self._target_joint_velocities
+                
+                # Limit velocity
+                vel_norm = np.linalg.norm(desired_velocity)
+                if vel_norm > self._max_velocity:
+                    desired_velocity = desired_velocity * (self._max_velocity / vel_norm)
+                
+                # Update velocity
+                vel_error = desired_velocity - self._joint_velocities
+                self._joint_velocities += self._velocity_gain * vel_error * dt
+                
+                # Update position
+                self._joint_positions += self._joint_velocities * dt
+    
     def get_joint_positions(self):
-        """Get current joint positions."""
-        return self._joint_positions
+        """Get current joint positions (thread-safe)."""
+        with self._state_lock:
+            if TORCH_AVAILABLE:
+                return self._joint_positions.clone() if isinstance(self._joint_positions, torch.Tensor) else self._joint_positions.copy()
+            else:
+                return self._joint_positions.copy()
     
     def get_joint_velocities(self):
-        """Get current joint velocities."""
-        return self._joint_velocities
+        """Get current joint velocities (thread-safe)."""
+        with self._state_lock:
+            if TORCH_AVAILABLE:
+                return self._joint_velocities.clone() if isinstance(self._joint_velocities, torch.Tensor) else self._joint_velocities.copy()
+            else:
+                return self._joint_velocities.copy()
     
     def get_robot_state(self):
-        """Get robot state (mock implementation)."""
+        """Get robot state (mock implementation, thread-safe)."""
+        with self._state_lock:
+            # Create copies to ensure consistency
+            if TORCH_AVAILABLE:
+                positions = self._joint_positions.clone() if isinstance(self._joint_positions, torch.Tensor) else self._joint_positions.copy()
+                velocities = self._joint_velocities.clone() if isinstance(self._joint_velocities, torch.Tensor) else self._joint_velocities.copy()
+            else:
+                positions = self._joint_positions.copy()
+                velocities = self._joint_velocities.copy()
+        
         class MockRobotState:
             def __init__(self, positions, velocities):
                 self.joint_positions = positions
@@ -309,7 +413,7 @@ class MockRobotInterface:
                 self.prev_command_successful = True
                 self.timestamp = type('obj', (object,), {'seconds': 0, 'nanos': 0})()
         
-        return MockRobotState(self._joint_positions, self._joint_velocities)
+        return MockRobotState(positions, velocities)
     
     def is_running_policy(self) -> bool:
         """Check if a policy is currently running."""
@@ -329,64 +433,211 @@ class MockRobotInterface:
                 self._kd = np.array(Kqd)
         self._is_running_policy = True
     
-    def update_desired_joint_positions(self, positions):
-        """Update desired joint positions (non-blocking)."""
-        if TORCH_AVAILABLE:
-            if isinstance(positions, torch.Tensor):
-                self._joint_positions = positions.clone()
+    def start_cartesian_impedance(self, Kx=None, Kxd=None):
+        """
+        Start cartesian impedance control mode.
+        
+        In mock mode, this is equivalent to starting joint impedance control.
+        The actual cartesian control is handled by the IK solver in the bridge node.
+        
+        Args:
+            Kx: Cartesian position gains (stiffness) - 6D [x, y, z, roll, pitch, yaw]
+            Kxd: Cartesian velocity gains (damping) - 6D
+        """
+        # In mock mode, cartesian impedance is handled via IK solver
+        # Just start the policy to enable control
+        # Store cartesian gains if provided (for compatibility)
+        if Kx is not None:
+            # Convert 6D cartesian gains to 7D joint gains (simplified)
+            if TORCH_AVAILABLE:
+                # Use average of cartesian gains for joint gains
+                avg_gain = torch.mean(torch.tensor(Kx, dtype=torch.float32))
+                self._kp = torch.ones(self.num_dofs, dtype=torch.float32) * avg_gain
             else:
-                self._joint_positions = torch.tensor(positions, dtype=torch.float32)
-        else:
-            self._joint_positions = np.array(positions)
+                avg_gain = np.mean(np.array(Kx))
+                self._kp = np.ones(self.num_dofs) * avg_gain
+        if Kxd is not None:
+            if TORCH_AVAILABLE:
+                avg_gain = torch.mean(torch.tensor(Kxd, dtype=torch.float32))
+                self._kd = torch.ones(self.num_dofs, dtype=torch.float32) * avg_gain
+            else:
+                avg_gain = np.mean(np.array(Kxd))
+                self._kd = np.ones(self.num_dofs) * avg_gain
+        self._is_running_policy = True
+    
+    def update_desired_joint_positions(self, positions):
+        """Update desired joint positions (non-blocking, thread-safe)."""
+        with self._state_lock:
+            if TORCH_AVAILABLE:
+                if isinstance(positions, torch.Tensor):
+                    self._target_joint_positions = positions.clone()
+                else:
+                    self._target_joint_positions = torch.tensor(positions, dtype=torch.float32)
+            else:
+                self._target_joint_positions = np.array(positions)
     
     def move_to_joint_positions(self, positions, time_to_go: float = 2.0):
-        """Move to joint positions (blocking)."""
-        if TORCH_AVAILABLE:
-            if isinstance(positions, torch.Tensor):
-                self._joint_positions = positions.clone()
+        """Move to joint positions (blocking, thread-safe)."""
+        with self._state_lock:
+            if TORCH_AVAILABLE:
+                if isinstance(positions, torch.Tensor):
+                    self._target_joint_positions = positions.clone()
+                else:
+                    self._target_joint_positions = torch.tensor(positions, dtype=torch.float32)
             else:
-                self._joint_positions = torch.tensor(positions, dtype=torch.float32)
-        else:
-            self._joint_positions = np.array(positions)
-        time.sleep(time_to_go)
+                self._target_joint_positions = np.array(positions)
+        
+        # Simulate movement by updating state until target is reached
+        start_time = time.time()
+        dt = 1.0 / self.update_rate
+        while time.time() - start_time < time_to_go:
+            self.update_state(dt=dt)
+            # Check if close enough to target (thread-safe read)
+            with self._state_lock:
+                if TORCH_AVAILABLE:
+                    error = torch.norm(self._target_joint_positions - self._joint_positions).item()
+                else:
+                    error = np.linalg.norm(self._target_joint_positions - self._joint_positions)
+            if error < 0.01:  # 0.01 rad tolerance
+                break
+            time.sleep(0.01)  # Small sleep to avoid busy loop
     
     def terminate_current_policy(self):
         """Terminate current policy."""
         self._is_running_policy = False
     
-    def solve_inverse_kinematics(self, pos, quat, curr_joints):
-        """Solve inverse kinematics (mock implementation)."""
+    def solve_inverse_kinematics(self, pos, quat, curr_joints, tol=None):
+        """
+        Solve inverse kinematics (mock implementation).
+        
+        In mock mode, this is a simplified implementation that returns current joints.
+        Real IK would compute desired joints from position and orientation.
+        
+        Args:
+            pos: Target position [x, y, z]
+            quat: Target orientation quaternion [x, y, z, w]
+            curr_joints: Current joint positions (used as initial guess)
+            tol: Tolerance (optional, for compatibility)
+        
+        Returns:
+            tuple: (joint_positions, success)
+        """
         # Simple mock: return current joints (real IK would compute desired joints)
+        # In a real implementation, this would use IK solver to compute target joints
         if TORCH_AVAILABLE:
             if isinstance(curr_joints, torch.Tensor):
-                return curr_joints.clone()
+                return curr_joints.clone(), True
             else:
-                return torch.tensor(curr_joints, dtype=torch.float32)
+                return torch.tensor(curr_joints, dtype=torch.float32), True
         else:
-            return np.array(curr_joints)
+            return np.array(curr_joints), True
     
     def get_ee_pose(self):
-        """Get end-effector pose (mock implementation)."""
-        # Return default pose
+        """
+        Get end-effector pose (mock implementation, thread-safe).
+        
+        Uses simple forward kinematics approximation based on joint positions.
+        For a more accurate FK, would need robot model, but this is sufficient for mock.
+        """
+        # Simple FK approximation: use joint positions to compute approximate EE pose
+        # This is a simplified model - real FK would use DH parameters or URDF
+        with self._state_lock:
+            if TORCH_AVAILABLE:
+                joints = self._joint_positions.cpu().numpy() if isinstance(self._joint_positions, torch.Tensor) else self._joint_positions.copy()
+            else:
+                joints = self._joint_positions.copy()
+        
+        # Simplified FK for Franka Panda (approximate)
+        # Base to EE transformation (simplified)
+        # x = 0.333 * cos(j1) * cos(j2) + 0.316 * cos(j1) * sin(j2) + ...
+        # This is a very rough approximation
+        x = 0.3 + 0.1 * joints[0] + 0.1 * joints[1]
+        y = 0.0 + 0.1 * joints[0] - 0.1 * joints[2]
+        z = 0.5 + 0.1 * joints[1] + 0.1 * joints[3]
+        
+        # Simple orientation (roll, pitch, yaw from joints)
+        roll = joints[3]
+        pitch = joints[4]
+        yaw = joints[5]
+        
+        # Convert to quaternion (simplified)
+        cy = np.cos(yaw * 0.5)
+        sy = np.sin(yaw * 0.5)
+        cp = np.cos(pitch * 0.5)
+        sp = np.sin(pitch * 0.5)
+        cr = np.cos(roll * 0.5)
+        sr = np.sin(roll * 0.5)
+        
+        quat = np.array([
+            sr * cp * cy - cr * sp * sy,  # x
+            cr * sp * cy + sr * cp * sy,  # y
+            cr * cp * sy - sr * sp * cy,  # z
+            cr * cp * cy + sr * sp * sy   # w
+        ])
+        
         if TORCH_AVAILABLE:
-            pos = torch.zeros(3, dtype=torch.float32)
-            quat = torch.tensor([0.0, 0.0, 0.0, 1.0], dtype=torch.float32)  # [x, y, z, w]
+            pos = torch.tensor([x, y, z], dtype=torch.float32)
+            quat = torch.tensor(quat, dtype=torch.float32)
         else:
-            pos = np.zeros(3)
-            quat = np.array([0.0, 0.0, 0.0, 1.0])
+            pos = np.array([x, y, z])
+        
         return pos, quat
 
 
 class MockGripperInterface:
     """
     Mock implementation of Polymetis GripperInterface for testing without hardware.
+    
+    State updates based on commands, simulating realistic motion.
     """
     
-    def __init__(self):
-        """Initialize mock gripper interface."""
-        self._width = 0.08  # Max width in meters
+    def __init__(self, update_rate: float = 50.0):
+        """
+        Initialize mock gripper interface.
+        
+        Args:
+            update_rate: Update rate in Hz for state simulation (default: 50.0)
+        """
+        self._current_width = 0.08  # Current width in meters
+        self._target_width = 0.08  # Target width from commands
         self._is_moving = False
+        self._last_update_time = time.time()
+        self._update_rate = update_rate
+        self._max_speed = 0.1  # m/s
         self.metadata = type('obj', (object,), {'max_width': 0.08})()
+        
+        # Thread safety for state updates
+        self._state_lock = threading.Lock()
+    
+    def update_state(self, dt=None):
+        """
+        Update gripper state based on target width.
+        
+        Gradually moves toward target width. Should be called periodically.
+        
+        Args:
+            dt: Time delta in seconds. If None, computed from last update time.
+        """
+        with self._state_lock:
+            if dt is None:
+                current_time = time.time()
+                dt = min(current_time - self._last_update_time, 0.1)  # Cap dt
+                self._last_update_time = current_time
+            
+            # Compute error
+            width_error = self._target_width - self._current_width
+            
+            # Check if moving
+            if abs(width_error) > 0.001:  # 1mm tolerance
+                self._is_moving = True
+                # Move toward target (proportional control)
+                max_step = self._max_speed * dt
+                step = np.clip(width_error, -max_step, max_step)
+                self._current_width += step
+                self._current_width = np.clip(self._current_width, 0.0, self.metadata.max_width)
+            else:
+                self._is_moving = False
+                self._current_width = self._target_width
     
     def goto(self, width: float, speed: float = 0.05, force: float = 0.1, blocking: bool = False):
         """
@@ -394,27 +645,46 @@ class MockGripperInterface:
         
         Args:
             width: Target width in meters (0=closed, max_width=open)
-            speed: Movement speed (0.0-1.0)
+            speed: Movement speed (0.0-1.0) - affects max_speed
             force: Gripper force (0.0-1.0)
             blocking: Whether to wait for completion
         """
-        self._width = max(0.0, min(width, self.metadata.max_width))
-        self._is_moving = True
+        with self._state_lock:
+            self._target_width = max(0.0, min(width, self.metadata.max_width))
+            # Adjust max speed based on speed parameter
+            self._max_speed = 0.1 * speed if speed > 0 else 0.1
+        
         if blocking:
-            time.sleep(0.5)  # Simulate movement time
-        self._is_moving = False
+            # Simulate movement by updating until target reached
+            start_time = time.time()
+            timeout = 5.0  # Max 5 seconds
+            dt = 1.0 / self._update_rate
+            while True:
+                with self._state_lock:
+                    error = abs(self._target_width - self._current_width)
+                if error <= 0.001 or (time.time() - start_time) >= timeout:
+                    break
+                self.update_state(dt=dt)
+                time.sleep(0.01)
+            with self._state_lock:
+                self._is_moving = False
     
     def get_state(self):
-        """Get gripper state."""
+        """Get gripper state (thread-safe)."""
+        with self._state_lock:
+            # Create snapshot to ensure consistency
+            width = float(self._current_width)  # Ensure float type
+            is_moving = bool(self._is_moving)  # Ensure bool type
+        
         class MockGripperState:
             def __init__(self, width, is_moving):
-                self.width = width
-                self.is_moving = is_moving
-                self.is_grasped = width < 0.01
+                self.width = float(width)  # Ensure float type
+                self.is_moving = bool(is_moving)  # Ensure bool type
+                self.is_grasped = bool(width < 0.01)  # Ensure bool type (not numpy.bool_)
                 self.prev_command_successful = True
                 self.error_code = 0
         
-        return MockGripperState(self._width, self._is_moving)
+        return MockGripperState(width, is_moving)
 
 
 class PolymetisCombinedNode(Node):
@@ -502,8 +772,8 @@ class PolymetisCombinedNode(Node):
         try:
             if use_mock or not POLYMETIS_AVAILABLE:
                 self.get_logger().info("Using MockRobotInterface and MockGripperInterface (no hardware)")
-                self._robot = MockRobotInterface(num_dofs=7)
-                self._gripper = MockGripperInterface()
+                self._robot = MockRobotInterface(num_dofs=7, update_rate=self.publish_rate)
+                self._gripper = MockGripperInterface(update_rate=self.publish_rate)
             else:
                 self.get_logger().info(f"Connecting to Polymetis server at {ip_address}")
                 # Wait a bit for servers to start if we just launched them
@@ -533,8 +803,8 @@ class PolymetisCombinedNode(Node):
                 self.get_logger().info("Successfully connected to Polymetis server")
         except Exception as e:
             self.get_logger().error(f"Failed to connect to Polymetis: {e}. Using mock interfaces.")
-            self._robot = MockRobotInterface(num_dofs=7)
-            self._gripper = MockGripperInterface()
+            self._robot = MockRobotInterface(num_dofs=7, update_rate=self.publish_rate)
+            self._gripper = MockGripperInterface(update_rate=self.publish_rate)
         
         # Initialize IK solver if available
         self._ik_solver = None
@@ -1368,8 +1638,8 @@ class PolymetisCombinedNode(Node):
                 "prev_joint_torques_computed": to_list(robot_state.prev_joint_torques_computed),
                 "prev_joint_torques_computed_safened": to_list(robot_state.prev_joint_torques_computed_safened),
                 "motor_torques_measured": to_list(robot_state.motor_torques_measured),
-                "prev_controller_latency_ms": robot_state.prev_controller_latency_ms,
-                "prev_command_successful": robot_state.prev_command_successful,
+                "prev_controller_latency_ms": float(robot_state.prev_controller_latency_ms),
+                "prev_command_successful": bool(robot_state.prev_command_successful),  # Ensure bool type
             }
             
             timestamp_dict = {
@@ -1398,9 +1668,26 @@ class PolymetisCombinedNode(Node):
     def _publish_states(self):
         """
         Publish joint states, robot state, gripper state, EE pose, and controller status at high frequency.
+        
+        In mock mode, updates state once and uses consistent snapshot for all publications
+        to avoid asynchronous state issues.
         """
         now = self.get_clock().now()
         
+        # Update mock state if using mock interfaces (simulate motion based on commands)
+        # Use consistent dt for both robot and gripper to ensure synchronized updates
+        if isinstance(self._robot, MockRobotInterface) or isinstance(self._gripper, MockGripperInterface):
+            # Calculate dt based on expected update rate
+            dt = 1.0 / self.publish_rate
+            
+            # Update both with same dt to ensure consistency
+            if isinstance(self._robot, MockRobotInterface):
+                self._robot.update_state(dt=dt)
+            if isinstance(self._gripper, MockGripperInterface):
+                self._gripper.update_state(dt=dt)
+        
+        # Publish all states using consistent snapshot
+        # All publish methods will read from the same state snapshot
         # Publish joint states (for tf tree)
         self._publish_joint_states()
         
@@ -1518,17 +1805,17 @@ class PolymetisCombinedNode(Node):
             
             # Gripper state
             gripper_state = self._gripper.get_state()
-            msg.gripper_width = gripper_state.width
-            msg.gripper_position = state_dict["gripper_position"]
-            msg.gripper_is_grasped = getattr(gripper_state, 'is_grasped', False)
-            msg.gripper_is_moving = getattr(gripper_state, 'is_moving', False)
-            msg.gripper_prev_command_successful = getattr(gripper_state, 'prev_command_successful', True)
-            msg.gripper_error_code = getattr(gripper_state, 'error_code', 0)
+            msg.gripper_width = float(gripper_state.width)
+            msg.gripper_position = float(state_dict["gripper_position"])
+            msg.gripper_is_grasped = bool(getattr(gripper_state, 'is_grasped', False))  # Ensure bool type
+            msg.gripper_is_moving = bool(getattr(gripper_state, 'is_moving', False))  # Ensure bool type
+            msg.gripper_prev_command_successful = bool(getattr(gripper_state, 'prev_command_successful', True))  # Ensure bool type
+            msg.gripper_error_code = int(getattr(gripper_state, 'error_code', 0))  # Ensure int type
             
             # Controller info
-            msg.prev_controller_latency_ms = state_dict["prev_controller_latency_ms"]
-            msg.prev_command_successful = state_dict["prev_command_successful"]
-            msg.is_running_policy = self._robot.is_running_policy() if hasattr(self._robot, 'is_running_policy') else False
+            msg.prev_controller_latency_ms = float(state_dict["prev_controller_latency_ms"])
+            msg.prev_command_successful = bool(state_dict["prev_command_successful"])  # Ensure bool type
+            msg.is_running_policy = bool(self._robot.is_running_policy() if hasattr(self._robot, 'is_running_policy') else False)  # Ensure bool type
             
             # Polymetis timestamp (convert to int for ROS2 message type)
             msg.polymetis_timestamp_ns = int(timestamp_dict["robot_timestamp_seconds"] * 1e9 + timestamp_dict["robot_timestamp_nanos"])
@@ -1552,12 +1839,12 @@ class PolymetisCombinedNode(Node):
             msg.header.stamp = now.to_msg()
             msg.header.frame_id = 'gripper_link'
             
-            msg.width = gripper_state.width
-            msg.position = 1 - (gripper_state.width / self._max_gripper_width)  # Normalized
-            msg.is_grasped = getattr(gripper_state, 'is_grasped', False)
-            msg.is_moving = getattr(gripper_state, 'is_moving', False)
-            msg.prev_command_successful = getattr(gripper_state, 'prev_command_successful', True)
-            msg.error_code = getattr(gripper_state, 'error_code', 0)
+            msg.width = float(gripper_state.width)
+            msg.position = float(1 - (gripper_state.width / self._max_gripper_width))  # Normalized
+            msg.is_grasped = bool(getattr(gripper_state, 'is_grasped', False))  # Ensure bool type
+            msg.is_moving = bool(getattr(gripper_state, 'is_moving', False))  # Ensure bool type
+            msg.prev_command_successful = bool(getattr(gripper_state, 'prev_command_successful', True))  # Ensure bool type
+            msg.error_code = int(getattr(gripper_state, 'error_code', 0))  # Ensure int type
             msg.max_width = self._max_gripper_width
             
             # Get timestamp if available
@@ -1581,19 +1868,15 @@ class PolymetisCombinedNode(Node):
         Publish end-effector pose under /polymetis/arm/ee_pose.
         """
         try:
-            if isinstance(self._robot, MockRobotInterface):
-                # Mock: return default pose
-                pos = [0.0, 0.0, 0.0]
-                quat = [0.0, 0.0, 0.0, 1.0]
+            # Use get_ee_pose() for both mock and real robot (mock has FK implementation)
+            pos, quat = self._robot.get_ee_pose()
+            if TORCH_AVAILABLE and isinstance(pos, torch.Tensor):
+                pos = pos.cpu().numpy().tolist()
+            if TORCH_AVAILABLE and isinstance(quat, torch.Tensor):
+                quat = quat.cpu().numpy().tolist()
             else:
-                pos, quat = self._robot.get_ee_pose()
-                if TORCH_AVAILABLE and isinstance(pos, torch.Tensor):
-                    pos = pos.cpu().numpy().tolist()
-                if TORCH_AVAILABLE and isinstance(quat, torch.Tensor):
-                    quat = quat.cpu().numpy().tolist()
-                else:
-                    pos = pos.tolist() if hasattr(pos, 'tolist') else list(pos)
-                    quat = quat.tolist() if hasattr(quat, 'tolist') else list(quat)
+                pos = pos.tolist() if hasattr(pos, 'tolist') else list(pos)
+                quat = quat.tolist() if hasattr(quat, 'tolist') else list(quat)
             
             # Create PoseStamped message
             msg = PoseStamped()
@@ -1629,9 +1912,9 @@ class PolymetisCombinedNode(Node):
             
             # Get controller status
             if isinstance(self._robot, MockRobotInterface):
-                msg.is_running_policy = self._robot.is_running_policy()
+                msg.is_running_policy = bool(self._robot.is_running_policy())  # Ensure bool type
             else:
-                msg.is_running_policy = self._robot.is_running_policy() if hasattr(self._robot, 'is_running_policy') else False
+                msg.is_running_policy = bool(self._robot.is_running_policy() if hasattr(self._robot, 'is_running_policy') else False)  # Ensure bool type
             
             msg.controller_mode = self._controller_mode
             

@@ -18,17 +18,23 @@ services:
     # Enable privileged mode for hardware access (USB devices, video devices, etc.)
     privileged: true
     # Enable NVIDIA GPU support (required for CUDA and ZED camera)
+    # Use runtime: nvidia for compatibility with older docker-compose versions
+    # Alternative: Use deploy.resources.reservations.devices for docker-compose v2.3+
+    # Note: Requires nvidia-container-toolkit to be installed on the host
+    # If you get "could not select device driver nvidia" error, either:
+    # 1. Install nvidia-container-toolkit (see NVIDIA_GPU_SETUP.md)
+    # 2. Use docker-compose-no-gpu.yaml instead (ZED camera will not work)
+    runtime: nvidia
+    # Auto-restart policy
     deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
       restart_policy:
         condition: any
     # Environment variables
     environment:
+      # NVIDIA GPU environment variables
+      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
+      NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,video,utility}"
+      # ROS2 environment variables
       ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
       RMW_IMPLEMENTATION: "rmw_fastrtps_cpp"
       FASTDDS_BUILTIN_TRANSPORTS: "UDPv4"
@@ -42,7 +48,6 @@ services:
       # ZED SDK environment variables
       ZED_SDK_ROOT: "/usr/local/zed"
     volumes:
-      # X11 forwarding for GUI applications
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       # Shared memory for DDS (optional but recommended for FastDDS)
       - /dev/shm:/dev/shm:rw

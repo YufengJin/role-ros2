@@ -1,5 +1,13 @@
 import os
-from cv2 import aruco
+try:
+    from cv2 import aruco
+except ImportError:
+    # Fallback for OpenCV 4.7+ where aruco is in cv2.aruco submodule
+    try:
+        import cv2
+        aruco = cv2.aruco
+    except (ImportError, AttributeError):
+        raise ImportError("Failed to import aruco from cv2. Please ensure opencv-contrib-python is installed.")
 
 # Robot Params #
 nuc_ip = "172.17.0.1"

@@ -144,9 +144,16 @@ install(FILES
 
 # Install XML model files (needed by RobotIKSolver)
 # Install to Python package directory so arm.py can find it at runtime
+# Install to both site-packages (ROS2 Foxy) and dist-packages (ROS2 Humble)
 install(FILES
   role_ros2/robot_ik/franka/fr3.xml
   DESTINATION lib/python${PYTHON_VERSION}/site-packages/role_ros2/robot_ik/franka
+)
+
+# Also install to dist-packages for ROS2 Humble compatibility
+install(FILES
+  role_ros2/robot_ik/franka/fr3.xml
+  DESTINATION local/lib/python${PYTHON_VERSION}/dist-packages/role_ros2/robot_ik/franka
 )
 
 # Install mesh directory (needed by fr3.xml)
@@ -157,10 +164,24 @@ install(DIRECTORY role_ros2/robot_ik/franka/mesh
     PATTERN "*.obj"
 )
 
+# Also install mesh to dist-packages for ROS2 Humble compatibility
+install(DIRECTORY role_ros2/robot_ik/franka/mesh
+  DESTINATION local/lib/python${PYTHON_VERSION}/dist-packages/role_ros2/robot_ik/franka
+  FILES_MATCHING
+    PATTERN "*.obj"
+)
+
 # Install texture directory (needed by fr3.xml)
 # Install to Python package directory to match fr3.xml location
 install(DIRECTORY role_ros2/robot_ik/franka/texture
   DESTINATION lib/python${PYTHON_VERSION}/site-packages/role_ros2/robot_ik/franka
+  FILES_MATCHING
+    PATTERN "*.png"
+)
+
+# Also install texture to dist-packages for ROS2 Humble compatibility
+install(DIRECTORY role_ros2/robot_ik/franka/texture
+  DESTINATION local/lib/python${PYTHON_VERSION}/dist-packages/role_ros2/robot_ik/franka
   FILES_MATCHING
     PATTERN "*.png"
 )
