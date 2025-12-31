@@ -1,0 +1,50 @@
+# Oculus Reader Node Configuration File
+# This file contains default parameters for oculus_reader_node
+# You can override these values via launch arguments when starting the node
+
+# ============================================================================
+# Publishing Settings
+# ============================================================================
+
+publish_rate: 50.0  # Publishing rate in Hz (default: 50.0)
+publish_tf: true    # Publish TF transforms for controllers (default: true)
+publish_markers: true  # Publish visualization markers for RViz (default: false)
+
+# ============================================================================
+# Connection Settings
+# ============================================================================
+
+# Oculus Quest connection
+oculus_ip_address: ""  # Oculus Quest IP address (empty for USB connection, set IP for network)
+                       # Example for network: "192.168.1.100"
+oculus_port: 5555      # ADB port for network connection (default: 5555)
+
+# ============================================================================
+# Frame ID Settings
+# ============================================================================
+
+frame_id: "oculus_base"  # Frame ID for published poses and TF (default: oculus_base)
+
+# ============================================================================
+# Example Configurations
+# ============================================================================
+
+# Configuration 1: Default (USB connection)
+# publish_rate: 50.0
+# publish_tf: true
+# oculus_ip_address: ""
+# publish_markers: false
+
+# Configuration 2: Network connection (if using network ADB)
+# publish_rate: 50.0
+# publish_tf: true
+# oculus_ip_address: "192.168.1.100"  # Set your Oculus Quest IP
+# oculus_port: 5555
+# publish_markers: false
+
+# Configuration 3: With visualization markers for RViz
+# publish_rate: 50.0
+# publish_tf: true
+# oculus_ip_address: ""
+# publish_markers: true
+

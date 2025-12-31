@@ -90,7 +90,7 @@ class RobotEnv(gym.Env):
         # Use reset service - randomization is handled internally by polymetis_bridge_node
         # The service applies cartesian noise via _add_cartesian_noise_to_joints()
         # using the same noise range as this class (randomize_low, randomize_high)
-        self._robot.reset(randomize=randomize, wait_for_completion=True, wait_time_sec=30.0)
+        self._robot.reset(randomize=randomize, wait_for_completion=True, wait_time_sec=20.0)
 
     def update_robot(self, action, action_space="cartesian_velocity", gripper_action_space=None, blocking=False):
         action_info = self._robot.update_command(

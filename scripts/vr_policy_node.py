@@ -53,6 +53,7 @@ from std_msgs.msg import Header
 from role_ros2.msg import OculusButtons, VRPolicyAction, PolymetisRobotState
 from role_ros2.misc.transformations import (
     add_angles,
+    add_quats,
     euler_to_quat,
     quat_diff,
     quat_to_euler,
@@ -231,6 +232,9 @@ class VRPolicyNode(Node):
             "buttons": {"A": False, "B": False, "X": False, "Y": False},
             "movement_enabled": False,
             "controller_on": False,
+            "joystick_pressed": False,
+            "orientation_resetting": False,
+            "joystick_hold_progress": 0.0,
         }
     
     def _pose_callback(self, msg: PoseStamped):
@@ -294,21 +298,33 @@ class VRPolicyNode(Node):
         
         # Long press detection for joystick reset (orientation reset)
         current_time = time.time()
+        self._state["joystick_pressed"] = joystick_pressed
+        
         if joystick_pressed:
             if self._joystick_press_start_time is None:
                 # Just started pressing
                 self._joystick_press_start_time = current_time
                 self._joystick_reset_triggered = False
+                self._state["joystick_hold_progress"] = 0.0
+                self._state["orientation_resetting"] = False
             else:
                 # Check if held long enough
                 hold_duration = current_time - self._joystick_press_start_time
+                # Calculate progress (0.0 to 1.0)
+                progress = min(1.0, hold_duration / self._joystick_hold_duration)
+                self._state["joystick_hold_progress"] = progress
+                
                 if hold_duration >= self._joystick_hold_duration and not self._joystick_reset_triggered:
                     # Long press detected - trigger orientation reset
                     self.reset_orientation = True
                     self._joystick_reset_triggered = True
+                    self._state["orientation_resetting"] = True
                     self.get_logger().info(
                         f"🔄 Joystick long press detected ({hold_duration:.2f}s) - Resetting VR orientation"
                     )
+                else:
+                    # Still holding, but not long enough yet
+                    self._state["orientation_resetting"] = False
         else:
             # Joystick released
             if self._joystick_press_start_time is not None:
@@ -319,6 +335,9 @@ class VRPolicyNode(Node):
                     )
             self._joystick_press_start_time = None
             self._joystick_reset_triggered = False
+            self._state["joystick_pressed"] = False
+            self._state["joystick_hold_progress"] = 0.0
+            self._state["orientation_resetting"] = False
         
         # Update flags
         toggled = (self._state["movement_enabled"] != grip_pressed)
@@ -351,6 +370,8 @@ class VRPolicyNode(Node):
                         f"✅ VR orientation reset complete. "
                         f"New forward direction set based on current controller pose."
                     )
+                    self._state["orientation_resetting"] = False
+                    self.reset_orientation = False
                 except Exception as e:
                     self.get_logger().warn(
                         f"⚠️  Failed to invert rotation matrix for orientation reset: {e}. "
@@ -358,10 +379,10 @@ class VRPolicyNode(Node):
                     )
                     self.vr_to_global_mat = np.eye(4)
                     self.reset_orientation = True  # Retry on next update
-                else:
-                    self.reset_orientation = False
+                    self._state["orientation_resetting"] = True
             else:
                 # Still holding joystick - keep updating
+                self._state["orientation_resetting"] = True
                 try:
                     # Continuously update while holding (for smooth reset)
                     self.vr_to_global_mat = np.linalg.inv(rot_mat)
@@ -470,10 +491,31 @@ class VRPolicyNode(Node):
         pos_action = target_pos_offset - robot_pos_offset
         
         # Calculate rotational action (relative control)
-        # Same relative control logic for rotation
+        # For relative control, we compute rotations relative to the origin.
+        # The correct approach:
+        # 1. robot_quat_offset: rotation from robot_origin to current robot_quat
+        # 2. target_quat_offset: rotation from vr_origin to current vr_quat
+        # 3. We need robot to rotate from robot_quat_offset to target_quat_offset
+        #    This rotation is: target_quat_offset * robot_quat_offset.inv()
+        #    Which equals: quat_diff(target_quat_offset, robot_quat_offset)
+        #
+        # However, there's a subtle issue: robot_quat_offset and target_quat_offset
+        # are computed relative to different origins (robot_origin vs vr_origin).
+        # For proper relative control, we need to compute the target quaternion in
+        # the robot's frame, then compute the rotation to it.
+        #
+        # The fix: Compute target quaternion in robot frame by applying target_quat_offset
+        # to robot_origin_quat, then compute rotation from current robot_quat to it.
+        # Compute how much robot and VR have rotated from their respective origins
         robot_quat_offset = quat_diff(robot_quat, self.robot_origin["quat"])
         target_quat_offset = quat_diff(self.vr_state["quat"], self.vr_origin["quat"])
-        quat_action = quat_diff(target_quat_offset, robot_quat_offset)
+        
+        # For relative control, the target quaternion in robot frame is:
+        # robot_origin_quat rotated by target_quat_offset
+        target_quat_in_robot_frame = add_quats(target_quat_offset, self.robot_origin["quat"])
+        
+        # Compute the rotation action: from current robot_quat to target_quat_in_robot_frame
+        quat_action = quat_diff(target_quat_in_robot_frame, robot_quat)
         euler_action = quat_to_euler(quat_action)
         
         # Calculate gripper action (relative control)
@@ -600,6 +642,11 @@ class VRPolicyNode(Node):
                 action_msg.success = self._state["buttons"]["A"] if self.controller_id == "r" else self._state["buttons"]["X"]
                 action_msg.failure = self._state["buttons"]["B"] if self.controller_id == "r" else self._state["buttons"]["Y"]
                 
+                # Joystick orientation reset state
+                action_msg.joystick_pressed = self._state["joystick_pressed"]
+                action_msg.orientation_resetting = self._state["orientation_resetting"]
+                action_msg.joystick_hold_progress = float(self._state["joystick_hold_progress"])
+                
                 if info is not None:
                     action_msg.target_cartesian_position = info["target_cartesian_position"].tolist()
                     action_msg.target_gripper_position = float(info["target_gripper_position"])
@@ -613,6 +660,12 @@ class VRPolicyNode(Node):
                 action_msg.controller_on = self._state["controller_on"]
                 action_msg.success = False
                 action_msg.failure = False
+                
+                # Joystick orientation reset state
+                action_msg.joystick_pressed = self._state.get("joystick_pressed", False)
+                action_msg.orientation_resetting = self._state.get("orientation_resetting", False)
+                action_msg.joystick_hold_progress = float(self._state.get("joystick_hold_progress", 0.0))
+                
                 action_msg.target_cartesian_position = [0.0] * 6
                 action_msg.target_gripper_position = 0.0
             

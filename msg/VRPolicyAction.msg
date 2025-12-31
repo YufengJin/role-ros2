@@ -16,6 +16,12 @@ bool controller_on       # Whether controller is active and receiving data
 bool success             # Success button pressed (A for right, X for left)
 bool failure             # Failure button pressed (B for right, Y for left)
 
+# Joystick orientation reset state
+bool joystick_pressed        # Whether joystick is currently pressed
+bool orientation_resetting   # Whether orientation reset is in progress
+float32 joystick_hold_progress  # Progress of joystick hold (0.0-1.0) for orientation reset
+                                # 1.0 = long press completed, <1.0 = still holding
+
 # Target positions (optional, for debugging/monitoring)
 float64[6] target_cartesian_position  # [x, y, z, roll, pitch, yaw]
 float64 target_gripper_position       # Normalized gripper position (0.0-1.0)

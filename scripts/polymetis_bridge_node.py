@@ -31,6 +31,7 @@ import signal
 from pathlib import Path
 from typing import Optional, List
 import numpy as np
+from scipy.spatial.transform import Rotation as R
 
 import rclpy
 from rclpy.node import Node
@@ -1603,6 +1604,93 @@ class PolymetisCombinedNode(Node):
         quat = euler_to_quat(euler)
         return pos, quat
     
+    def _compute_forward_kinematics(self, joint_positions):
+        """
+        Compute forward kinematics for end-effector pose.
+        
+        Uses robot_model for real robot, IK solver physics for mock robot,
+        or fallback to get_ee_pose().
+        
+        Args:
+            joint_positions: Joint positions (7 DOF) - can be list, numpy array, or torch tensor
+            
+        Returns:
+            tuple: (position [x, y, z], quaternion [x, y, z, w])
+        """
+        try:
+            if TORCH_AVAILABLE and hasattr(self._robot, 'robot_model'):
+                # Real robot: use robot_model.forward_kinematics
+                if isinstance(joint_positions, torch.Tensor):
+                    joint_pos_tensor = joint_positions
+                else:
+                    joint_pos_tensor = torch.Tensor(joint_positions)
+                pos, quat = self._robot.robot_model.forward_kinematics(joint_pos_tensor)
+                # Convert to numpy
+                if isinstance(pos, torch.Tensor):
+                    pos = pos.cpu().numpy()
+                if isinstance(quat, torch.Tensor):
+                    quat = quat.cpu().numpy()
+                return pos, quat
+            elif isinstance(self._robot, MockRobotInterface) and self._ik_solver is not None:
+                # Mock robot with IK solver: use IK solver's physics for accurate FK
+                # ee_pose should be panda_link8 frame, not panda_hand frame
+                joint_pos = np.array(joint_positions)
+                joint_vel = np.zeros(7)  # Use zero velocity for FK
+                
+                # Update physics state with current joint positions
+                self._ik_solver._arm.update_state(self._ik_solver._physics, joint_pos, joint_vel)
+                
+                # Get panda_link8 body pose (not wrist_site which is in panda_hand)
+                # Find panda_link8 body in the MJCF model
+                link8_body = self._ik_solver._arm.mjcf_model.find("body", "panda_link8")
+                if link8_body is not None:
+                    # Get panda_link8 body position and orientation from physics
+                    body_bind = self._ik_solver._physics.bind(link8_body)
+                    pos = body_bind.xpos.copy()  # 3D position
+                    quat_mat = body_bind.xmat.copy().reshape(3, 3)  # Rotation matrix (3x3)
+                    
+                    # Convert rotation matrix to quaternion
+                    quat_rot = R.from_matrix(quat_mat)
+                    quat = quat_rot.as_quat()  # [x, y, z, w]
+                else:
+                    # Fallback: use wrist_site and transform from hand frame to link8 frame
+                    # wrist_site is in panda_hand, which is rotated -45deg around Z relative to link8
+                    # In XML: <body name="panda_hand" euler="0 0 -0.785398163397">
+                    # This means hand is rotated -45deg (euler="0 0 -0.785398163397") relative to link8
+                    site_bind = self._ik_solver._physics.bind(self._ik_solver._arm.wrist_site)
+                    wrist_pos = site_bind.xpos.copy()
+                    wrist_quat_mat = site_bind.xmat.copy().reshape(3, 3)
+                    
+                    # Transform from hand frame to link8 frame
+                    # In world frame: wrist_rot = link8_rot * hand_rot (hand_rot is -45deg around Z)
+                    # So: link8_rot = wrist_rot * inverse(hand_rot)
+                    # hand_rot is -45deg around Z, so inverse is +45deg
+                    hand_rot = R.from_euler('z', -0.785398163397, degrees=False)  # -45deg (hand relative to link8)
+                    wrist_rot = R.from_matrix(wrist_quat_mat)
+                    # Compose: link8_rot = wrist_rot * hand_rot.inv()
+                    link8_rot = wrist_rot * hand_rot.inv()
+                    
+                    # Position: wrist_site is at origin of hand frame (0,0,0 in hand frame)
+                    # hand frame origin is same as link8 frame origin (no translation in XML: pos="0 0 0.107" is link8 relative to link7)
+                    # So position is the same
+                    pos = wrist_pos.copy()
+                    quat = link8_rot.as_quat()  # [x, y, z, w]
+                
+                return pos, quat
+            else:
+                # Fallback: use get_ee_pose (may use simplified FK for mock)
+                pos, quat = self._robot.get_ee_pose()
+                # Convert to numpy if needed
+                if isinstance(pos, torch.Tensor):
+                    pos = pos.cpu().numpy()
+                if isinstance(quat, torch.Tensor):
+                    quat = quat.cpu().numpy()
+                return pos, quat
+        except Exception as e:
+            self.get_logger().warn(f"Failed to compute forward kinematics: {e}")
+            # Return default pose on error
+            return np.array([0.0, 0.0, 0.0]), np.array([0.0, 0.0, 0.0, 1.0])
+    
     def _get_robot_state(self):
         """
         Get comprehensive robot state similar to robot.py get_robot_state().
@@ -1618,29 +1706,10 @@ class PolymetisCombinedNode(Node):
             gripper_position = 1 - (gripper_state.width / self._max_gripper_width)
             
             # Get cartesian position via forward kinematics
-            try:
-                if TORCH_AVAILABLE and hasattr(self._robot, 'robot_model'):
-                    joint_pos_tensor = torch.Tensor(robot_state.joint_positions)
-                    pos, quat = self._robot.robot_model.forward_kinematics(joint_pos_tensor)
-                    cartesian_position = pos.tolist() + quat_to_euler(quat.numpy()).tolist()
-                    ee_quat = quat.numpy().tolist()  # [x, y, z, w]
-                else:
-                    # Fallback: use get_ee_pose if available
-                    try:
-                        pos, quat = self._robot.get_ee_pose()
-                        if TORCH_AVAILABLE and isinstance(quat, torch.Tensor):
-                            cartesian_position = pos.tolist() + quat_to_euler(quat.numpy()).tolist()
-                            ee_quat = quat.numpy().tolist()
-                        else:
-                            cartesian_position = pos.tolist() + quat_to_euler(quat).tolist()
-                            ee_quat = quat.tolist() if hasattr(quat, 'tolist') else list(quat)
-                    except:
-                        cartesian_position = [0.0] * 6
-                        ee_quat = [0.0, 0.0, 0.0, 1.0]
-            except Exception as e:
-                self.get_logger().warn(f"Failed to compute forward kinematics: {e}")
-                cartesian_position = [0.0] * 6
-                ee_quat = [0.0, 0.0, 0.0, 1.0]
+            # ee_pose is frame fr3_panda_link8
+            pos, quat = self._compute_forward_kinematics(robot_state.joint_positions)
+            cartesian_position = pos.tolist() + quat_to_euler(quat).tolist()
+            ee_quat = quat.tolist() if hasattr(quat, 'tolist') else list(quat)
             
             # Convert to lists
             def to_list(x):
@@ -1890,15 +1959,12 @@ class PolymetisCombinedNode(Node):
         Publish end-effector pose under /polymetis/arm/ee_pose.
         """
         try:
-            # Use get_ee_pose() for both mock and real robot (mock has FK implementation)
-            pos, quat = self._robot.get_ee_pose()
-            if TORCH_AVAILABLE and isinstance(pos, torch.Tensor):
-                pos = pos.cpu().numpy().tolist()
-            if TORCH_AVAILABLE and isinstance(quat, torch.Tensor):
-                quat = quat.cpu().numpy().tolist()
-            else:
-                pos = pos.tolist() if hasattr(pos, 'tolist') else list(pos)
-                quat = quat.tolist() if hasattr(quat, 'tolist') else list(quat)
+            # Get current joint positions
+            joint_positions = self._robot.get_joint_positions()
+            # Use compute_forward_kinematics for accurate FK (uses IK solver for mock)
+            pos, quat = self._compute_forward_kinematics(joint_positions)
+            pos = pos.tolist() if hasattr(pos, 'tolist') else list(pos)
+            quat = quat.tolist() if hasattr(quat, 'tolist') else list(quat)
             
             # Create PoseStamped message
             msg = PoseStamped()
@@ -2095,16 +2161,14 @@ class PolymetisCombinedNode(Node):
         try:
             original_joints_tensor = torch.tensor(original_joints, dtype=torch.float32)
             
-            # Forward kinematics to get current pose
-            if hasattr(self._robot, 'robot_model'):
-                pos, quat = self._robot.robot_model.forward_kinematics(original_joints_tensor)
-                curr_pose = pos.tolist() + quat_to_euler(quat.numpy()).tolist()
+            # Forward kinematics to get current pose using compute_forward_kinematics
+            # Convert to list for _compute_forward_kinematics
+            if isinstance(original_joints_tensor, torch.Tensor):
+                original_joints_list = original_joints_tensor.cpu().numpy().tolist()
             else:
-                pos, quat = self._robot.get_ee_pose()
-                if isinstance(quat, torch.Tensor):
-                    curr_pose = pos.tolist() + quat_to_euler(quat.numpy()).tolist()
-                else:
-                    curr_pose = pos.tolist() + quat_to_euler(quat).tolist()
+                original_joints_list = original_joints_tensor.tolist() if hasattr(original_joints_tensor, 'tolist') else list(original_joints_tensor)
+            pos, quat = self._compute_forward_kinematics(original_joints_list)
+            curr_pose = pos.tolist() + quat_to_euler(quat).tolist()
             
             # Add cartesian noise to pose
             new_pose = add_poses(cartesian_noise, curr_pose)
@@ -2468,18 +2532,22 @@ class PolymetisCombinedNode(Node):
                     else:
                         response.joint_positions = joint_pos.tolist() if hasattr(joint_pos, 'tolist') else list(joint_pos)
                     
-                    # Compute error
-                    if hasattr(self._robot, 'robot_model'):
-                        pos_output, quat_output = self._robot.robot_model.forward_kinematics(joint_pos)
-                        # Simple error computation
-                        pos_error = torch.norm(pos - pos_output).item()
-                        quat_error = torch.norm(quat - quat_output).item()
-                        response.error = pos_error + quat_error
+                    # Compute error using compute_forward_kinematics
+                    if isinstance(joint_pos, torch.Tensor):
+                        joint_pos_list = joint_pos.cpu().numpy().tolist()
                     else:
-                        response.error = 0.0 if success else 1.0
+                        joint_pos_list = joint_pos.tolist() if hasattr(joint_pos, 'tolist') else list(joint_pos)
+                    pos_output, quat_output = self._compute_forward_kinematics(joint_pos_list)
+                    # Convert to torch for error computation
+                    pos_output_tensor = torch.tensor(pos_output, dtype=torch.float32)
+                    quat_output_tensor = torch.tensor(quat_output, dtype=torch.float32)
+                    # Simple error computation
+                    pos_error = torch.norm(pos - pos_output_tensor).item()
+                    quat_error = torch.norm(quat - quat_output_tensor).item()
+                    response.error = pos_error + quat_error
                     response.message = "IK solved successfully" if success else "IK solution not found"
                     
-                    response.success = success
+                    response.success = bool(success)  # Ensure bool type (not numpy.bool_)
                 else:
                     response.success = False
                     response.message = "PyTorch not available"
@@ -2504,42 +2572,12 @@ class PolymetisCombinedNode(Node):
                 response.message = f"Invalid joint positions length: {len(request.joint_positions)}, expected 7"
                 return response
             
-            if isinstance(self._robot, MockRobotInterface):
-                response.success = True
-                response.position = [0.0, 0.0, 0.0]
-                response.orientation = [0.0, 0.0, 0.0, 1.0]
-            else:
-                if TORCH_AVAILABLE and hasattr(self._robot, 'robot_model'):
-                    joint_pos = torch.tensor(request.joint_positions, dtype=torch.float32)
-                    pos, quat = self._robot.robot_model.forward_kinematics(joint_pos)
-                    
-                    if isinstance(pos, torch.Tensor):
-                        response.position = pos.cpu().numpy().tolist()
-                    else:
-                        response.position = pos.tolist() if hasattr(pos, 'tolist') else list(pos)
-                    
-                    if isinstance(quat, torch.Tensor):
-                        response.orientation = quat.cpu().numpy().tolist()
-                    else:
-                        response.orientation = quat.tolist() if hasattr(quat, 'tolist') else list(quat)
-                    
-                    response.success = True
-                else:
-                    # Fallback: use get_ee_pose
-                    try:
-                        pos, quat = self._robot.get_ee_pose()
-                        if TORCH_AVAILABLE and isinstance(pos, torch.Tensor):
-                            response.position = pos.cpu().numpy().tolist()
-                            response.orientation = quat.cpu().numpy().tolist()
-                        else:
-                            response.position = pos.tolist() if hasattr(pos, 'tolist') else list(pos)
-                            response.orientation = quat.tolist() if hasattr(quat, 'tolist') else list(quat)
-                        response.success = True
-                    except:
-                        response.success = False
-                        response.message = "FK computation not available"
-                    else:
-                        response.message = "FK computed successfully"
+            # Use compute_forward_kinematics for accurate FK (uses IK solver for mock)
+            pos, quat = self._compute_forward_kinematics(request.joint_positions)
+            response.position = pos.tolist() if hasattr(pos, 'tolist') else list(pos)
+            response.orientation = quat.tolist() if hasattr(quat, 'tolist') else list(quat)
+            response.success = True
+            response.message = "FK computed successfully"
         except Exception as e:
             response.success = False
             response.message = f"Failed to compute FK: {str(e)}"
