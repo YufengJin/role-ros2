@@ -3,8 +3,8 @@ services:
     image: ros2_cu118:latest
     container_name: ros2_cu118_container
     build:
-      context: ../../../../  # From ros2_cu118 directory, go up 4 levels to role_ws
-      dockerfile: src/role-ros2/docker/ros2_cu118/Dockerfile.ros2_cu118
+      context: ../..  # From ros2_cu118 directory, go up 2 levels to role-ros2 root
+      dockerfile: docker/ros2_cu118/Dockerfile.ros2_cu118
       # args:  # Uncomment and add build args here if needed in the future
     # Use host network mode for ROS2 communication
     network_mode: host
@@ -57,4 +57,7 @@ services:
       # This allows editing code outside the container and building inside
       # Path: from ros2_cu118 directory, ../../ points to role-ros2 directory (up 2 levels)
       - ../../:/app/ros2_ws/src/role-ros2:rw
+      # Mount droid repository for testing VRPolicy comparison
+      # This allows importing droid.controllers.oculus_controller in test scripts
+      - /home/yjin/repos/droid:/app/droid:ro
 

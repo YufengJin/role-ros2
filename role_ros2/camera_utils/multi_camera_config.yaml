@@ -1,0 +1,38 @@
+# Multi-Camera Configuration for ROS2
+# This file defines camera topics and settings for MultiCameraWrapper
+
+# Base frame for TF lookups (all cameras use this as reference)
+base_frame: "base_link"
+
+# Global synchronization settings
+# slop: Time synchronization tolerance in seconds for ApproximateTimeSynchronizer
+#       - For live cameras: 0.1s (100ms) is usually sufficient
+#       - For ROS bag replay: 0.2-0.5s may be needed depending on bag recording quality
+#       - Larger values allow more timestamp mismatch but may match incorrect frames
+# queue_size: Queue size for ApproximateTimeSynchronizer (default: 10)
+global_sync:
+  slop: 0.2  # Increased default for bag replay compatibility
+  queue_size: 10
+
+# Camera configurations
+cameras:
+  # Hand Camera (mounted on gripper)
+  - camera_id: "11022812"  # Serial number or identifier
+    rgb_topic: "/hand_camera/hand_camera/rgb/color/rect/image"
+    depth_topic: "/hand_camera/hand_camera/depth/depth_registered"
+    camera_info_topic: "/hand_camera/hand_camera/rgb/color/rect/camera_info"
+    camera_frame: "hand_camera_left_camera_frame_optical"  # Optional: for TF lookup
+    base_frame: "base_link"  # Optional: overrides global base_frame
+    # slop: 0.2  # Optional: overrides global slop (in seconds)
+    # queue_size: 10  # Optional: overrides global queue_size
+    
+  # Static Camera (fixed position)
+  - camera_id: "24285872"  # Serial number or identifier
+    rgb_topic: "/static_camera/static_camera/rgb/color/rect/image"
+    depth_topic: "/static_camera/static_camera/depth/depth_registered"
+    camera_info_topic: "/static_camera/static_camera/rgb/color/rect/camera_info"
+    camera_frame: "static_camera_left_camera_frame_optical"  # Optional: for TF lookup
+    base_frame: "base_link"  # Optional: overrides global base_frame
+    # slop: 0.2  # Optional: overrides global slop (in seconds)
+    # queue_size: 10  # Optional: overrides global queue_size
+

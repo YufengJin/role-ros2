@@ -1293,11 +1293,16 @@ class PolymetisCombinedNode(Node):
         This callback handles ONLY non-blocking commands via Topic.
         Blocking commands should use Services instead.
         
-        Similar to update_command() in robot.py, this handles:
-        - cartesian_position/velocity (non-blocking) - REQUIRES IK solver
-        - joint_position/velocity (non-blocking) - Works without IK solver (fallback)
-        - gripper position/velocity (non-blocking) - Works without IK solver (fallback)
-        - action space conversion via IK solver (when available)
+        IMPORTANT: All control modes (cartesian/joint position/velocity) are converted
+        to joint position control, matching the behavior of droid/droid/franka/robot.py
+        update_command() method. This ensures consistent control behavior regardless of
+        the input action_space.
+        
+        Conversion logic (matching robot.py create_action_dict):
+        - cartesian_position/velocity -> joint_position (via IK solver)
+        - joint_position -> joint_position (direct)
+        - joint_velocity -> joint_position (via joint_velocity_to_delta)
+        - gripper commands -> gripper_position (velocity converted to position)
         
         The actual command execution happens in a separate thread (like robot.py's
         run_threaded_command(helper_non_blocking)), ensuring controller is ready
@@ -1699,6 +1704,10 @@ class PolymetisCombinedNode(Node):
             tuple: (state_dict, timestamp_dict)
         """
         try:
+            # Record ROS time before getting data from interface (for polymetis_timestamp_ns)
+            data_ros_time = self.get_clock().now()
+            data_timestamp_ns = data_ros_time.nanoseconds
+            
             robot_state = self._robot.get_robot_state()
             gripper_state = self._gripper.get_state()
             
@@ -1723,6 +1732,11 @@ class PolymetisCombinedNode(Node):
             state_dict = {
                 "cartesian_position": cartesian_position,
                 "gripper_position": gripper_position,
+                "gripper_width": float(gripper_state.width),
+                "gripper_is_grasped": bool(getattr(gripper_state, 'is_grasped', False)),
+                "gripper_is_moving": bool(getattr(gripper_state, 'is_moving', False)),
+                "gripper_prev_command_successful": bool(getattr(gripper_state, 'prev_command_successful', True)),
+                "gripper_error_code": int(getattr(gripper_state, 'error_code', 0)),
                 "joint_positions": to_list(robot_state.joint_positions),
                 "joint_velocities": to_list(robot_state.joint_velocities),
                 "joint_torques_computed": to_list(robot_state.joint_torques_computed),
@@ -1733,9 +1747,11 @@ class PolymetisCombinedNode(Node):
                 "prev_command_successful": bool(robot_state.prev_command_successful),  # Ensure bool type
             }
             
+            # Use ROS time for polymetis_timestamp_ns (recorded before getting data)
             timestamp_dict = {
-                "robot_timestamp_seconds": robot_state.timestamp.seconds if hasattr(robot_state.timestamp, 'seconds') else 0,
-                "robot_timestamp_nanos": robot_state.timestamp.nanos if hasattr(robot_state.timestamp, 'nanos') else 0,
+                "robot_timestamp_seconds": data_timestamp_ns // 1_000_000_000,
+                "robot_timestamp_nanos": data_timestamp_ns % 1_000_000_000,
+                "polymetis_timestamp_ns": data_timestamp_ns,  # ROS time in nanoseconds
             }
             
             return state_dict, timestamp_dict
@@ -1746,6 +1762,11 @@ class PolymetisCombinedNode(Node):
             return {
                 "cartesian_position": [0.0] * 6,
                 "gripper_position": 0.0,
+                "gripper_width": 0.0,
+                "gripper_is_grasped": False,
+                "gripper_is_moving": False,
+                "gripper_prev_command_successful": True,
+                "gripper_error_code": 0,
                 "joint_positions": [0.0] * 7,
                 "joint_velocities": [0.0] * 7,
                 "joint_torques_computed": [0.0] * 7,
@@ -1754,7 +1775,7 @@ class PolymetisCombinedNode(Node):
                 "motor_torques_measured": [0.0] * 7,
                 "prev_controller_latency_ms": 0.0,
                 "prev_command_successful": False,
-            }, {"robot_timestamp_seconds": 0, "robot_timestamp_nanos": 0}
+            }, {"robot_timestamp_seconds": 0, "robot_timestamp_nanos": 0, "polymetis_timestamp_ns": 0}
     
     def _publish_states(self):
         """
@@ -1894,22 +1915,21 @@ class PolymetisCombinedNode(Node):
                 msg.ee_quaternion = [0.0, 0.0, 0.0, 1.0]
                 msg.ee_euler = [0.0, 0.0, 0.0]
             
-            # Gripper state
-            gripper_state = self._gripper.get_state()
-            msg.gripper_width = float(gripper_state.width)
+            # Gripper state (use data from state_dict to avoid duplicate get_state() calls)
+            msg.gripper_width = float(state_dict.get("gripper_width", 0.0))
             msg.gripper_position = float(state_dict["gripper_position"])
-            msg.gripper_is_grasped = bool(getattr(gripper_state, 'is_grasped', False))  # Ensure bool type
-            msg.gripper_is_moving = bool(getattr(gripper_state, 'is_moving', False))  # Ensure bool type
-            msg.gripper_prev_command_successful = bool(getattr(gripper_state, 'prev_command_successful', True))  # Ensure bool type
-            msg.gripper_error_code = int(getattr(gripper_state, 'error_code', 0))  # Ensure int type
+            msg.gripper_is_grasped = bool(state_dict.get("gripper_is_grasped", False))
+            msg.gripper_is_moving = bool(state_dict.get("gripper_is_moving", False))
+            msg.gripper_prev_command_successful = bool(state_dict.get("gripper_prev_command_successful", True))
+            msg.gripper_error_code = int(state_dict.get("gripper_error_code", 0))
             
             # Controller info
             msg.prev_controller_latency_ms = float(state_dict["prev_controller_latency_ms"])
             msg.prev_command_successful = bool(state_dict["prev_command_successful"])  # Ensure bool type
             msg.is_running_policy = bool(self._robot.is_running_policy() if hasattr(self._robot, 'is_running_policy') else False)  # Ensure bool type
             
-            # Polymetis timestamp (convert to int for ROS2 message type)
-            msg.polymetis_timestamp_ns = int(timestamp_dict["robot_timestamp_seconds"] * 1e9 + timestamp_dict["robot_timestamp_nanos"])
+            # Polymetis timestamp (ROS time recorded before getting data from interface)
+            msg.polymetis_timestamp_ns = int(timestamp_dict.get("polymetis_timestamp_ns", 0))
             
             # Publish
             self._robot_state_publisher.publish(msg)
@@ -1922,6 +1942,10 @@ class PolymetisCombinedNode(Node):
         Publish gripper state under /polymetis/gripper_state.
         """
         try:
+            # Record ROS time before getting data from interface (for polymetis_timestamp_ns)
+            data_ros_time = self.get_clock().now()
+            data_timestamp_ns = data_ros_time.nanoseconds
+            
             gripper_state = self._gripper.get_state()
             
             # Create PolymetisGripperState message
@@ -1938,15 +1962,8 @@ class PolymetisCombinedNode(Node):
             msg.error_code = int(getattr(gripper_state, 'error_code', 0))  # Ensure int type
             msg.max_width = self._max_gripper_width
             
-            # Get timestamp if available
-            if hasattr(gripper_state, 'timestamp'):
-                timestamp = gripper_state.timestamp
-                if hasattr(timestamp, 'seconds') and hasattr(timestamp, 'nanos'):
-                    msg.polymetis_timestamp_ns = int(timestamp.seconds * 1e9 + timestamp.nanos)
-                else:
-                    msg.polymetis_timestamp_ns = 0
-            else:
-                msg.polymetis_timestamp_ns = 0
+            # Use ROS time for polymetis_timestamp_ns (recorded before getting data from interface)
+            msg.polymetis_timestamp_ns = int(data_timestamp_ns)
             
             # Publish
             self._gripper_state_publisher.publish(msg)

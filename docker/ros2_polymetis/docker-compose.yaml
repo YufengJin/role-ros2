@@ -3,8 +3,8 @@ services:
     image: ros2_polymetis:latest
     container_name: ros2_polymetis_container
     build:
-      context: ../../../../  # From ros2_polymetis directory, go up 4 levels to role_ws
-      dockerfile: src/role-ros2/docker/ros2_polymetis/Dockerfile.ros2_polymetis
+      context: ../..  # From ros2_polymetis directory, go up 2 levels to role-ros2 root
+      dockerfile: docker/ros2_polymetis/Dockerfile.ros2_polymetis
       args:
         LIBFRANKA_VERSION: "0.14.1"
         ROBOT_TYPE: "fr3"
@@ -59,3 +59,6 @@ services:
       # 挂载整个 role-ros2 包，这样可以在容器外部修改代码，在容器内编译
       # 注意：fairo/polymetis 已经在镜像中安装到 /opt/polymetis，但可以通过 volume 覆盖
       - ../../:/app/ros2_ws/src/role-ros2:rw
+      # Mount droid repository for testing RobotEnv comparison
+      # This allows importing droid.robot_env in test scripts
+      - /home/yjin/repos/droid:/app/droid:ro

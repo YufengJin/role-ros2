@@ -1,22 +1,52 @@
 from copy import deepcopy
+from typing import Optional
 
 import gym
 import numpy as np
 
 from role_ros2.calibration.calibration_utils import load_calibration_info
 from role_ros2.camera_utils.info import camera_type_dict
-from role_ros2.misc.parameters import hand_camera_id, nuc_ip
+from role_ros2.camera_utils.base_camera_reader import BaseCameraReader
+from role_ros2.franka.base_robot import BaseRobot
+from role_ros2.franka.robot import FrankaRobot
+from role_ros2.misc.parameters import hand_camera_id
 from role_ros2.misc.time import time_ms
 from role_ros2.misc.transformations import change_pose_frame
-from role_ros2.franka.robot import FrankaRobot
-
-# Note: MultiCameraWrapper and ServerInterface are not available in role_ros2
-# Camera functionality should be implemented via ROS2CameraSubscriber or similar
-# ServerInterface functionality should be replaced with ROS2 service calls
 
 
 class RobotEnv(gym.Env):
-    def __init__(self, action_space="cartesian_velocity", gripper_action_space=None, camera_kwargs={}, do_reset=True, node=None):
+    """
+    General robot environment for role-ros2.
+    
+    This class provides a Gym-like interface for robot control with camera support.
+    It uses BaseRobot and BaseCameraReader interfaces for flexibility.
+    """
+    
+    def __init__(
+        self,
+        action_space: str = "cartesian_velocity",
+        gripper_action_space: Optional[str] = None,
+        camera_kwargs: dict = None,
+        do_reset: bool = True,
+        node=None,
+        robot: Optional[BaseRobot] = None,
+        camera_reader: Optional[BaseCameraReader] = None,
+        control_hz: float = 15.0
+    ):
+        """
+        Initialize RobotEnv.
+        
+        Args:
+            action_space: Action space type ("cartesian_position", "joint_position",
+                         "cartesian_velocity", "joint_velocity")
+            gripper_action_space: Gripper action space ("position" or "velocity")
+            camera_kwargs: Camera configuration parameters (passed to camera_reader if provided)
+            do_reset: Whether to reset robot during initialization
+            node: Optional ROS2 node (used for robot initialization if robot is None)
+            robot: Optional robot interface (if None, creates FrankaRobot)
+            camera_reader: Optional camera reader interface (if None, camera_reader will be None)
+            control_hz: Control frequency in Hz (default: 15.0)
+        """
         # Initialize Gym Environment
         super().__init__()
 
@@ -25,24 +55,19 @@ class RobotEnv(gym.Env):
         self.action_space = action_space
         self.gripper_action_space = gripper_action_space
         self.check_action_range = "velocity" in action_space
-
-        # Robot Configuration
-        self.reset_joints = np.array([0, -1 / 5 * np.pi, 0, -4 / 5 * np.pi, 0, 3 / 5 * np.pi, 0.0])
-        self.randomize_low = np.array([-0.1, -0.2, -0.1, -0.3, -0.3, -0.3])
-        self.randomize_high = np.array([0.1, 0.2, 0.1, 0.3, 0.3, 0.3])
         self.DoF = 7 if ("cartesian" in action_space) else 8
-        self.control_hz = 15
+        self.control_hz = control_hz
 
-        # Initialize robot (always use ROS2-based FrankaRobot)
-        # Note: launch_controller and launch_robot are no longer needed
-        # Robot is launched via polymetis_bridge_node
-        self._robot = FrankaRobot(node=node)
+        # Initialize robot
+        if robot is None:
+            self._robot: BaseRobot = FrankaRobot(node=node)
+        else:
+            self._robot: BaseRobot = robot
 
-        # Create Cameras
-        # Note: MultiCameraWrapper is not available in role_ros2
-        # For now, camera functionality is disabled
-        # TODO: Implement camera support using ROS2CameraSubscriber or similar
-        self.camera_reader = None  # MultiCameraWrapper(camera_kwargs)  # Not available
+        # Initialize camera reader
+        self.camera_reader: Optional[BaseCameraReader] = camera_reader
+        
+        # Load calibration and camera info
         self.calibration_dict = load_calibration_info()
         self.camera_type_dict = camera_type_dict
 
@@ -70,26 +95,13 @@ class RobotEnv(gym.Env):
         # Return Action Info
         return action_info
 
-    def reset(self, randomize=False):
+    def reset(self, randomize: bool = False):
         """
         Reset robot to home position.
         
         Args:
             randomize: If True, add random cartesian noise to reset position.
-                      The randomization is handled by polymetis_bridge_node's reset service,
-                      which applies noise using the same randomize_low/randomize_high range.
-        
-        Note: The reset service executes asynchronously in the background.
-              This method returns immediately after the command is accepted.
         """
-        # Log reset call
-        import inspect
-        caller_info = inspect.stack()[1]
-        caller_name = caller_info.filename.split('/')[-1] + ':' + str(caller_info.lineno)
-        
-        # Use reset service - randomization is handled internally by polymetis_bridge_node
-        # The service applies cartesian noise via _add_cartesian_noise_to_joints()
-        # using the same noise range as this class (randomize_low, randomize_high)
         self._robot.reset(randomize=randomize, wait_for_completion=True, wait_time_sec=20.0)
 
     def update_robot(self, action, action_space="cartesian_velocity", gripper_action_space=None, blocking=False):
@@ -130,6 +142,66 @@ class RobotEnv(gym.Env):
         return extrinsics
 
     def get_observation(self):
+        """
+        Get comprehensive observation dictionary.
+        
+        Returns:
+            dict: Observation dictionary with the following structure:
+            {
+                "robot_state": {
+                    "cartesian_position": [x, y, z, roll, pitch, yaw],  # 6 floats
+                    "gripper_position": float,  # normalized (0=closed, 1=open)
+                    "joint_positions": [q1, q2, ..., q7],  # 7 floats (radians)
+                    "joint_velocities": [qd1, qd2, ..., qd7],  # 7 floats (rad/s)
+                    "joint_torques_computed": [tau1, ..., tau7],  # 7 floats
+                    "prev_joint_torques_computed": [tau1, ..., tau7],  # 7 floats
+                    "prev_joint_torques_computed_safened": [tau1, ..., tau7],  # 7 floats
+                    "motor_torques_measured": [tau1, ..., tau7],  # 7 floats
+                    "prev_controller_latency_ms": float,
+                    "prev_command_successful": bool,
+                },
+                "image": {
+                    camera_id: numpy.ndarray,  # BGR image (H, W, 3), uint8
+                    ...
+                },
+                "depth": {
+                    camera_id: numpy.ndarray,  # Depth image (H, W), uint16 (millimeters)
+                    ...
+                },
+                "camera_type": {
+                    camera_id: str,  # Camera type identifier
+                    ...
+                },
+                "camera_extrinsics": {
+                    camera_id: numpy.ndarray,  # 4x4 transformation matrix (base_link to camera)
+                    camera_id + "_gripper_offset": numpy.ndarray,  # Original extrinsics for hand camera
+                    ...
+                },
+                "camera_intrinsics": {
+                    camera_id: numpy.ndarray,  # 3x3 intrinsic matrix (K)
+                    ...
+                } or None,  # None if no cameras available
+                "timestamp": {
+                    "robot_state": {
+                        "robot_polymetis_t": int,  # Polymetis timestamp (nanoseconds)
+                        "robot_pub_t": int,  # Message header timestamp (nanoseconds)
+                        "robot_received_t": int,  # Message received time (nanoseconds, ROS time)
+                        "robot_end_t": int,  # Processing end time (nanoseconds, ROS time)
+                        "read_start": int,  # get_state() start time (milliseconds, system time)
+                        "read_end": int,  # get_state() end time (milliseconds, system time)
+                    },
+                    "cameras": {
+                        "{camera_id}_read_start": int,  # Start time (nanoseconds, ROS time)
+                        "{camera_id}_frame_received": int,  # Frame received time (nanoseconds, ROS time)
+                        "{camera_id}_read_end": int,  # End time (nanoseconds, ROS time)
+                        "{camera_id}_pub_t": int,  # Published time (nanoseconds, ROS time)
+                        "{camera_id}_sub_t": int,  # Subscription time (nanoseconds, ROS time)
+                        "{camera_id}_end_t": int,  # Processing end time (nanoseconds, ROS time)
+                        ...
+                    },
+                },
+            }
+        """
         obs_dict = {"timestamp": {}}
 
         # Robot State #

@@ -59,6 +59,9 @@ class FrankaRobot:
         self._robot_state: Optional[PolymetisRobotState] = None
         self._gripper_state: Optional[PolymetisGripperState] = None
         self._max_gripper_width = 0.08  # Default for Franka hand
+        # Timestamp storage for latency calculation
+        self._robot_state_received_time_ns: Optional[int] = None
+        self._gripper_state_received_time_ns: Optional[int] = None
         
         # Subscribers for robot state (default RELIABLE QoS)
         self._robot_state_sub = self._node.create_subscription(
@@ -152,13 +155,23 @@ class FrankaRobot:
     
     def _robot_state_callback(self, msg: PolymetisRobotState):
         """Callback for robot state updates."""
+        # Record ROS time when message is received
+        received_ros_time = self._node.get_clock().now()
+        received_time_ns = received_ros_time.nanoseconds
+        
         with self._robot_state_lock:
             self._robot_state = msg
+            self._robot_state_received_time_ns = received_time_ns
     
     def _gripper_state_callback(self, msg: PolymetisGripperState):
         """Callback for gripper state updates."""
+        # Record ROS time when message is received
+        received_ros_time = self._node.get_clock().now()
+        received_time_ns = received_ros_time.nanoseconds
+        
         with self._robot_state_lock:
             self._gripper_state = msg
+            self._gripper_state_received_time_ns = received_time_ns
             if hasattr(msg, 'max_width') and msg.max_width > 0:
                 self._max_gripper_width = msg.max_width
     
@@ -246,6 +259,9 @@ class FrankaRobot:
         """
         Update robot command (arm + gripper).
         
+        Convert all control modes (cartesian/joint position/velocity) to joint position control.
+        This matches the behavior of droid/droid/franka/robot.py.
+        
         Args:
             command: Command array (7 for arm + 1 for gripper, or 6 for cartesian + 1 gripper)
             action_space: "cartesian_position", "joint_position", "cartesian_velocity", "joint_velocity"
@@ -253,29 +269,11 @@ class FrankaRobot:
             blocking: Whether to wait for command completion
         """
         action_dict = self.create_action_dict(command, action_space=action_space, gripper_action_space=gripper_action_space)
-        
-        # Determine velocity mode based on action_space
-        is_velocity = "velocity" in action_space
-        
-        # Update arm based on action_space
-        if "cartesian" in action_space:
-            # Use update_pose for cartesian commands
-            cartesian_cmd = action_dict["cartesian_position"]
-            self.update_pose(cartesian_cmd, velocity=is_velocity, blocking=blocking)
-        else:
-            # Use update_joints for joint commands
-            joint_cmd = action_dict["joint_position"]
-            self.update_joints(joint_cmd, velocity=is_velocity, blocking=blocking)
-        
-        # Update gripper - determine velocity mode
-        if gripper_action_space is None:
-            gripper_velocity = is_velocity  # Default to same as arm
-        else:
-            gripper_velocity = (gripper_action_space == "velocity")
-        
-        gripper_cmd = action_dict["gripper_position"]
-        self.update_gripper(gripper_cmd, velocity=gripper_velocity, blocking=blocking)
-        
+
+        # Always convert to joint position control (matching droid implementation)
+        self.update_joints(action_dict["joint_position"], velocity=False, blocking=blocking)
+        self.update_gripper(action_dict["gripper_position"], velocity=False, blocking=blocking)
+
         return action_dict
     
     def update_pose(self, command, velocity=False, blocking=False):
@@ -517,8 +515,18 @@ class FrankaRobot:
         
         Returns:
             tuple: (state_dict, timestamp_dict)
+                timestamp_dict contains:
+                - robot_polymetis_t: Polymetis timestamp (nanoseconds)
+                - robot_pub_t: Message header timestamp (nanoseconds)
+                - robot_received_t: Message received time (nanoseconds, ROS time)
+                - robot_end_t: Processing end time (nanoseconds, ROS time)
         """
-        robot_state, gripper_state = self._get_current_state()
+        # Get current state (thread-safe)
+        with self._robot_state_lock:
+            robot_state = self._robot_state
+            gripper_state = self._gripper_state
+            robot_state_received_time_ns = self._robot_state_received_time_ns
+            gripper_state_received_time_ns = self._gripper_state_received_time_ns
         
         if robot_state is None or gripper_state is None:
             # Return default state
@@ -533,7 +541,12 @@ class FrankaRobot:
                 "motor_torques_measured": [0.0] * 7,
                 "prev_controller_latency_ms": 0.0,
                 "prev_command_successful": False,
-            }, {"robot_timestamp_seconds": 0, "robot_timestamp_nanos": 0}
+            }, {
+                "robot_polymetis_t": 0,
+                "robot_pub_t": 0,
+                "robot_received_t": 0,
+                "robot_end_t": 0
+            }
         
         # Build state dict from ROS2 messages
         cartesian_position = list(robot_state.ee_position) + list(robot_state.ee_euler)
@@ -551,11 +564,26 @@ class FrankaRobot:
             "prev_command_successful": robot_state.prev_command_successful,
         }
         
-        # Extract timestamp from Polymetis timestamp
-        timestamp_ns = robot_state.polymetis_timestamp_ns
+        # Extract timestamps
+        # robot_polymetis_t: Polymetis timestamp from message
+        polymetis_timestamp_ns = robot_state.polymetis_timestamp_ns
+        
+        # robot_pub_t: Message header timestamp (when message was published)
+        pub_stamp = robot_state.header.stamp
+        pub_timestamp_ns = int(pub_stamp.sec * 1_000_000_000 + pub_stamp.nanosec)
+        
+        # robot_received_t: Message received time (from callback)
+        received_timestamp_ns = robot_state_received_time_ns if robot_state_received_time_ns is not None else 0
+        
+        # robot_end_t: Processing end time (current ROS time)
+        end_ros_time = self._node.get_clock().now()
+        end_timestamp_ns = end_ros_time.nanoseconds
+        
         timestamp_dict = {
-            "robot_timestamp_seconds": timestamp_ns // 1_000_000_000,
-            "robot_timestamp_nanos": timestamp_ns % 1_000_000_000,
+            "robot_polymetis_t": int(polymetis_timestamp_ns),
+            "robot_pub_t": int(pub_timestamp_ns),
+            "robot_received_t": int(received_timestamp_ns),
+            "robot_end_t": int(end_timestamp_ns),
         }
         
         return state_dict, timestamp_dict

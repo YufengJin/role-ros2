@@ -358,7 +358,7 @@ RUN mkdir -p /app/ros2_ws/src
 # ============================================================================
 # Copy fairo directory (includes Polymetis)
 # ============================================================================
-COPY src/role-ros2/role_ros2/fairo /opt/fairo
+COPY role_ros2/fairo /opt/fairo
 
 # Convert fairo from git submodule to standalone git repository
 # Create a git tag for Polymetis version detection
@@ -381,7 +381,7 @@ RUN if [ -f .git ]; then \
     fi
 
 # Copy hardware config for robot configuration (needed for Polymetis config)
-COPY src/role-ros2/hardware/franka/config /app/ros2_ws/src/role-ros2/hardware/franka/config
+COPY hardware/franka/config /app/ros2_ws/src/role-ros2/hardware/franka/config
 
 # Note: role-ros2 source code will be mounted via docker-compose volume at runtime
 # for development. ROS2 workspace should be built after container starts.
@@ -560,9 +560,9 @@ WORKDIR /app
 # ============================================================================
 # Copy Docker configuration files to image
 # ============================================================================
-# Build context is ../../../../ (role_ws directory), so path is relative to that
-COPY src/role-ros2/docker/ros2_polymetis/entrypoint.sh /entrypoint.sh
-COPY src/role-ros2/docker/ros2_polymetis/polymetis_ros2.env /app/ros2_ws/src/role-ros2/docker/ros2_polymetis/polymetis_ros2.env
+# Build context is ../.. (role-ros2 root directory), so path is relative to that
+COPY docker/ros2_polymetis/entrypoint.sh /entrypoint.sh
+COPY docker/ros2_polymetis/polymetis_ros2.env /app/ros2_ws/src/role-ros2/docker/ros2_polymetis/polymetis_ros2.env
 RUN chmod +x /entrypoint.sh && \
     chmod +x /app/ros2_ws/src/role-ros2/docker/ros2_polymetis/polymetis_ros2.env && \
     # Add polymetis_ros2.env to bashrc so environment variables are set in new shells

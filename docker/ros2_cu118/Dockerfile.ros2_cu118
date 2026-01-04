@@ -283,11 +283,16 @@ RUN python3 -c "import numpy; print(f'✓ NumPy version: {numpy.__version__}')" 
 RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc && \
     echo "if [ -f /app/ros2_ws/install/setup.bash ]; then source /app/ros2_ws/install/setup.bash; fi" >> /root/.bashrc
 
+# --- 12. Install ROS2 tf tree visualization tools (at the end to reduce build time) ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-humble-rqt-tf-tree \
+    && rm -rf /var/lib/apt/lists/*
+
 # --- Final Setup ---
 # Copy Docker configuration files to image
-# Build context is ../../../../ (role_ws directory), so path is relative to that
-COPY src/role-ros2/docker/ros2_cu118/entrypoint.sh /entrypoint.sh
-COPY src/role-ros2/docker/ros2_cu118/ros2_cu118.env /app/ros2_ws/src/role-ros2/docker/ros2_cu118/ros2_cu118.env
+# Build context is ../.. (role-ros2 root directory), so path is relative to that
+COPY docker/ros2_cu118/entrypoint.sh /entrypoint.sh
+COPY docker/ros2_cu118/ros2_cu118.env /app/ros2_ws/src/role-ros2/docker/ros2_cu118/ros2_cu118.env
 RUN chmod +x /entrypoint.sh && \
     chmod +x /app/ros2_ws/src/role-ros2/docker/ros2_cu118/ros2_cu118.env && \
     # Add ros2_cu118.env to bashrc so environment variables are set in new shells
