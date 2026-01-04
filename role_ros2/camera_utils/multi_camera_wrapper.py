@@ -202,7 +202,9 @@ class MultiCameraWrapper:
                     "camera_info_topic": camera.get("camera_info_topic", None),
                     "base_frame": camera.get("base_frame", global_base_frame),
                     "camera_frame": camera.get("camera_frame", None),
-                    "slop": camera.get("slop", 0.005),  # Default 0.005s for RealSense compatibility
+                    # Use camera-specific slop if provided, otherwise use global slop, 
+                    # otherwise default to 0.1s (100ms) for ZED camera compatibility
+                    "slop": camera.get("slop", global_slop if global_slop else 0.1),
                     "queue_size": camera.get("queue_size", global_queue_size)
                 }
                 camera_configs.append(camera_config)

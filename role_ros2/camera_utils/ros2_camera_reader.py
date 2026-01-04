@@ -1,4 +1,4 @@
-"""ROS2 camera reader for single camera using ApproximateTimeSynchronizer."""
+"""ROS2 camera reader for single camera using TimeSynchronizer."""
 
 import threading
 from typing import Dict, Tuple, Optional
@@ -7,7 +7,6 @@ import numpy as np
 
 import rclpy
 from rclpy.node import Node
-from rclpy.callback_groups import ReentrantCallbackGroup
 from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge
 import message_filters
@@ -21,7 +20,9 @@ class ROS2CameraReader:
     """
     ROS2 camera reader for a single camera.
     
-    Uses ApproximateTimeSynchronizer to synchronize RGB and depth images with configurable tolerance.
+    Uses TimeSynchronizer to synchronize RGB, depth, and camera_info messages with exact timestamp matching.
+    Requires all three messages to have identical timestamps for synchronization.
+    Same implementation as test_topic_sync.py which successfully receives callbacks.
     Uses tf2 to get camera extrinsics with caching for static transforms.
     """
     
@@ -48,14 +49,17 @@ class ROS2CameraReader:
             camera_info_topic: Camera info topic (required for synchronization)
             base_frame: Base frame for tf lookup (default: "base_link")
             camera_frame: Camera frame for tf lookup (if None, extracted from image header)
-            queue_size: Queue size for ApproximateTimeSynchronizer
-            slop: Time synchronization slop in seconds (default: 0.005s = 5ms for RealSense compatibility)
+            queue_size: Queue size for TimeSynchronizer
+            slop: DEPRECATED - TimeSynchronizer requires exact timestamp matching (parameter kept for compatibility, not used)
         """
         self.camera_id = camera_id
         self.node = node
         self.base_frame = base_frame
         self.camera_frame = camera_frame
         self.cv_bridge = CvBridge()
+        
+        # Initialize callback count for logging
+        self._callback_count = 0
         
         # Thread-safe storage for synchronized data using queue (dict keyed by timestamp)
         # Queue stores: {timestamp_ns: (data_dict, timestamp_dict)}
@@ -85,25 +89,30 @@ class ROS2CameraReader:
         if camera_info_topic is None:
             raise ValueError(f"camera_info_topic is required for camera {camera_id}")
         
-        # Use ReentrantCallbackGroup to allow concurrent callback execution
-        callback_group = ReentrantCallbackGroup()
+        # Create and store subscribers as instance variables to prevent garbage collection
+        # This is critical: subscribers must be kept alive for the synchronizer to work
+        self._rgb_sub = message_filters.Subscriber(node, Image, rgb_topic)
+        self._depth_sub = message_filters.Subscriber(node, Image, depth_topic)
+        self._camera_info_sub = message_filters.Subscriber(node, CameraInfo, camera_info_topic)
         
-        rgb_sub = message_filters.Subscriber(node, Image, rgb_topic, callback_group=callback_group)
-        depth_sub = message_filters.Subscriber(node, Image, depth_topic, callback_group=callback_group)
-        camera_info_sub = message_filters.Subscriber(node, CameraInfo, camera_info_topic, callback_group=callback_group)
+        # Log actual topic names for debugging
+        node.get_logger().info(
+            f"[CameraReader {camera_id}] Subscribing to topics: "
+            f"RGB={rgb_topic}, Depth={depth_topic}, CameraInfo={camera_info_topic}"
+        )
         
         # Synchronize camera_info, RGB, and depth (three-way synchronization)
-        # ApproximateTimeSynchronizer allows configurable tolerance for timestamp matching
-        self._sync = message_filters.ApproximateTimeSynchronizer(
-            [camera_info_sub, rgb_sub, depth_sub],
-            queue_size=queue_size,
-            slop=slop
+        # Use TimeSynchronizer for exact timestamp matching (same as test_topic_sync.py)
+        # Note: TimeSynchronizer requires identical timestamps, but test shows it works
+        self._sync = message_filters.TimeSynchronizer(
+            [self._camera_info_sub, self._rgb_sub, self._depth_sub],
+            queue_size=queue_size
         )
         self._sync.registerCallback(self._sync_callback)
         
         node.get_logger().info(
-            f"ROS2CameraReader initialized for {camera_id} with ApproximateTimeSynchronizer "
-            f"(slop={slop}s): RGB={rgb_topic}, Depth={depth_topic}"
+            f"ROS2CameraReader initialized for {camera_id} with TimeSynchronizer "
+            f"(exact timestamp matching): RGB={rgb_topic}, Depth={depth_topic}, CameraInfo={camera_info_topic}"
         )
     
     def _get_cached_tf_transform(self, camera_frame: str) -> Optional[np.ndarray]:
@@ -161,12 +170,15 @@ class ROS2CameraReader:
             depth_msg: Depth image message
         """
         try:
+            # Track callback count for logging (initialize if needed)
+            if not hasattr(self, '_callback_count'):
+                self._callback_count = 0
             # Get ROS time at start of callback (subscription time)
             ros_time_sub = self.node.get_clock().now()
             sub_t_ns = ros_time_to_ns(ros_time_sub)
             
             # Get published time from message header (ROS time, nanoseconds)
-            # ApproximateTimeSynchronizer ensures messages have approximately matching timestamps
+            # TimeSynchronizer ensures messages have identical timestamps (same as test_topic_sync.py)
             # Use camera_info as primary timestamp
             pub_t_ns = int(
                 camera_info_msg.header.stamp.sec * 1_000_000_000 +
@@ -230,7 +242,7 @@ class ROS2CameraReader:
             }
             
             # Build timestamp_dict in droid format (all in nanoseconds)
-            # ApproximateTimeSynchronizer ensures messages have approximately matching timestamps
+            # TimeSynchronizer ensures messages have identical timestamps (same as test_topic_sync.py)
             # We store one pub_t timestamp (from camera_info)
             timestamp_dict = {
                 self.camera_id + "_read_start": sub_t_ns,
@@ -263,15 +275,23 @@ class ROS2CameraReader:
             self._data_available_event.clear()  # Auto-reset for next wait
             
             # Track callback count for logging
-            if not hasattr(self, '_callback_count'):
-                self._callback_count = 0
             self._callback_count += 1
             
-            # Log first callback and every 30th callback
-            if self._callback_count == 1 or self._callback_count % 30 == 0:
+            # Log first 10 callbacks and then every 30th callback for debugging
+            if self._callback_count <= 10 or self._callback_count % 30 == 0:
+                # Calculate timestamp differences for debugging
+                rgb_t_ns = int(rgb_msg.header.stamp.sec * 1_000_000_000 + rgb_msg.header.stamp.nanosec)
+                depth_t_ns = int(depth_msg.header.stamp.sec * 1_000_000_000 + depth_msg.header.stamp.nanosec)
+                info_t_ns = pub_t_ns
+                
+                rgb_diff_ms = abs(rgb_t_ns - info_t_ns) / 1e6
+                depth_diff_ms = abs(depth_t_ns - info_t_ns) / 1e6
+                
                 self.node.get_logger().info(
-                    f"[CameraReader {self.camera_id}] Sync callback #{self._callback_count}: "
-                    f"pub_t={pub_t_ns/1e9:.9f}s"
+                    f"[CameraReader {self.camera_id}] ✅ Sync callback #{self._callback_count}: "
+                    f"pub_t={pub_t_ns/1e9:.9f}s, "
+                    f"RGB_diff={rgb_diff_ms:.2f}ms, Depth_diff={depth_diff_ms:.2f}ms, "
+                    f"queue_size={len(self._data_queue)}"
                 )
                         
         except Exception as e:
