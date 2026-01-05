@@ -1,11 +1,12 @@
 # ROBOT SPECIFIC IMPORTS
 import time
 import threading
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 # ROS2 message imports
@@ -55,28 +56,42 @@ class FrankaRobot(BaseRobot):
         # Initialize IK solver
         self._ik_solver = RobotIKSolver()
         
+        # Create ReentrantCallbackGroup for parallel callback execution
+        # This allows robot state and gripper state callbacks to run concurrently
+        # with camera callbacks, eliminating serial execution bottleneck
+        self._cb_group = ReentrantCallbackGroup()
+        
         # State storage (updated from subscribers)
+        # Use atomic snapshots: (message, pub_timestamp_ns, received_time_ns)
+        # This ensures data consistency - all three values belong to the same message
         self._robot_state_lock = threading.Lock()
-        self._robot_state: Optional[PolymetisRobotState] = None
-        self._gripper_state: Optional[PolymetisGripperState] = None
+        self._robot_data_snapshot: Optional[Tuple[PolymetisRobotState, int, int]] = None
+        self._gripper_data_snapshot: Optional[Tuple[PolymetisGripperState, int]] = None
         self._max_gripper_width = 0.08  # Default for Franka hand
-        # Timestamp storage for latency calculation
-        self._robot_state_received_time_ns: Optional[int] = None
-        self._gripper_state_received_time_ns: Optional[int] = None
+        
+        # Latency logging counter (for lazy evaluation)
+        self._latency_log_counter = 0
         
         # Subscribers for robot state (default RELIABLE QoS)
+        # Queue size = 10 allows buffering multiple messages
+        # This helps if get_robot_state() is called less frequently than messages arrive
+        # However, we still only use the latest message, so this mainly helps with
+        # ensuring messages are not dropped if processing is slow
+        # Use ReentrantCallbackGroup for parallel execution
         self._robot_state_sub = self._node.create_subscription(
             PolymetisRobotState,
             '/polymetis/robot_state',
             self._robot_state_callback,
-            1
+            10,  # Queue size: buffer up to 10 messages (but we only use latest)
+            callback_group=self._cb_group
         )
         
         self._gripper_state_sub = self._node.create_subscription(
             PolymetisGripperState,
             '/polymetis/gripper_state',
             self._gripper_state_callback,
-            1
+            1,
+            callback_group=self._cb_group
         )
         
         # Publisher for robot commands (default RELIABLE QoS)
@@ -131,73 +146,97 @@ class FrankaRobot(BaseRobot):
         if not self._reset_client.wait_for_service(timeout_sec=5.0):
             self._node.get_logger().warn("Reset service not available")
         
-        # Spin thread for callbacks
-        # Only start spin thread if we own the node (not shared)
-        # If node is shared, the main thread should handle spinning
+        # Spin thread management based on node ownership
+        self._executor = None
         self._spin_thread = None
+        
         if self._own_node:
-            self._spin_thread = threading.Thread(target=self._spin_node, daemon=True)
+            # Own node: create executor and spin thread
+            from rclpy.executors import MultiThreadedExecutor
+            self._executor = MultiThreadedExecutor()
+            self._executor.add_node(self._node)
+            self._spin_thread = threading.Thread(target=self._spin_executor, daemon=True)
             self._spin_thread.start()
+            self._node.get_logger().info("FrankaRobot: Own node created with spin thread")
         else:
-            # For shared nodes, we need to periodically spin in the main thread
-            # This will be handled by the caller (e.g., test script or main executor)
-            self._node.get_logger().debug("Using shared node - caller should handle spinning")
+            # Shared node: external executor handles spinning (e.g., RobotEnv's MultiThreadedExecutor)
+            self._node.get_logger().debug("FrankaRobot: Using shared node - external executor handles spinning")
         
         # Wait for initial state
-        # For shared nodes, _wait_for_state will handle spinning
         self._wait_for_state(timeout=5.0)
         
         self._node.get_logger().info("FrankaRobot interface initialized")
     
-    def _spin_node(self):
-        """Spin the node in a separate thread to process callbacks."""
-        while rclpy.ok():
-            rclpy.spin_once(self._node, timeout_sec=0.1)
-    
     def _robot_state_callback(self, msg: PolymetisRobotState):
-        """Callback for robot state updates."""
+        """
+        Callback for robot state updates.
+        
+        Creates an atomic snapshot: (message, pub_timestamp_ns, received_time_ns)
+        This ensures all three values belong to the exact same message.
+        """
         # Record ROS time when message is received
         received_ros_time = self._node.get_clock().now()
         received_time_ns = received_ros_time.nanoseconds
         
+        # Extract message header timestamp (pub_t) from the SAME message
+        pub_stamp = msg.header.stamp
+        pub_timestamp_ns = int(pub_stamp.sec * 1_000_000_000 + pub_stamp.nanosec)
+        
+        # Create atomic snapshot: (message, pub_t, sub_t)
+        # All three values are from the same message, ensuring data consistency
+        snapshot = (msg, pub_timestamp_ns, received_time_ns)
+        
         with self._robot_state_lock:
-            self._robot_state = msg
-            self._robot_state_received_time_ns = received_time_ns
+            self._robot_data_snapshot = snapshot
     
     def _gripper_state_callback(self, msg: PolymetisGripperState):
-        """Callback for gripper state updates."""
+        """
+        Callback for gripper state updates.
+        
+        Creates an atomic snapshot: (message, received_time_ns)
+        """
         # Record ROS time when message is received
         received_ros_time = self._node.get_clock().now()
         received_time_ns = received_ros_time.nanoseconds
         
+        # Create atomic snapshot: (message, received_time_ns)
+        snapshot = (msg, received_time_ns)
+        
         with self._robot_state_lock:
-            self._gripper_state = msg
-            self._gripper_state_received_time_ns = received_time_ns
+            self._gripper_data_snapshot = snapshot
             if hasattr(msg, 'max_width') and msg.max_width > 0:
                 self._max_gripper_width = msg.max_width
     
     def _wait_for_state(self, timeout: float = 5.0):
-        """Wait for initial state to be received."""
+        """
+        Wait for initial state to be received.
+        
+        Background spin thread handles callbacks, so we just need to wait.
+        """
         start_time = time.time()
         while time.time() - start_time < timeout:
-            # For shared nodes, spin occasionally to process callbacks
-            if not self._own_node:
-                try:
-                    rclpy.spin_once(self._node, timeout_sec=0.05)
-                except Exception:
-                    # Ignore errors (e.g., "generator already executing")
-                    pass
-            
             with self._robot_state_lock:
-                if self._robot_state is not None and self._gripper_state is not None:
+                if self._robot_data_snapshot is not None and self._gripper_data_snapshot is not None:
                     return
             time.sleep(0.1)
         self._node.get_logger().warn("Timeout waiting for initial robot state")
     
     def _get_current_state(self):
-        """Get current robot state (thread-safe)."""
+        """
+        Get current robot state (thread-safe).
+        
+        Returns:
+            tuple: (robot_state_msg, gripper_state_msg) or (None, None)
+        """
         with self._robot_state_lock:
-            return self._robot_state, self._gripper_state
+            robot_snapshot = self._robot_data_snapshot
+            gripper_snapshot = self._gripper_data_snapshot
+        
+        # Unpack snapshots (outside lock to minimize hold time)
+        robot_state = robot_snapshot[0] if robot_snapshot is not None else None
+        gripper_state = gripper_snapshot[0] if gripper_snapshot is not None else None
+        
+        return robot_state, gripper_state
     
     def reset(self, randomize=False, wait_for_completion=True, wait_time_sec=30.0):
         """
@@ -228,8 +267,12 @@ class FrankaRobot(BaseRobot):
         
         self._node.get_logger().info("   Waiting for reset service to accept request (timeout: 5.0s)...")
         
-        # Wait for service to accept the request
-        rclpy.spin_until_future_complete(self._node, future, timeout_sec=5.0)
+        # Wait for service to accept the request (non-blocking - let background executor handle it)
+        # Cannot use rclpy.spin_until_future_complete() because node is already being spun by background thread
+        timeout_sec = 5.0
+        start_time = time.time()
+        while not future.done() and (time.time() - start_time) < timeout_sec:
+            time.sleep(0.001)  # Yield to background executor thread
         
         if future.done():
             response = future.result()
@@ -327,7 +370,11 @@ class FrankaRobot(BaseRobot):
             request.q0 = [0.0] * 7
         
         future = self._move_to_ee_pose_client.call_async(request)
-        rclpy.spin_until_future_complete(self._node, future, timeout_sec=10.0)
+        # Wait for service response (non-blocking - let background executor handle it)
+        timeout_sec = 10.0
+        start_time = time.time()
+        while not future.done() and (time.time() - start_time) < timeout_sec:
+            time.sleep(0.001)  # Yield to background executor thread
         
         if future.done():
             response = future.result()
@@ -407,7 +454,11 @@ class FrankaRobot(BaseRobot):
         request.time_to_go = 0.0  # Auto-calculate
         
         future = self._move_to_joint_positions_client.call_async(request)
-        rclpy.spin_until_future_complete(self._node, future, timeout_sec=10.0)
+        # Wait for service response (non-blocking - let background executor handle it)
+        timeout_sec = 10.0
+        start_time = time.time()
+        while not future.done() and (time.time() - start_time) < timeout_sec:
+            time.sleep(0.001)  # Yield to background executor thread
         
         if future.done():
             response = future.result()
@@ -510,46 +561,63 @@ class FrankaRobot(BaseRobot):
             return list(robot_state.ee_position) + list(robot_state.ee_euler)
         return [0.0] * 6
     
+    # Class-level constant for default state (avoid creating new objects on every call)
+    _DEFAULT_STATE = (
+        {
+            "cartesian_position": [0.0] * 6,
+            "gripper_position": 0.0,
+            "joint_positions": [0.0] * 7,
+            "joint_velocities": [0.0] * 7,
+            "joint_torques_computed": [0.0] * 7,
+            "prev_joint_torques_computed": [0.0] * 7,
+            "prev_joint_torques_computed_safened": [0.0] * 7,
+            "motor_torques_measured": [0.0] * 7,
+            "prev_controller_latency_ms": 0.0,
+            "prev_command_successful": False,
+        },
+        {
+            "robot_polymetis_t": 0,
+            "robot_pub_t": 0,
+            "robot_sub_t": 0,
+            "robot_end_t": 0
+        }
+    )
+    
     def get_robot_state(self):
         """
         Get comprehensive robot state.
+        
+        Optimized for performance:
+        - Minimal lock hold time (only copies snapshot reference)
+        - Lazy latency calculation (only when logging)
+        - Uses atomic snapshots for data consistency
         
         Returns:
             tuple: (state_dict, timestamp_dict)
                 timestamp_dict contains:
                 - robot_polymetis_t: Polymetis timestamp (nanoseconds)
                 - robot_pub_t: Message header timestamp (nanoseconds)
-                - robot_received_t: Message received time (nanoseconds, ROS time)
+                - robot_sub_t: Message received/subscription time (nanoseconds, ROS time)
                 - robot_end_t: Processing end time (nanoseconds, ROS time)
         """
-        # Get current state (thread-safe)
+        # CRITICAL SECTION: Only copy snapshot references (minimal lock time)
         with self._robot_state_lock:
-            robot_state = self._robot_state
-            gripper_state = self._gripper_state
-            robot_state_received_time_ns = self._robot_state_received_time_ns
-            gripper_state_received_time_ns = self._gripper_state_received_time_ns
+            robot_snapshot = self._robot_data_snapshot
+            gripper_snapshot = self._gripper_data_snapshot
         
-        if robot_state is None or gripper_state is None:
-            # Return default state
-            return {
-                "cartesian_position": [0.0] * 6,
-                "gripper_position": 0.0,
-                "joint_positions": [0.0] * 7,
-                "joint_velocities": [0.0] * 7,
-                "joint_torques_computed": [0.0] * 7,
-                "prev_joint_torques_computed": [0.0] * 7,
-                "prev_joint_torques_computed_safened": [0.0] * 7,
-                "motor_torques_measured": [0.0] * 7,
-                "prev_controller_latency_ms": 0.0,
-                "prev_command_successful": False,
-            }, {
-                "robot_polymetis_t": 0,
-                "robot_pub_t": 0,
-                "robot_received_t": 0,
-                "robot_end_t": 0
-            }
+        # Fast path: return default if no data available
+        if robot_snapshot is None or gripper_snapshot is None:
+            return self._DEFAULT_STATE[0].copy(), self._DEFAULT_STATE[1].copy()
         
-        # Build state dict from ROS2 messages
+        # Unpack atomic snapshot (all values from the same message)
+        robot_state, pub_timestamp_ns, received_timestamp_ns = robot_snapshot
+        gripper_state, _ = gripper_snapshot
+        
+        # Record processing start time (for latency calculation, done lazily)
+        processing_start_ros_time = self._node.get_clock().now()
+        processing_start_timestamp_ns = processing_start_ros_time.nanoseconds
+        
+        # Build state dict from ROS2 messages (outside lock)
         cartesian_position = list(robot_state.ee_position) + list(robot_state.ee_euler)
         
         state_dict = {
@@ -565,29 +633,100 @@ class FrankaRobot(BaseRobot):
             "prev_command_successful": robot_state.prev_command_successful,
         }
         
-        # Extract timestamps
-        # robot_polymetis_t: Polymetis timestamp from message
+        # Extract timestamps from snapshot (guaranteed to match)
         polymetis_timestamp_ns = robot_state.polymetis_timestamp_ns
         
-        # robot_pub_t: Message header timestamp (when message was published)
-        pub_stamp = robot_state.header.stamp
-        pub_timestamp_ns = int(pub_stamp.sec * 1_000_000_000 + pub_stamp.nanosec)
-        
-        # robot_received_t: Message received time (from callback)
-        received_timestamp_ns = robot_state_received_time_ns if robot_state_received_time_ns is not None else 0
-        
-        # robot_end_t: Processing end time (current ROS time)
+        # robot_end_t: Processing end time
         end_ros_time = self._node.get_clock().now()
         end_timestamp_ns = end_ros_time.nanoseconds
         
+        # Build timestamp dict (all from the same atomic snapshot)
         timestamp_dict = {
             "robot_polymetis_t": int(polymetis_timestamp_ns),
-            "robot_pub_t": int(pub_timestamp_ns),
-            "robot_received_t": int(received_timestamp_ns),
+            "robot_pub_t": int(pub_timestamp_ns),  # From snapshot
+            "robot_sub_t": int(received_timestamp_ns),  # From snapshot (same message)
             "robot_end_t": int(end_timestamp_ns),
         }
         
+        # Lazy latency calculation (only when logging is needed)
+        self._latency_log_counter += 1
+        if self._latency_log_counter % 50 == 0:
+            self._check_and_log_latency(
+                pub_timestamp_ns,
+                received_timestamp_ns,
+                processing_start_timestamp_ns,
+                end_timestamp_ns
+            )
+        
         return state_dict, timestamp_dict
+    
+    def _check_and_log_latency(
+        self,
+        pub_timestamp_ns: int,
+        received_timestamp_ns: int,
+        processing_start_timestamp_ns: int,
+        end_timestamp_ns: int
+    ) -> None:
+        """
+        Check and log latency metrics (lazy evaluation).
+        
+        This method is only called periodically (every 50 calls) to avoid
+        unnecessary CPU overhead from latency calculations.
+        
+        Args:
+            pub_timestamp_ns: Message publication timestamp
+            received_timestamp_ns: Message reception timestamp
+            processing_start_timestamp_ns: Processing start timestamp
+            end_timestamp_ns: Processing end timestamp
+        """
+        # Calculate processing time
+        processing_time_ns = end_timestamp_ns - processing_start_timestamp_ns
+        processing_time_ms = processing_time_ns / 1e6
+        
+        # Calculate pub_to_sub latency (network + ROS2 processing)
+        if pub_timestamp_ns > 0 and received_timestamp_ns > 0:
+            pub_to_sub_ns = received_timestamp_ns - pub_timestamp_ns
+            pub_to_sub_ms = pub_to_sub_ns / 1e6
+        else:
+            pub_to_sub_ms = 0.0
+        
+        # Calculate sub_to_end latency (data staleness)
+        if received_timestamp_ns > 0:
+            sub_to_end_ns = end_timestamp_ns - received_timestamp_ns
+            sub_to_end_ms = sub_to_end_ns / 1e6
+        else:
+            sub_to_end_ms = 0.0
+        
+        # Calculate message age
+        if pub_timestamp_ns > 0:
+            message_age_ns = end_timestamp_ns - pub_timestamp_ns
+            message_age_ms = message_age_ns / 1e6
+        else:
+            message_age_ms = 0.0
+        
+        # Log warnings for large latencies
+        if pub_to_sub_ms > 100.0:
+            self._node.get_logger().warn(
+                f"⚠️  Large pub_to_sub latency: {pub_to_sub_ms:.2f} ms. "
+                f"This may indicate network/ROS2 processing delay. "
+                f"Expected: < 50ms for local communication."
+            )
+        
+        if sub_to_end_ms > 100.0:
+            self._node.get_logger().warn(
+                f"⚠️  Large sub_to_end latency: {sub_to_end_ms:.2f} ms. "
+                f"Message age: {message_age_ms:.2f} ms. "
+                f"This indicates get_robot_state() is called less frequently than messages arrive, "
+                f"or there's processing delay. "
+                f"Expected: < 50ms if called at >= 20Hz with 50Hz message rate."
+            )
+        
+        if processing_time_ms > 10.0:
+            self._node.get_logger().warn(
+                f"⚠️  Large processing time: {processing_time_ms:.3f} ms. "
+                f"This may indicate a performance issue in get_robot_state(). "
+                f"Expected: < 1ms."
+            )
     
     def create_action_dict(self, action, action_space="cartesian_velocity", gripper_action_space=None, robot_state=None):
         """
@@ -673,7 +812,11 @@ class FrankaRobot(BaseRobot):
         request.kxd = list(kxd) if kxd is not None else []
         
         future = self._start_cartesian_impedance_client.call_async(request)
-        rclpy.spin_until_future_complete(self._node, future, timeout_sec=5.0)
+        # Wait for service response (non-blocking - let background executor handle it)
+        timeout_sec = 5.0
+        start_time = time.time()
+        while not future.done() and (time.time() - start_time) < timeout_sec:
+            time.sleep(0.001)  # Yield to background executor thread
         
         if future.done():
             response = future.result()
@@ -704,7 +847,11 @@ class FrankaRobot(BaseRobot):
         request.kqd = list(kqd) if kqd is not None else []
         
         future = self._start_joint_impedance_client.call_async(request)
-        rclpy.spin_until_future_complete(self._node, future, timeout_sec=5.0)
+        # Wait for service response (non-blocking - let background executor handle it)
+        timeout_sec = 5.0
+        start_time = time.time()
+        while not future.done() and (time.time() - start_time) < timeout_sec:
+            time.sleep(0.001)  # Yield to background executor thread
         
         if future.done():
             response = future.result()
@@ -726,7 +873,11 @@ class FrankaRobot(BaseRobot):
         
         request = TerminatePolicy.Request()
         future = self._terminate_policy_client.call_async(request)
-        rclpy.spin_until_future_complete(self._node, future, timeout_sec=5.0)
+        # Wait for service response (non-blocking - let background executor handle it)
+        timeout_sec = 5.0
+        start_time = time.time()
+        while not future.done() and (time.time() - start_time) < timeout_sec:
+            time.sleep(0.001)  # Yield to background executor thread
         
         if future.done():
             response = future.result()
@@ -779,7 +930,11 @@ class FrankaRobot(BaseRobot):
         request.tolerance = tolerance
         
         future = self._solve_ik_client.call_async(request)
-        rclpy.spin_until_future_complete(self._node, future, timeout_sec=5.0)
+        # Wait for service response (non-blocking - let background executor handle it)
+        timeout_sec = 5.0
+        start_time = time.time()
+        while not future.done() and (time.time() - start_time) < timeout_sec:
+            time.sleep(0.001)  # Yield to background executor thread
         
         if future.done():
             response = future.result()
@@ -810,7 +965,11 @@ class FrankaRobot(BaseRobot):
         request.joint_positions = list(joint_positions)
         
         future = self._compute_fk_client.call_async(request)
-        rclpy.spin_until_future_complete(self._node, future, timeout_sec=5.0)
+        # Wait for service response (non-blocking - let background executor handle it)
+        timeout_sec = 5.0
+        start_time = time.time()
+        while not future.done() and (time.time() - start_time) < timeout_sec:
+            time.sleep(0.001)  # Yield to background executor thread
         
         if future.done():
             response = future.result()
@@ -841,7 +1000,11 @@ class FrankaRobot(BaseRobot):
         request.desired_joint_positions = list(desired_joint_positions)
         
         future = self._compute_time_to_go_client.call_async(request)
-        rclpy.spin_until_future_complete(self._node, future, timeout_sec=5.0)
+        # Wait for service response (non-blocking - let background executor handle it)
+        timeout_sec = 5.0
+        start_time = time.time()
+        while not future.done() and (time.time() - start_time) < timeout_sec:
+            time.sleep(0.001)  # Yield to background executor thread
         
         if future.done():
             response = future.result()
@@ -854,15 +1017,58 @@ class FrankaRobot(BaseRobot):
             self._node.get_logger().error("Compute time to go service call timed out")
             return 2.0  # Default fallback
     
-    def shutdown(self):
-        """Clean up resources."""
-        # Stop spin thread if it exists
-        if self._spin_thread is not None and self._spin_thread.is_alive():
-            # Thread is daemon, so it will be cleaned up automatically
-            # But we should wait a bit for it to finish current spin
-            pass
-        
-        if self._own_node:
-            self._node.destroy_node()
+    def _spin_executor(self):
+        """
+        Background thread method that spins the executor.
+        Only used when own_node=True.
+        """
+        try:
+            self._executor.spin()
+        except Exception as e:
             if rclpy.ok():
+                self._node.get_logger().error(f"Error in FrankaRobot spin thread: {e}")
+    
+    def shutdown(self):
+        """
+        Clean up resources.
+        
+        If own_node=True: stops executor, spin thread, and destroys node.
+        If own_node=False: does nothing (node is managed by external executor).
+        """
+        if not self._own_node:
+            # Shared node: external executor manages cleanup
+            self._node.get_logger().debug("FrankaRobot: Using shared node - skipping shutdown")
+            return
+        
+        # Own node: full cleanup
+        self._node.get_logger().info("FrankaRobot: Shutting down...")
+        
+        # Step 1: Shutdown executor (stops spin thread)
+        if self._executor is not None:
+            try:
+                self._executor.shutdown(timeout_sec=2.0)
+            except Exception as e:
+                self._node.get_logger().warn(f"Error shutting down executor: {e}")
+        
+        # Step 2: Join spin thread
+        if self._spin_thread is not None and self._spin_thread.is_alive():
+            try:
+                self._spin_thread.join(timeout=3.0)
+            except Exception as e:
+                self._node.get_logger().warn(f"Error joining spin thread: {e}")
+        
+        # Step 3: Destroy node
+        if self._node is not None:
+            try:
+                self._node.destroy_node()
+            except Exception as e:
+                self._node.get_logger().warn(f"Error destroying node: {e}")
+        
+        # Step 4: Shutdown rclpy if we initialized it
+        if rclpy.ok():
+            try:
                 rclpy.shutdown()
+            except Exception as e:
+                pass  # May already be shutdown
+        
+        self._node.get_logger().info("FrankaRobot: Shutdown complete")

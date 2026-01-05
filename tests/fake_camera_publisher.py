@@ -16,6 +16,9 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CameraInfo
+from geometry_msgs.msg import TransformStamped
+from tf2_ros import StaticTransformBroadcaster
+from role_ros2.misc.transformations import euler_to_quat
 
 
 class FakeCameraPublisher(Node):
@@ -38,7 +41,10 @@ class FakeCameraPublisher(Node):
         delay_ms: float = 0.0,
         image_width: int = 640,
         image_height: int = 480,
-        use_sim_time: bool = False
+        use_sim_time: bool = False,
+        base_frame: str = "base_link",
+        camera_frame: Optional[str] = None,
+        random_pose: bool = True
     ):
         """
         Initialize fake camera publisher.
@@ -53,6 +59,9 @@ class FakeCameraPublisher(Node):
             image_width: Image width in pixels (default: 640)
             image_height: Image height in pixels (default: 480)
             use_sim_time: Whether to use ROS simulation time (default: False)
+            base_frame: Base frame for TF transform (default: "base_link")
+            camera_frame: Camera frame name for TF transform (default: None, uses camera_id)
+            random_pose: Whether to use random pose for static transform (default: True)
         """
         super().__init__(f'fake_camera_publisher_{camera_id}')
         
@@ -62,6 +71,8 @@ class FakeCameraPublisher(Node):
         self.image_width = image_width
         self.image_height = image_height
         self.use_sim_time = use_sim_time
+        self.base_frame = base_frame
+        self.camera_frame = camera_frame or f"{camera_id}_camera_frame_optical"
         
         # Frame counter for generating patterns
         self.frame_counter = 0
@@ -89,6 +100,13 @@ class FakeCameraPublisher(Node):
         # Generate camera info once
         self.camera_info = self._generate_camera_info()
         
+        # Setup static transform broadcaster
+        self.tf_broadcaster = StaticTransformBroadcaster(self)
+        
+        # Generate random pose for static transform
+        if random_pose:
+            self._generate_and_publish_static_transform()
+        
         self.get_logger().info(
             f"Fake camera publisher initialized for {camera_id}:\n"
             f"  RGB topic: {rgb_topic}\n"
@@ -97,7 +115,53 @@ class FakeCameraPublisher(Node):
             f"  Publish rate: {publish_rate} Hz\n"
             f"  Delay: {delay_ms} ms\n"
             f"  Image size: {image_width}x{image_height}\n"
-            f"  Use sim time: {use_sim_time}"
+            f"  Use sim time: {use_sim_time}\n"
+            f"  Base frame: {base_frame}\n"
+            f"  Camera frame: {self.camera_frame}\n"
+            f"  Random pose: {random_pose}"
+        )
+    
+    def _generate_and_publish_static_transform(self):
+        """
+        Generate random pose and publish static transform from base_frame to camera_frame.
+        
+        Random pose ranges:
+        - Position: x, y, z in [-1.0, 1.0] meters
+        - Orientation: Random euler angles (roll, pitch, yaw) in [-π, π] radians
+        """
+        # Generate random position (in meters)
+        np.random.seed(hash(self.camera_id) % (2**32))  # Deterministic seed based on camera_id
+        position = np.random.uniform(-1.0, 1.0, size=3)
+        
+        # Generate random orientation (euler angles in radians)
+        euler_angles = np.random.uniform(-np.pi, np.pi, size=3)
+        quaternion = euler_to_quat(euler_angles)
+        
+        # Create transform message
+        transform = TransformStamped()
+        transform.header.stamp = self.get_clock().now().to_msg()
+        transform.header.frame_id = self.base_frame
+        transform.child_frame_id = self.camera_frame
+        
+        # Set translation
+        transform.transform.translation.x = float(position[0])
+        transform.transform.translation.y = float(position[1])
+        transform.transform.translation.z = float(position[2])
+        
+        # Set rotation (quaternion: x, y, z, w)
+        transform.transform.rotation.x = float(quaternion[0])
+        transform.transform.rotation.y = float(quaternion[1])
+        transform.transform.rotation.z = float(quaternion[2])
+        transform.transform.rotation.w = float(quaternion[3])
+        
+        # Publish static transform
+        self.tf_broadcaster.sendTransform(transform)
+        
+        self.get_logger().info(
+            f"Published static transform: {self.base_frame} -> {self.camera_frame}\n"
+            f"  Position: [{position[0]:.3f}, {position[1]:.3f}, {position[2]:.3f}] m\n"
+            f"  Orientation (euler): [{np.degrees(euler_angles[0]):.1f}, "
+            f"{np.degrees(euler_angles[1]):.1f}, {np.degrees(euler_angles[2]):.1f}] deg"
         )
     
     def _generate_camera_info(self) -> CameraInfo:
@@ -192,7 +256,7 @@ class FakeCameraPublisher(Node):
             now = self.get_clock().now()
             msg.header.stamp = now.to_msg()
         
-        msg.header.frame_id = f"{self.camera_id}_camera_frame_optical"
+        msg.header.frame_id = self.camera_frame
         
         # Set image properties
         msg.height = img.shape[0]
@@ -250,7 +314,7 @@ class FakeCameraPublisher(Node):
             
             # Update camera info with current timestamp
             self.camera_info.header.stamp = timestamp_msg
-            self.camera_info.header.frame_id = f"{self.camera_id}_camera_frame_optical"
+            self.camera_info.header.frame_id = self.camera_frame
             
             # Publish messages
             self.rgb_pub.publish(rgb_msg)
@@ -284,7 +348,7 @@ class FakeCameraPublisher(Node):
             self.get_logger().error(traceback.format_exc())
 
 
-def load_camera_config(config_file: Optional[str] = None) -> list:
+def load_camera_config(config_file: Optional[str] = None):
     """
     Load camera configurations from YAML file.
     
@@ -292,7 +356,7 @@ def load_camera_config(config_file: Optional[str] = None) -> list:
         config_file: Path to YAML configuration file (if None, uses config/multi_camera_config.yaml)
         
     Returns:
-        List of camera configuration dictionaries
+        tuple: (config_data dict, cameras list)
     """
     from role_ros2.misc.config_loader import load_yaml_config, get_package_config_path
     
@@ -308,7 +372,7 @@ def load_camera_config(config_file: Optional[str] = None) -> list:
             config_data = yaml.safe_load(f)
     
     cameras = config_data.get("cameras", [])
-    return cameras
+    return config_data, cameras
 
 
 def main():
@@ -330,6 +394,10 @@ def main():
                        help='Image height in pixels (default: 480)')
     parser.add_argument('--use-sim-time', action='store_true',
                        help='Use ROS simulation time')
+    parser.add_argument('--random-pose', action='store_true', default=True,
+                       help='Use random pose for static transform (default: True)')
+    parser.add_argument('--no-random-pose', dest='random_pose', action='store_false',
+                       help='Disable random pose for static transform')
     
     args = parser.parse_args()
     
@@ -337,7 +405,7 @@ def main():
     
     try:
         # Load camera configurations
-        cameras = load_camera_config(args.config_file)
+        config_data, cameras = load_camera_config(args.config_file)
         
         if not cameras:
             print("❌ No cameras found in configuration file!")
@@ -368,6 +436,10 @@ def main():
             # Allow per-camera publish_rate override from config, fallback to command line arg
             camera_publish_rate = camera_config.get("publish_rate", args.publish_rate)
             
+            # Get base_frame and camera_frame from config
+            base_frame = camera_config.get("base_frame", config_data.get("base_frame", "base_link"))
+            camera_frame = camera_config.get("camera_frame")
+            
             publisher = FakeCameraPublisher(
                 camera_id=camera_id,
                 rgb_topic=rgb_topic,
@@ -377,7 +449,10 @@ def main():
                 delay_ms=args.delay_ms,
                 image_width=image_width,
                 image_height=image_height,
-                use_sim_time=args.use_sim_time
+                use_sim_time=args.use_sim_time,
+                base_frame=base_frame,
+                camera_frame=camera_frame,
+                random_pose=args.random_pose
             )
             publishers.append(publisher)
         
