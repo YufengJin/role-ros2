@@ -30,3 +30,7 @@ Thumbs.db
 *.bak
 *.log
 
+docs/
+logs/
+bags/
+

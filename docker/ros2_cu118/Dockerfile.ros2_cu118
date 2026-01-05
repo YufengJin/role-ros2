@@ -299,7 +299,7 @@ RUN chmod +x /entrypoint.sh && \
     echo "if [ -f /app/ros2_ws/src/role-ros2/docker/ros2_cu118/ros2_cu118.env ]; then source /app/ros2_ws/src/role-ros2/docker/ros2_cu118/ros2_cu118.env; fi" >> /root/.bashrc
 
 # Set working directory
-WORKDIR /app
+WORKDIR /app/ros2_ws
 
 # Use the entrypoint from image
 ENTRYPOINT ["/entrypoint.sh"]

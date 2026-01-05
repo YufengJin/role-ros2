@@ -555,7 +555,7 @@ ENV PYTHONPATH=/opt/fairo/polymetis/polymetis/python:/usr/lib/python3.8/site-pac
 ENV CONDA_PREFIX=/opt/fairo/polymetis/polymetis/build
 
 # Set working directory
-WORKDIR /app
+WORKDIR /app/ros2_ws
 
 # ============================================================================
 # Copy Docker configuration files to image

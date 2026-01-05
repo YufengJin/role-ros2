@@ -321,7 +321,7 @@ role-ros2/
     ├── robot_env.py            # Gym 环境
     ├── robot_ik/               # 逆运动学
     ├── calibration/            # 标定工具
-    ├── camera_utils/           # 相机工具
+    ├── camera/                 # 相机工具
     └── misc/                   # 工具函数
 ```
 

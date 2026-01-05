@@ -14,11 +14,10 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge
 import message_filters
-from tf2_ros import TransformListener, Buffer
-import tf2_ros
 
-from role_ros2.camera_utils.ros2_camera_reader import ROS2CameraReader
-from role_ros2.utils import ros_time_to_ns, transform_to_matrix
+from role_ros2.camera.ros2_camera_reader import ROS2CameraReader
+from role_ros2.misc.ros2_utils import ros_time_to_ns
+from role_ros2.misc.config_loader import get_package_config_path, load_yaml_config
 
 
 class MultiCameraWrapper:
@@ -29,8 +28,8 @@ class MultiCameraWrapper:
     Supports ZED cameras via ROS2 topics.
     
     Synchronization Architecture (layered, decoupled):
-    - Layer 1: Each camera internally uses ApproximateTimeSynchronizer (in ROS2CameraReader)
-      to synchronize CameraInfo, RGB, and Depth with configurable tolerance
+    - Layer 1: Each camera internally uses TimeSynchronizer (in ROS2CameraReader)
+      to synchronize CameraInfo, RGB, and Depth with exact timestamp matching
     - Layer 2: MultiCameraWrapper uses ApproximateTimeSynchronizer on camera_info
       messages from all cameras to synchronize across cameras
     - Decoupled Processing: Layer 2 callback only records sync requests, does not wait.
@@ -86,15 +85,6 @@ class MultiCameraWrapper:
         # CV bridge for image conversion
         self.cv_bridge = CvBridge()
         
-        # TF buffer and listener for extrinsics
-        self._tf_buffer = Buffer()
-        self._tf_listener = TransformListener(self._tf_buffer, self._node)
-        self._tf_warning_printed: Dict[str, bool] = {}
-        
-        # TF transform cache for static transforms (camera extrinsics are typically static)
-        self._tf_cache: Dict[str, Optional[np.ndarray]] = {}
-        self._tf_cache_lock = threading.Lock()
-        
         # Thread-safe storage for synchronized multi-camera data
         self._latest_sync_data_dict: Optional[Dict] = None
         self._latest_sync_timestamp_dict: Optional[Dict] = None
@@ -107,10 +97,10 @@ class MultiCameraWrapper:
         self._sync_request_counter = 0
         self._max_pending_requests = 10  # Limit queue size
         
-        # Load camera configurations from file
+        # Load camera configurations from config/ directory
         if config_file is None:
-            # Default config file path (in camera_utils directory)
-            config_file = Path(__file__).parent / 'multi_camera_config.yaml'
+            # Use unified config loader to find config file in config/ directory
+            config_file = get_package_config_path('multi_camera_reader_config.yaml')
         else:
             config_file = Path(config_file)
         
@@ -127,8 +117,6 @@ class MultiCameraWrapper:
             rgb_topic = config["rgb_topic"]
             depth_topic = config["depth_topic"]
             camera_info_topic = config.get("camera_info_topic", None)
-            base_frame = config.get("base_frame", "base_link")
-            camera_frame = config.get("camera_frame", None)
             
             try:
                 # Get slop from config or use default (0.005s for RealSense compatibility)
@@ -141,23 +129,17 @@ class MultiCameraWrapper:
                     depth_topic=depth_topic,
                     node=self._node,
                     camera_info_topic=camera_info_topic,
-                    base_frame=base_frame,
-                    camera_frame=camera_frame,
                     queue_size=queue_size,
                     slop=slop
                 )
                 self.camera_dict[camera_id] = camera_reader
-                self._node.get_logger().info(
-                    f"Initialized camera {camera_id} for non-sync mode: "
-                    f"RGB={rgb_topic}, Depth={depth_topic}"
-                )
             except Exception as e:
                 self._node.get_logger().error(
                     f"Failed to initialize camera {camera_id}: {e}"
                 )
         
         # Setup layered multi-camera synchronization using ApproximateTimeSynchronizer
-        # Layer 1: Each camera uses ApproximateTimeSynchronizer internally (in ROS2CameraReader)
+        # Layer 1: Each camera uses TimeSynchronizer internally (in ROS2CameraReader)
         # Layer 2: MultiCameraWrapper uses ApproximateTimeSynchronizer on camera_info messages
         self._setup_layered_multi_camera_sync(camera_configs)
     
@@ -209,9 +191,6 @@ class MultiCameraWrapper:
                 }
                 camera_configs.append(camera_config)
             
-            self._node.get_logger().info(
-                f"Loaded {len(camera_configs)} camera configurations from {config_file}"
-            )
             return camera_configs
             
         except Exception as e:
@@ -224,7 +203,7 @@ class MultiCameraWrapper:
         """
         Setup layered ApproximateTimeSynchronizer for multiple cameras.
         
-        Layer 1: Each camera internally uses ApproximateTimeSynchronizer (in ROS2CameraReader)
+        Layer 1: Each camera internally uses TimeSynchronizer (in ROS2CameraReader)
         Layer 2: MultiCameraWrapper uses ApproximateTimeSynchronizer on camera_info messages
         
         Uses event-based waiting mechanism to handle race conditions between layers.
@@ -234,13 +213,10 @@ class MultiCameraWrapper:
             camera_configs: List of camera configuration dictionaries
         """
         # Get global sync settings from config file
-        config_file = Path(__file__).parent / 'multi_camera_config.yaml'
         global_sync = {}
         try:
-            if config_file.exists():
-                with open(config_file, 'r') as f:
-                    config_data = yaml.safe_load(f)
-                    global_sync = config_data.get("global_sync", {})
+            config_data = load_yaml_config('multi_camera_config.yaml')
+            global_sync = config_data.get("global_sync", {})
         except Exception as e:
             self._node.get_logger().warning(f"Failed to load global sync settings: {e}")
         
@@ -297,11 +273,6 @@ class MultiCameraWrapper:
             lambda *args: self._layered_sync_callback(camera_id_list, *args)
         )
         
-        self._node.get_logger().info(
-            f"Layered multi-camera synchronization enabled for {len(camera_info_subs)} cameras "
-            f"with slop={multi_camera_slop}s, queue_size={multi_camera_queue_size}"
-        )
-        
         # Create timer to periodically check pending sync requests (decoupled processing)
         # Check every 10ms to ensure timely processing
         self._sync_check_timer = self._node.create_timer(
@@ -336,12 +307,6 @@ class MultiCameraWrapper:
                 )
                 camera_info_timestamps.append(ts_ns)
             
-            self._node.get_logger().info(
-                f"[MultiCamera] Layered sync callback triggered: "
-                f"cameras={len(camera_id_list)}, "
-                f"timestamps={[f'{ts/1e9:.9f}' for ts in camera_info_timestamps]}"
-            )
-            
             # Add sync request to pending queue (decoupled processing)
             with self._pending_requests_lock:
                 self._sync_request_counter += 1
@@ -362,11 +327,6 @@ class MultiCameraWrapper:
                     camera_info_timestamps.copy(),
                     start_t_ns
                 ))
-                
-                self._node.get_logger().debug(
-                    f"[MultiCamera] Added sync request #{request_id} to queue "
-                    f"(queue size: {len(self._pending_sync_requests)})"
-                )
             
         except Exception as e:
             self._node.get_logger().error(f"Error in layered sync callback: {e}")
@@ -398,8 +358,6 @@ class MultiCameraWrapper:
                 sync_timestamp_dict = {}
                 cameras_with_data = 0
                 
-                tolerance_ns = self._multi_camera_slop_ns
-                
                 # Check each camera's data
                 all_cameras_ready = True
                 for camera_id, camera_info_t_ns in zip(camera_id_list, camera_info_timestamps):
@@ -408,10 +366,9 @@ class MultiCameraWrapper:
                         all_cameras_ready = False
                         break
                     
-                    # Try to get data for this timestamp (non-blocking check)
-                    camera_data = camera_reader.get_data_for_timestamp(
-                        camera_info_t_ns, tolerance_ns=tolerance_ns
-                    )
+                    # Try to get data for this timestamp (exact match only, no tolerance)
+                    # get_data_for_timestamp will log a warning if data is not found
+                    camera_data = camera_reader.get_data_for_timestamp(camera_info_t_ns)
                     
                     if camera_data is None:
                         # Data not ready yet, skip this request for now
@@ -464,14 +421,6 @@ class MultiCameraWrapper:
                 # Get ROS time at end of processing
                 ros_time_end = self._node.get_clock().now()
                 end_t_ns = ros_time_to_ns(ros_time_end)
-                
-                # Log successful synchronization
-                self._node.get_logger().info(
-                    f"[MultiCamera] ✅ Processed sync request #{request_id}: "
-                    f"cameras={cameras_with_data}/{len(camera_id_list)}, "
-                    f"callback_to_check={callback_to_check_ms:.2f}ms, "
-                    f"callback_to_ready={callback_to_ready_ms:.2f}ms"
-                )
                 
                 # Store synchronized data (thread-safe)
                 with self._sync_data_lock:
@@ -654,66 +603,6 @@ class MultiCameraWrapper:
             )
         
         return None
-    
-    def _get_cached_tf_transform(
-        self, 
-        camera_id: str, 
-        base_frame: str, 
-        camera_frame: str
-    ) -> Optional[np.ndarray]:
-        """
-        Get cached TF transform or query and cache it if not available.
-        
-        For static transforms (typical for camera extrinsics), this avoids repeated lookups.
-        
-        Args:
-            camera_id: Camera identifier (for cache key)
-            base_frame: Base frame name
-            camera_frame: Camera frame name
-            
-        Returns:
-            4x4 transformation matrix, or None if lookup fails
-        """
-        cache_key = f"{camera_id}:{base_frame}:{camera_frame}"
-        
-        with self._tf_cache_lock:
-            # If cache exists, return cached transform
-            if cache_key in self._tf_cache:
-                cached_transform = self._tf_cache[cache_key]
-                if cached_transform is not None:
-                    return cached_transform.copy()
-        
-        # Cache miss - try to lookup transform
-        try:
-            transform = self._tf_buffer.lookup_transform(
-                base_frame,
-                camera_frame,
-                rclpy.time.Time()
-            )
-            
-            # Convert ROS2 transform to 4x4 matrix using utility function
-            extrinsics = transform_to_matrix(transform)
-            
-            # Cache the transform (assume static for camera extrinsics)
-            with self._tf_cache_lock:
-                self._tf_cache[cache_key] = extrinsics.copy()
-            
-            return extrinsics
-            
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
-            if camera_id not in self._tf_warning_printed:
-                self._node.get_logger().warning(
-                    f"TF lookup failed for camera {camera_id} "
-                    f"({base_frame} -> {camera_frame}): {e}. "
-                    f"Extrinsics will be None."
-                )
-                self._tf_warning_printed[camera_id] = True
-            
-            # Cache None to avoid repeated failed lookups
-            with self._tf_cache_lock:
-                self._tf_cache[cache_key] = None
-            
-            return None
     
     def read_cameras(self, use_sync: bool = True) -> Tuple[Dict, Dict]:
         """

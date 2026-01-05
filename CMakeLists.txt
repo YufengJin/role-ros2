@@ -75,6 +75,14 @@ install(PROGRAMS
   RENAME collect_trajectory_node
 )
 
+# Install configuration files
+install(DIRECTORY config
+  DESTINATION share/${PROJECT_NAME}
+  FILES_MATCHING
+    PATTERN "*.yaml"
+    PATTERN "*.yml"
+)
+
 # Install Python package
 # Install to both site-packages (ROS2 Foxy) and dist-packages (ROS2 Humble) for compatibility
 install(DIRECTORY role_ros2

@@ -16,8 +16,6 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CameraInfo
-from std_msgs.msg import Header
-import cv2
 
 
 class FakeCameraPublisher(Node):
@@ -36,7 +34,7 @@ class FakeCameraPublisher(Node):
         rgb_topic: str,
         depth_topic: str,
         camera_info_topic: str,
-        publish_rate: float = 15.0,
+        publish_rate: float = 30.0,
         delay_ms: float = 0.0,
         image_width: int = 640,
         image_height: int = 480,
@@ -50,7 +48,7 @@ class FakeCameraPublisher(Node):
             rgb_topic: RGB image topic name
             depth_topic: Depth image topic name
             camera_info_topic: Camera info topic name
-            publish_rate: Publishing rate in Hz (default: 15.0)
+            publish_rate: Publishing rate in Hz (default: 30.0)
             delay_ms: Simulated delay in milliseconds (default: 0.0)
             image_width: Image width in pixels (default: 640)
             image_height: Image height in pixels (default: 480)
@@ -235,22 +233,23 @@ class FakeCameraPublisher(Node):
             if self.delay_ms > 0:
                 time.sleep(self.delay_ms / 1000.0)
             
-            # Get timestamp (use same timestamp for all messages)
-            if self.use_sim_time:
-                timestamp = self.get_clock().now()
-            else:
-                timestamp = self.get_clock().now()
-            
             # Convert to ROS2 messages
             rgb_msg = self._numpy_to_image_msg(rgb_img, encoding='bgr8')
             depth_msg = self._numpy_to_image_msg(depth_img, encoding='16UC1')
             
-            # Set same timestamp for all messages (for synchronization)
-            rgb_msg.header.stamp = timestamp.to_msg()
-            depth_msg.header.stamp = timestamp.to_msg()
+            # Get timestamp after all data processing is complete, just before publishing
+            # This ensures RGB, depth, and camera_info from the same camera have identical timestamps
+            # and the timestamp represents the latest time after all data preparation
+            timestamp = self.get_clock().now()
+            timestamp_msg = timestamp.to_msg()
+            
+            # Set same timestamp for all messages from this camera (for synchronization)
+            # Different cameras will have different timestamps since each camera has its own timer
+            rgb_msg.header.stamp = timestamp_msg
+            depth_msg.header.stamp = timestamp_msg
             
             # Update camera info with current timestamp
-            self.camera_info.header.stamp = timestamp.to_msg()
+            self.camera_info.header.stamp = timestamp_msg
             self.camera_info.header.frame_id = f"{self.camera_id}_camera_frame_optical"
             
             # Publish messages
@@ -290,23 +289,23 @@ def load_camera_config(config_file: Optional[str] = None) -> list:
     Load camera configurations from YAML file.
     
     Args:
-        config_file: Path to YAML configuration file
+        config_file: Path to YAML configuration file (if None, uses config/multi_camera_config.yaml)
         
     Returns:
         List of camera configuration dictionaries
     """
-    import yaml
+    from role_ros2.misc.config_loader import load_yaml_config, get_package_config_path
     
     if config_file is None:
-        config_file = Path(__file__).parent / 'multi_camera_config.yaml'
+        # Use unified config loader to find config file in config/ directory
+        config_data = load_yaml_config('multi_camera_reader_config.yaml')
     else:
+        import yaml
         config_file = Path(config_file)
-    
-    if not config_file.exists():
-        raise FileNotFoundError(f"Config file not found: {config_file}")
-    
-    with open(config_file, 'r') as f:
-        config_data = yaml.safe_load(f)
+        if not config_file.exists():
+            raise FileNotFoundError(f"Config file not found: {config_file}")
+        with open(config_file, 'r') as f:
+            config_data = yaml.safe_load(f)
     
     cameras = config_data.get("cameras", [])
     return cameras
@@ -321,8 +320,8 @@ def main():
                        help='Path to camera configuration file (optional)')
     parser.add_argument('--camera-id', type=str, default=None,
                        help='Specific camera ID to publish (optional, if None publishes all cameras)')
-    parser.add_argument('--publish-rate', type=float, default=15.0,
-                       help='Publishing rate in Hz (default: 15.0)')
+    parser.add_argument('--publish-rate', type=float, default=30.0,
+                       help='Publishing rate in Hz (default: 30.0)')
     parser.add_argument('--delay-ms', type=float, default=0.0,
                        help='Simulated delay in milliseconds (default: 0.0)')
     parser.add_argument('--image-width', type=int, default=640,
@@ -363,16 +362,18 @@ def main():
                 print(f"⚠️  Camera {camera_id} has no camera_info_topic, skipping")
                 continue
             
-            # Get image dimensions from config or use defaults
+            # Get image dimensions and publish rate from config or use defaults
             image_width = camera_config.get("image_width", args.image_width)
             image_height = camera_config.get("image_height", args.image_height)
+            # Allow per-camera publish_rate override from config, fallback to command line arg
+            camera_publish_rate = camera_config.get("publish_rate", args.publish_rate)
             
             publisher = FakeCameraPublisher(
                 camera_id=camera_id,
                 rgb_topic=rgb_topic,
                 depth_topic=depth_topic,
                 camera_info_topic=camera_info_topic,
-                publish_rate=args.publish_rate,
+                publish_rate=camera_publish_rate,
                 delay_ms=args.delay_ms,
                 image_width=image_width,
                 image_height=image_height,
@@ -385,10 +386,13 @@ def main():
             sys.exit(1)
         
         print(f"\n✅ Started {len(publishers)} fake camera publisher(s)")
-        print(f"   Publishing rate: {args.publish_rate} Hz")
+        print(f"   Default publishing rate: {args.publish_rate} Hz (can be overridden per camera in config)")
         print(f"   Delay: {args.delay_ms} ms")
-        print(f"   Image size: {args.image_width}x{args.image_height}")
+        print(f"   Default image size: {args.image_width}x{args.image_height}")
         print(f"   Use sim time: {args.use_sim_time}")
+        print("\nCamera configurations:")
+        for publisher in publishers:
+            print(f"   - {publisher.camera_id}: {publisher.publish_rate} Hz")
         print("\nPress Ctrl+C to stop...\n")
         
         # Spin all publishers

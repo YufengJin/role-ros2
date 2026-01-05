@@ -17,7 +17,7 @@ from rclpy.node import Node
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from role_ros2.robot_env import RobotEnv
-from role_ros2.camera_utils.multi_camera_wrapper import MultiCameraWrapper
+from role_ros2.camera.multi_camera_wrapper import MultiCameraWrapper
 
 
 class ObservationTestNode(Node):

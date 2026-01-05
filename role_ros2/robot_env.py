@@ -5,8 +5,8 @@ import gym
 import numpy as np
 
 from role_ros2.calibration.calibration_utils import load_calibration_info
-from role_ros2.camera_utils.info import camera_type_dict
-from role_ros2.camera_utils.base_camera_reader import BaseCameraReader
+from role_ros2.camera.info import camera_type_dict
+from role_ros2.camera.base_camera_reader import BaseCameraReader
 from role_ros2.franka.base_robot import BaseRobot
 from role_ros2.franka.robot import FrankaRobot
 from role_ros2.misc.parameters import hand_camera_id
