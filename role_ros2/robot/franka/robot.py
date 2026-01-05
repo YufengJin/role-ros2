@@ -22,9 +22,10 @@ from role_ros2.srv import (
 # UTILITY SPECIFIC IMPORTS
 from role_ros2.misc.transformations import add_poses, euler_to_quat, pose_diff, quat_to_euler
 from role_ros2.robot_ik.robot_ik_solver import RobotIKSolver
+from role_ros2.robot.base_robot import BaseRobot
 
 
-class FrankaRobot:
+class FrankaRobot(BaseRobot):
     """
     ROS2-based robot interface that communicates with polymetis_bridge_node.
     

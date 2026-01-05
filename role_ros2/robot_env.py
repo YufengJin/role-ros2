@@ -5,10 +5,9 @@ import gym
 import numpy as np
 
 from role_ros2.calibration.calibration_utils import load_calibration_info
-from role_ros2.camera.info import camera_type_dict
-from role_ros2.camera.base_camera_reader import BaseCameraReader
-from role_ros2.franka.base_robot import BaseRobot
-from role_ros2.franka.robot import FrankaRobot
+from role_ros2.camera.multi_camera_wrapper import MultiCameraWrapper
+from role_ros2.robot.base_robot import BaseRobot
+from role_ros2.robot.franka.robot import FrankaRobot
 from role_ros2.misc.parameters import hand_camera_id
 from role_ros2.misc.time import time_ms
 from role_ros2.misc.transformations import change_pose_frame
@@ -19,18 +18,17 @@ class RobotEnv(gym.Env):
     General robot environment for role-ros2.
     
     This class provides a Gym-like interface for robot control with camera support.
-    It uses BaseRobot and BaseCameraReader interfaces for flexibility.
+    It uses BaseRobot and MultiCameraWrapper for camera support.
     """
     
     def __init__(
         self,
         action_space: str = "cartesian_velocity",
         gripper_action_space: Optional[str] = None,
-        camera_kwargs: dict = None,
         do_reset: bool = True,
         node=None,
         robot: Optional[BaseRobot] = None,
-        camera_reader: Optional[BaseCameraReader] = None,
+        camera_reader: Optional[MultiCameraWrapper] = None,
         control_hz: float = 15.0
     ):
         """
@@ -40,11 +38,10 @@ class RobotEnv(gym.Env):
             action_space: Action space type ("cartesian_position", "joint_position",
                          "cartesian_velocity", "joint_velocity")
             gripper_action_space: Gripper action space ("position" or "velocity")
-            camera_kwargs: Camera configuration parameters (passed to camera_reader if provided)
             do_reset: Whether to reset robot during initialization
-            node: Optional ROS2 node (used for robot initialization if robot is None)
+            node: Optional ROS2 node (used for robot initialization if robot is None, and for camera_reader if camera_reader is None)
             robot: Optional robot interface (if None, creates FrankaRobot)
-            camera_reader: Optional camera reader interface (if None, camera_reader will be None)
+            camera_reader: Optional MultiCameraWrapper instance (if None, creates MultiCameraWrapper automatically)
             control_hz: Control frequency in Hz (default: 15.0)
         """
         # Initialize Gym Environment
@@ -65,11 +62,26 @@ class RobotEnv(gym.Env):
             self._robot: BaseRobot = robot
 
         # Initialize camera reader
-        self.camera_reader: Optional[BaseCameraReader] = camera_reader
+        if camera_reader is None:
+            # Create MultiCameraWrapper if no camera_reader provided
+            try:
+                self.camera_reader: Optional[MultiCameraWrapper] = MultiCameraWrapper(
+                    node=node
+                )
+            except Exception as e:
+                if node is not None:
+                    node.get_logger().warning(
+                        f"Failed to initialize MultiCameraWrapper: {e}. "
+                        f"Continuing without camera support."
+                    )
+                self.camera_reader: Optional[MultiCameraWrapper] = None
+        else:
+            self.camera_reader: Optional[MultiCameraWrapper] = camera_reader
         
         # Load calibration and camera info
         self.calibration_dict = load_calibration_info()
-        self.camera_type_dict = camera_type_dict
+        # Camera type dict is not used in role-ros2 (cameras are configured via YAML)
+        self.camera_type_dict = {}
 
         # Reset Robot
         if do_reset:
@@ -117,8 +129,12 @@ class RobotEnv(gym.Env):
         return self._robot.create_action_dict(action)
 
     def read_cameras(self):
-        # Note: Camera functionality not yet implemented in role_ros2
-        # Return empty dict for now
+        """
+        Read camera data from all cameras.
+        
+        Returns:
+            Tuple[dict, dict]: (camera_obs_dict, camera_timestamp_dict)
+        """
         if self.camera_reader is None:
             return {}, {}
         return self.camera_reader.read_cameras()

@@ -159,3 +159,68 @@ class RobotIKSolver:
             joint_delta = np.array(joint_delta)
 
         return joint_delta / self.max_joint_delta
+    
+    ### Collision Detection ###
+    def check_collision(self, joint_positions, joint_velocities=None):
+        """
+        Check if a given joint configuration is in collision.
+        
+        Args:
+            joint_positions: Joint positions (7 DOF) as list or numpy array
+            joint_velocities: Optional joint velocities (7 DOF), defaults to zeros
+        
+        Returns:
+            bool: True if collision detected, False otherwise
+        """
+        if joint_velocities is None:
+            joint_velocities = np.zeros(7)
+        
+        # Update physics state with given joint configuration
+        self._arm.update_state(self._physics, np.array(joint_positions), np.array(joint_velocities))
+        
+        # Forward kinematics to update all body positions
+        self._physics.forward()
+        
+        # Check for collisions using MuJoCo's contact detection
+        # ncon: number of contacts
+        # contacts: array of contact information
+        ncon = self._physics.data.ncon
+        
+        # If there are any contacts, there is a collision
+        return ncon > 0
+    
+    def is_configuration_valid(self, joint_positions, joint_velocities=None, check_collision=True):
+        """
+        Check if a joint configuration is valid (within limits and optionally collision-free).
+        
+        Args:
+            joint_positions: Joint positions (7 DOF) as list or numpy array
+            joint_velocities: Optional joint velocities (7 DOF), defaults to zeros
+            check_collision: If True, also check for collisions
+        
+        Returns:
+            tuple: (is_valid, reason)
+                - is_valid: True if configuration is valid
+                - reason: String describing why configuration is invalid (if not valid)
+        """
+        joint_positions = np.array(joint_positions)
+        
+        # Check joint limits (using Franka joint limits)
+        # These are approximate limits, should match the actual robot
+        joint_limits_lower = np.array([-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973])
+        joint_limits_upper = np.array([2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973])
+        
+        if np.any(joint_positions < joint_limits_lower):
+            invalid_joint = np.where(joint_positions < joint_limits_lower)[0][0]
+            return False, f"Joint {invalid_joint} below lower limit: {joint_positions[invalid_joint]:.4f} < {joint_limits_lower[invalid_joint]:.4f}"
+        
+        if np.any(joint_positions > joint_limits_upper):
+            invalid_joint = np.where(joint_positions > joint_limits_upper)[0][0]
+            return False, f"Joint {invalid_joint} above upper limit: {joint_positions[invalid_joint]:.4f} > {joint_limits_upper[invalid_joint]:.4f}"
+        
+        # Check for collisions if requested
+        if check_collision:
+            if self.check_collision(joint_positions, joint_velocities):
+                return False, "Collision detected"
+        
+        return True, "Configuration is valid"

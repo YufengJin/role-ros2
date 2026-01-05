@@ -110,10 +110,19 @@ install(DIRECTORY config
   DESTINATION share/${PROJECT_NAME}/
 )
 
-# Install URDF files to robot/franka/fr3/
+# Install URDF files to robot_ik/franka/ (for launch file to load)
 install(FILES
   role_ros2/robot_ik/franka/fr3.urdf
-  DESTINATION share/${PROJECT_NAME}/robot/franka/fr3
+  role_ros2/robot_ik/franka/fr3_w_fin.urdf
+  role_ros2/robot_ik/franka/fr3_w_soft_fin.urdf
+  DESTINATION share/${PROJECT_NAME}/robot_ik/franka
+)
+
+# Install mesh files to share directory
+install(DIRECTORY role_ros2/robot_ik/franka/mesh
+  DESTINATION share/${PROJECT_NAME}/robot_ik/franka
+  FILES_MATCHING
+    PATTERN "*.obj"
 )
 
 # Install XML model files (needed by RobotIKSolver)
@@ -150,12 +159,6 @@ install(DIRECTORY role_ros2/robot_ik/franka/texture
     PATTERN "*.png"
 )
 
-# Install mesh files to share directory
-install(DIRECTORY role_ros2/robot_ik/franka/mesh
-  DESTINATION share/${PROJECT_NAME}/robot/franka/fr3
-  FILES_MATCHING
-    PATTERN "*.obj"
-)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

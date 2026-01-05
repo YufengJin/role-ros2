@@ -51,7 +51,6 @@ class MultiCameraWrapper:
     
     def __init__(
         self,
-        camera_kwargs: Optional[Dict] = None,
         node: Optional[Node] = None,
         config_file: Optional[str] = None
     ):
@@ -59,13 +58,9 @@ class MultiCameraWrapper:
         Initialize multi-camera wrapper.
         
         Args:
-            camera_kwargs: Dictionary of camera configuration parameters (for compatibility with droid)
             node: Optional ROS2 node (if None, creates a new node)
             config_file: Path to YAML configuration file. If None, uses default config path.
         """
-        if camera_kwargs is None:
-            camera_kwargs = {}
-        self.camera_kwargs = camera_kwargs
         
         # Use provided node or create a new one
         self._own_node = node is None

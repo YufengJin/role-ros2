@@ -67,7 +67,8 @@ def robot_description_dependent_nodes_spawner(
         fake_sensor_commands,
         load_gripper,
         controller_name,
-        use_mock=None):
+        use_mock=None,
+        urdf_file=None):
 
     robot_ip_str = context.perform_substitution(robot_ip)
     arm_id_str = context.perform_substitution(arm_id)
@@ -82,10 +83,19 @@ def robot_description_dependent_nodes_spawner(
         use_mock_str = context.perform_substitution(use_mock)
     else:
         use_mock_str = context.launch_configurations.get('use_mock', 'false')
-
+    
+    # Get urdf_file from context or config, default to {arm_id}.urdf
+    if urdf_file is not None:
+        urdf_file_str = context.perform_substitution(urdf_file)
+    else:
+        # Try to get from config file
+        config = load_config_yaml('role_ros2', 'franka_robot_config.yaml')
+        urdf_file_str = config.get('urdf_file', f'{arm_id_str}.urdf')
+    
     # Load URDF from install directory only (must be built first)
+    # URDF files are in robot_ik/franka/ directory
     package_share_dir = get_package_share_directory('role_ros2')
-    urdf_filepath = os.path.join(package_share_dir, 'robot', 'franka', arm_id_str, f'{arm_id_str}.urdf')
+    urdf_filepath = os.path.join(package_share_dir, 'robot_ik', 'franka', urdf_file_str)
     
     # Check if URDF file exists in install directory
     if not os.path.exists(urdf_filepath):
@@ -102,10 +112,15 @@ Please rebuild the workspace:
     source install/setup.bash
 
 The URDF file should be installed to:
-    install/role_ros2/share/role_ros2/robot/franka/{arm_id_str}/{arm_id_str}.urdf
+    install/role_ros2/share/role_ros2/robot_ik/franka/{urdf_file_str}
 
 Make sure the source URDF file exists at:
-    src/role-ros2/role_ros2/robot_ik/franka/{arm_id_str}.urdf
+    src/role-ros2/role_ros2/robot_ik/franka/{urdf_file_str}
+    
+Available URDF files:
+    - fr3.urdf: Base version (no fingers)
+    - fr3_w_fin.urdf: With fingers
+    - fr3_w_soft_fin.urdf: With soft fingers
 
 And that CMakeLists.txt includes the install rule for URDF files.
 ================================================================================
@@ -140,7 +155,7 @@ Please check:
     
     # Handle mesh paths for rviz visualization
     # Mesh files must be installed to install directory (use package:// paths only)
-    installed_mesh_dir = os.path.join(package_share_dir, 'robot', 'franka', arm_id_str, 'mesh')
+    installed_mesh_dir = os.path.join(package_share_dir, 'robot_ik', 'franka', 'mesh')
     
     if not os.path.exists(installed_mesh_dir):
         print(f"Warning: Mesh directory not found in install directory: {installed_mesh_dir}")
@@ -151,27 +166,9 @@ Please check:
         print(f"    source install/setup.bash")
         print(f"  Expected mesh files at: {installed_mesh_dir}/")
     else:
-        # Mesh files are installed, update URDF mesh paths to match new install location
-        # Replace old path: package://role_ros2/robot_ik/franka/mesh/
-        # With new path: package://role_ros2/robot/franka/{arm_id}/mesh/
-        old_mesh_path = 'package://role_ros2/robot_ik/franka/mesh/'
-        new_mesh_path = f'package://role_ros2/robot/franka/{arm_id_str}/mesh/'
-        
-        # Count replacements to verify they happened
-        count_before = robot_description.count(old_mesh_path)
-        robot_description = robot_description.replace(old_mesh_path, new_mesh_path)
-        count_after = robot_description.count(new_mesh_path)
-        
-        # Also handle alternative path pattern if it exists
-        old_mesh_path_alt = 'package://role_ros2/meshes/franka/'
-        count_alt_before = robot_description.count(old_mesh_path_alt)
-        robot_description = robot_description.replace(old_mesh_path_alt, new_mesh_path)
-        
         print(f"Info: Using package:// paths for mesh files (installed at {installed_mesh_dir})")
-        print(f"Info: Updated mesh paths in URDF:")
-        print(f"  - Replaced {count_before} occurrences of '{old_mesh_path}'")
-        print(f"  - Replaced {count_alt_before} occurrences of '{old_mesh_path_alt}'")
-        print(f"  - Total '{new_mesh_path}' occurrences: {count_after}")
+        print(f"Info: URDF file: {urdf_file_str}")
+        print(f"Info: Mesh directory: {installed_mesh_dir}")
     
     # Verify robot_description is valid before passing to node
     if not robot_description or len(robot_description.strip()) == 0:
@@ -235,6 +232,9 @@ def generate_launch_description():
     use_fake_joint_states = LaunchConfiguration('use_fake_joint_states')
     auto_launch_controller = LaunchConfiguration(auto_launch_controller_parameter_name)
 
+    # Declare launch argument for urdf_file (with default from config)
+    urdf_file = LaunchConfiguration('urdf_file')
+    
     robot_description_dependent_nodes_spawner_opaque_function = OpaqueFunction(
         function=robot_description_dependent_nodes_spawner,
         args=[
@@ -244,7 +244,8 @@ def generate_launch_description():
             fake_sensor_commands,
             load_gripper,
             controller_name,
-            use_mock])
+            use_mock,
+            urdf_file])
 
     launch_description = LaunchDescription([
         DeclareLaunchArgument(
@@ -277,6 +278,10 @@ def generate_launch_description():
             use_mock_parameter_name,
             default_value=get_default('use_mock', 'false'),
             description='Use mock mode (no real robot). If true, uses fake joint_states publisher and mock interfaces. Default from config/franka_robot_config.yaml'),
+        DeclareLaunchArgument(
+            'urdf_file',
+            default_value=get_default('urdf_file', 'fr3.urdf'),
+            description='URDF filename (relative to robot_ik/franka/). Options: fr3.urdf, fr3_w_fin.urdf, fr3_w_soft_fin.urdf. Default from config/franka_robot_config.yaml'),
         DeclareLaunchArgument(
             'use_fake_joint_states',
             default_value='false',

@@ -77,4 +77,3 @@ class BaseRobot(ABC):
             wait_time_sec: Maximum time to wait for reset completion (seconds)
         """
         pass
-

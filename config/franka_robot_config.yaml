@@ -8,11 +8,19 @@ robot_ip: "172.17.0.2"   # REQUIRED: Robot IP address or hostname
 
 # Robot identification
 arm_id: "fr3"  # Robot arm ID. Supported values: fer, fr3, fp3
-               # NOTE: URDF file must be installed to workspace install directory
-               # The URDF file is loaded from: install/role_ros2/share/role_ros2/urdf/{arm_id}.urdf
-               # Make sure to build the workspace: colcon build --packages-select role_ros2
-               # To generate URDF from MuJoCo XML, run:
-               #   python3 scripts/mujoco_to_urdf.py role_ros2/robot_ik/franka/{arm_id}.xml role_ros2/robot_ik/franka/{arm_id}.urdf {arm_id}
+
+# URDF file configuration
+# Available URDF files in role_ros2/robot_ik/franka/:
+#   - fr3.urdf: Base version (no fingers)
+#   - fr3_w_fin.urdf: With fingers
+#   - fr3_w_soft_fin.urdf: With soft fingers
+urdf_file: "fr3_w_soft_fin.urdf"  # URDF filename (relative to robot_ik/franka/ directory)
+                       # Options: "fr3.urdf", "fr3_w_fin.urdf", "fr3_w_soft_fin.urdf"
+                       # NOTE: URDF file must be installed to workspace install directory
+                       # The URDF file is loaded from: install/role_ros2/share/role_ros2/robot_ik/franka/{urdf_file}
+                       # Make sure to build the workspace: colcon build --packages-select role_ros2
+                       # To generate URDF from MuJoCo XML, run:
+                       #   python3 scripts/mujoco_to_urdf.py role_ros2/robot_ik/franka/{arm_id}.xml role_ros2/robot_ik/franka/{urdf_file} {arm_id}
 
 # Joint names configuration
 # IMPORTANT: Joint names must match URDF joint names exactly (with arm_id prefix)
@@ -73,13 +81,21 @@ auto_reset_delay: 5.0         # Delay before auto-reset (seconds)
 # ============================================================================
 # IMPORTANT: The URDF file must exist before launching!
 #
+# Available URDF files in role_ros2/robot_ik/franka/:
+#   1. fr3.urdf - Base version (no fingers)
+#   2. fr3_w_fin.urdf - With fingers
+#   3. fr3_w_soft_fin.urdf - With soft fingers
+#
 # The URDF file is expected at:
-#   role_ros2/robot_ik/franka/{arm_id}.urdf
+#   role_ros2/robot_ik/franka/{urdf_file}
+#
+# The URDF file will be loaded from install directory:
+#   install/role_ros2/share/role_ros2/robot_ik/franka/{urdf_file}
 #
 # To generate the URDF file from MuJoCo XML, run:
 #   python3 scripts/mujoco_to_urdf.py \\
 #       role_ros2/robot_ik/franka/{arm_id}.xml \\
-#       role_ros2/robot_ik/franka/{arm_id}.urdf \\
+#       role_ros2/robot_ik/franka/{urdf_file} \\
 #       {arm_id}
 #
 # The URDF file must conform to ROS standards:
@@ -91,6 +107,9 @@ auto_reset_delay: 5.0         # Delay before auto-reset (seconds)
 # Mesh directory structure:
 #   role_ros2/robot_ik/franka/mesh/
 #     - Contains .obj mesh files referenced in URDF
+#
+# You can override the URDF file via launch argument:
+#   ros2 launch role_ros2 franka_robot.launch.py urdf_file:=fr3_w_fin.urdf
 #
 # ============================================================================
 # Example configurations for different use cases:

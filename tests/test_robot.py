@@ -25,11 +25,69 @@ import time
 import argparse
 import numpy as np
 from pathlib import Path
+import threading
+
+# ROS2 imports for visualization
+import rclpy
+from rclpy.node import Node
+from geometry_msgs.msg import PoseStamped
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 # Add parent directory to path for imports
 #sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from role_ros2.franka.robot import FrankaRobot
+from role_ros2.robot.franka.robot import FrankaRobot
+from role_ros2.misc.transformations import euler_to_quat
+
+
+class TargetPoseVisualizer(Node):
+    """ROS2 node to visualize target end-effector pose in RViz."""
+    
+    def __init__(self):
+        super().__init__('target_pose_visualizer')
+        qos_profile = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
+        )
+        self.target_pose_pub = self.create_publisher(
+            PoseStamped,
+            '/test_robot/target_ee_pose',
+            qos_profile
+        )
+        self.get_logger().info("Target pose visualizer started")
+    
+    def publish_target_pose(self, pose):
+        """
+        Publish target end-effector pose to RViz.
+        
+        Args:
+            pose: [x, y, z, roll, pitch, yaw] or [x, y, z] with quaternion [x, y, z, w]
+        """
+        msg = PoseStamped()
+        now = self.get_clock().now()
+        msg.header.stamp = now.to_msg()
+        msg.header.frame_id = 'base_link'
+        
+        if len(pose) == 6:
+            # [x, y, z, roll, pitch, yaw]
+            msg.pose.position.x = float(pose[0])
+            msg.pose.position.y = float(pose[1])
+            msg.pose.position.z = float(pose[2])
+            quat = euler_to_quat(pose[3:6])
+            msg.pose.orientation.x = float(quat[0])
+            msg.pose.orientation.y = float(quat[1])
+            msg.pose.orientation.z = float(quat[2])
+            msg.pose.orientation.w = float(quat[3])
+        elif len(pose) == 3:
+            # [x, y, z] only, keep current orientation
+            msg.pose.position.x = float(pose[0])
+            msg.pose.position.y = float(pose[1])
+            msg.pose.position.z = float(pose[2])
+            # Default orientation (no rotation)
+            msg.pose.orientation.w = 1.0
+        
+        self.target_pose_pub.publish(msg)
 
 
 class TestResult:
@@ -667,6 +725,159 @@ def test_action_dict(robot, results):
         results.add_fail("create_action_dict (joint_position)", str(e))
 
 
+def test_long_trajectory(robot, results, visualizer=None, skip_motion=False):
+    """
+    Test long trajectory execution with different control commands.
+    
+    Args:
+        robot: FrankaRobot instance
+        results: TestResult instance
+        visualizer: TargetPoseVisualizer instance (optional)
+        skip_motion: If True, skip motion tests
+    """
+    print("\n--- Testing Long Trajectory with Different Control Commands ---")
+    
+    if skip_motion:
+        results.add_skip("long_trajectory", "Skipped by user request")
+        return
+    
+    # Get current pose as starting point
+    try:
+        current_pose = np.array(robot.get_ee_pose())
+        print(f"  起始位置: {current_pose[:3]} m")
+        print(f"  起始姿态: {current_pose[3:]} rad")
+        
+        # Define a circular trajectory in XY plane
+        # Trajectory: circle with radius 0.05m, height 0.5m
+        center = current_pose[:3].copy()
+        center[2] = 0.5  # Set height to 0.5m
+        radius = 0.05
+        num_points = 20
+        trajectory = []
+        
+        for i in range(num_points):
+            angle = 2 * np.pi * i / num_points
+            x = center[0] + radius * np.cos(angle)
+            y = center[1] + radius * np.sin(angle)
+            z = center[2]
+            # Keep orientation same as current
+            pose = [x, y, z] + list(current_pose[3:])
+            trajectory.append(pose)
+        
+        print(f"  轨迹点数: {num_points}")
+        print(f"  轨迹半径: {radius} m")
+        print(f"  轨迹中心: {center}")
+        
+        # Test different control commands
+        control_modes = [
+            ("cartesian_position", "position"),
+            ("cartesian_velocity", "velocity"),
+            ("joint_position", "position"),
+            ("joint_velocity", "velocity"),
+        ]
+        
+        for action_space, gripper_action_space in control_modes:
+            try:
+                print(f"\n  Testing {action_space} with {gripper_action_space} gripper...")
+                
+                for idx, target_pose in enumerate(trajectory):
+                    # Publish target pose to RViz
+                    if visualizer is not None:
+                        visualizer.publish_target_pose(target_pose)
+                    
+                    # Get current state
+                    current_pose = np.array(robot.get_ee_pose())
+                    
+                    # Create command based on action_space
+                    if "velocity" in action_space:
+                        # For velocity commands, compute delta from current to target
+                        if "cartesian" in action_space:
+                            delta = np.array(target_pose) - current_pose
+                            # Scale to reasonable velocity (max 0.05 m/s or 0.1 rad/s)
+                            max_vel = 0.05
+                            max_ang_vel = 0.1
+                            delta[:3] = np.clip(delta[:3], -max_vel, max_vel)
+                            delta[3:] = np.clip(delta[3:], -max_ang_vel, max_ang_vel)
+                            command = delta.tolist() + [0.0]  # No gripper velocity
+                        else:
+                            # For joint velocity, need IK first
+                            position = target_pose[:3]
+                            orientation = target_pose[3:6]
+                            joint_target, ik_success = robot.solve_inverse_kinematics(
+                                position, orientation
+                            )
+                            if not ik_success or joint_target is None:
+                                print(f"    ⚠️  IK failed at point {idx}, skipping...")
+                                continue
+                            current_joints = np.array(robot.get_joint_positions())
+                            delta = np.array(joint_target) - current_joints
+                            # Scale to reasonable velocity (max 0.1 rad/s)
+                            max_joint_vel = 0.1
+                            delta = np.clip(delta, -max_joint_vel, max_joint_vel)
+                            command = delta.tolist() + [0.0]  # No gripper velocity
+                    else:
+                        # For position commands
+                        if "cartesian" in action_space:
+                            command = target_pose[:6] + [0.5]  # 6 DOF pose + gripper
+                        else:
+                            # For joint position, need to solve IK
+                            position = target_pose[:3]
+                            orientation = target_pose[3:6]
+                            joint_pos, ik_success = robot.solve_inverse_kinematics(
+                                position, orientation
+                            )
+                            if not ik_success or joint_pos is None:
+                                print(f"    ⚠️  IK failed at point {idx}, skipping...")
+                                continue
+                            command = list(joint_pos) + [0.5]  # 7 joints + gripper
+                    
+                    # Execute command
+                    robot.update_command(
+                        command,
+                        action_space=action_space,
+                        gripper_action_space=gripper_action_space,
+                        blocking=False
+                    )
+                    
+                    # Small delay for smooth motion
+                    time.sleep(0.1)
+                    
+                    if idx % 5 == 0:
+                        actual_pose = np.array(robot.get_ee_pose())
+                        error = np.linalg.norm(actual_pose[:3] - np.array(target_pose[:3]))
+                        print(f"    Point {idx}/{num_points-1}: error = {error:.4f} m")
+                
+                # Final position check
+                final_pose = np.array(robot.get_ee_pose())
+                final_error = np.linalg.norm(final_pose[:3] - np.array(trajectory[-1][:3]))
+                print(f"    最终位置误差: {final_error:.4f} m")
+                
+                if final_error < 0.02:
+                    print(f"    ✓ {action_space} 轨迹执行成功")
+                else:
+                    print(f"    ⚠️  {action_space} 轨迹误差较大")
+                
+                results.add_pass(f"long_trajectory_{action_space}")
+                
+                # Return to start before next test
+                print(f"    返回起始位置...")
+                robot.update_command(
+                    current_pose[:6].tolist() + [0.5],
+                    action_space="cartesian_position",
+                    gripper_action_space="position",
+                    blocking=True
+                )
+                time.sleep(1.0)
+                
+            except Exception as e:
+                print(f"    ❌ {action_space} 测试失败: {e}")
+                results.add_fail(f"long_trajectory_{action_space}", str(e))
+        
+    except Exception as e:
+        print(f"  ❌ 长轨迹测试失败: {e}")
+        results.add_fail("long_trajectory", str(e))
+
+
 def main():
     parser = argparse.ArgumentParser(description="Test FrankaRobot interface")
     parser.add_argument('--mock', action='store_true', help='Use mock mode (no real robot)')
@@ -736,6 +947,25 @@ def main():
     print("\n等待3秒后开始测试...")
     time.sleep(3)
     
+    # Initialize ROS2 for visualization
+    if not rclpy.ok():
+        rclpy.init()
+    
+    # Create visualizer node
+    visualizer = TargetPoseVisualizer()
+    visualizer_thread = None
+    
+    def spin_visualizer():
+        """Spin visualizer node in separate thread."""
+        while rclpy.ok():
+            rclpy.spin_once(visualizer, timeout_sec=0.1)
+    
+    visualizer_thread = threading.Thread(target=spin_visualizer, daemon=True)
+    visualizer_thread.start()
+    print("✅ Target pose visualizer started (publishing to /test_robot/target_ee_pose)")
+    print("   Add this topic to RViz to visualize target poses")
+    time.sleep(1)
+    
     results = TestResult()
     
     # Initialize robot
@@ -751,6 +981,8 @@ def main():
             print("  ros2 launch role_ros2 franka_robot.launch.py use_mock:=true")
         else:
             print("  ros2 run role_ros2 polymetis_bridge")
+        visualizer.destroy_node()
+        rclpy.shutdown()
         sys.exit(1)
     
     # Run tests
@@ -764,6 +996,7 @@ def main():
         test_controller_management(robot, results)
         test_kinematics(robot, results)
         test_action_dict(robot, results)
+        test_long_trajectory(robot, results, visualizer=visualizer, skip_motion=args.skip_motion)
     except KeyboardInterrupt:
         print("\n\nTest interrupted by user")
     except Exception as e:
@@ -774,6 +1007,12 @@ def main():
         # Cleanup
         try:
             robot.shutdown()
+        except:
+            pass
+        try:
+            visualizer.destroy_node()
+            if rclpy.ok():
+                rclpy.shutdown()
         except:
             pass
     
