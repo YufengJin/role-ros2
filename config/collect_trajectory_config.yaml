@@ -1,0 +1,98 @@
+# Collect Trajectory Node Configuration File
+# This file contains default parameters for collect_trajectory_node
+# You can override these values via launch arguments or command line
+
+# ============================================================================
+# Save Settings
+# ============================================================================
+
+# Folder to save trajectory files (HDF5 format)
+# Leave empty for teleoperation-only mode (no saving)
+# Example: "/home/user/trajectories" or "~/data/trajectories"
+save_folder: ""
+
+# Whether to save images in trajectory files
+# When true, images are embedded in HDF5 files (larger file size)
+# When false, only robot state and actions are saved
+save_images: false
+
+# ============================================================================
+# Control Settings
+# ============================================================================
+
+# Action space for robot control
+# Options: "cartesian_velocity", "cartesian_position", "joint_velocity", "joint_position"
+action_space: "cartesian_velocity"
+
+# Control frequency in Hz
+# Recommended: 15-30 Hz for smooth teleoperation
+# Higher values may cause CPU load, lower values may feel laggy
+control_hz: 15.0
+
+# Whether to wait for controller movement before executing actions
+# When true: robot only moves when grip button is held
+# When false: robot always follows controller (useful for testing)
+wait_for_controller: true
+
+# ============================================================================
+# Controller Settings
+# ============================================================================
+
+# Use right controller (true) or left controller (false)
+right_controller: true
+
+# ============================================================================
+# Robot Reset Settings
+# ============================================================================
+
+# Whether to reset robot to home position on startup
+reset_robot: true
+
+# Whether to add random offset to home position on reset
+# Useful for data augmentation during data collection
+randomize_reset: false
+
+# ============================================================================
+# Trajectory Settings
+# ============================================================================
+
+# Whether to continuously collect trajectories in loop mode
+# When true: after trajectory ends, automatically starts a new one
+# When false: node stops after first trajectory completes
+loop: false
+
+# Maximum steps per trajectory (-1 for unlimited)
+# When set to positive value, trajectory ends after this many steps
+# When -1, trajectory ends only when user presses success/failure button
+horizon: -1
+
+# ============================================================================
+# Example Configurations
+# ============================================================================
+
+# Configuration 1: Teleoperation only (default)
+# save_folder: ""
+# control_hz: 15.0
+# wait_for_controller: true
+# reset_robot: true
+
+# Configuration 2: Data collection mode
+# save_folder: "/home/user/trajectories"
+# save_images: true
+# control_hz: 15.0
+# loop: true
+# reset_robot: true
+# randomize_reset: true
+
+# Configuration 3: Testing mode (no wait for controller)
+# save_folder: ""
+# wait_for_controller: false
+# reset_robot: false
+# control_hz: 20.0
+
+# Configuration 4: Fixed horizon data collection
+# save_folder: "/home/user/trajectories"
+# horizon: 300  # 300 steps = 20 seconds at 15Hz
+# loop: true
+# reset_robot: true
+# randomize_reset: true

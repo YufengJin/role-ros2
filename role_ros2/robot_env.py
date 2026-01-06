@@ -13,7 +13,7 @@ from role_ros2.camera.multi_camera_wrapper import MultiCameraWrapper
 from role_ros2.robot.base_robot import BaseRobot
 from role_ros2.robot.franka.robot import FrankaRobot
 from role_ros2.misc.parameters import hand_camera_id
-from role_ros2.misc.time import time_ms
+from role_ros2.misc.ros2_utils import get_ros_time_ns
 from role_ros2.misc.transformations import change_pose_frame
 
 
@@ -171,6 +171,7 @@ class RobotEnv(gym.Env):
         # Read camera images and depth
         # Use use_sync=False by default for better reliability
         # Synchronization may not always be available, especially during startup
+        read_start = get_ros_time_ns(self._node)
         camera_obs, camera_timestamp = self.camera_reader.read_cameras(use_sync=use_sync)
         
         # Get camera intrinsics
@@ -180,6 +181,9 @@ class RobotEnv(gym.Env):
         # Get camera extrinsics using timestamp_dict for synchronized lookup
         camera_extrinsics = self.camera_reader.get_cameras_extrinsics(camera_timestamp)
         camera_obs["camera_extrinsics"] = camera_extrinsics
+
+        camera_timestamp["read_start"] = read_start
+        camera_timestamp["read_end"] = get_ros_time_ns(self._node)
         
         return camera_obs, camera_timestamp
 
@@ -189,10 +193,10 @@ class RobotEnv(gym.Env):
         
         No manual spin needed - background executor thread keeps data fresh.
         """
-        read_start = time_ms()
+        read_start = get_ros_time_ns(self._node)
         state_dict, timestamp_dict = self._robot.get_robot_state()
         timestamp_dict["read_start"] = read_start
-        timestamp_dict["read_end"] = time_ms()
+        timestamp_dict["read_end"] = get_ros_time_ns(self._node)
         return state_dict, timestamp_dict
     
     def _spin_executor(self):
@@ -327,13 +331,15 @@ class RobotEnv(gym.Env):
                         "robot_pub_t": int,  # Message header timestamp (nanoseconds)
                         "robot_sub_t": int,  # Message received/subscription time (nanoseconds, ROS time)
                         "robot_end_t": int,  # Processing end time (nanoseconds, ROS time)
-                        "read_start": int,  # get_state() start time (milliseconds, system time)
-                        "read_end": int,  # get_state() end time (milliseconds, system time)
+                        "read_start": int,  # get_state() start time (nanoseconds, ROS time)
+                        "read_end": int,  # get_state() end time (nanoseconds, ROS time)
                     },
                     "cameras": {
                         "{camera_id}_pub_t": int,  # Published time (nanoseconds, ROS time)
                         "{camera_id}_sub_t": int,  # Subscription time (nanoseconds, ROS time)
                         "{camera_id}_end_t": int,  # Processing end time (nanoseconds, ROS time)
+                        "read_start": int,  # read_cameras() start time (nanoseconds, ROS time)
+                        "read_end": int,  # read_cameras() end time (nanoseconds, ROS time)
                         ...
                     },
                 },

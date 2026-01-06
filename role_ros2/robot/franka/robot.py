@@ -22,6 +22,7 @@ from role_ros2.srv import (
 
 # UTILITY SPECIFIC IMPORTS
 from role_ros2.misc.transformations import add_poses, euler_to_quat, pose_diff, quat_to_euler
+from role_ros2.misc.ros2_utils import get_ros_time_ns
 from role_ros2.robot_ik.robot_ik_solver import RobotIKSolver
 from role_ros2.robot.base_robot import BaseRobot
 
@@ -175,8 +176,7 @@ class FrankaRobot(BaseRobot):
         This ensures all three values belong to the exact same message.
         """
         # Record ROS time when message is received
-        received_ros_time = self._node.get_clock().now()
-        received_time_ns = received_ros_time.nanoseconds
+        received_time_ns = get_ros_time_ns(self._node)
         
         # Extract message header timestamp (pub_t) from the SAME message
         pub_stamp = msg.header.stamp
@@ -196,8 +196,7 @@ class FrankaRobot(BaseRobot):
         Creates an atomic snapshot: (message, received_time_ns)
         """
         # Record ROS time when message is received
-        received_ros_time = self._node.get_clock().now()
-        received_time_ns = received_ros_time.nanoseconds
+        received_time_ns = get_ros_time_ns(self._node)
         
         # Create atomic snapshot: (message, received_time_ns)
         snapshot = (msg, received_time_ns)
@@ -614,8 +613,7 @@ class FrankaRobot(BaseRobot):
         gripper_state, _ = gripper_snapshot
         
         # Record processing start time (for latency calculation, done lazily)
-        processing_start_ros_time = self._node.get_clock().now()
-        processing_start_timestamp_ns = processing_start_ros_time.nanoseconds
+        processing_start_timestamp_ns = get_ros_time_ns(self._node)
         
         # Build state dict from ROS2 messages (outside lock)
         cartesian_position = list(robot_state.ee_position) + list(robot_state.ee_euler)
@@ -637,8 +635,7 @@ class FrankaRobot(BaseRobot):
         polymetis_timestamp_ns = robot_state.polymetis_timestamp_ns
         
         # robot_end_t: Processing end time
-        end_ros_time = self._node.get_clock().now()
-        end_timestamp_ns = end_ros_time.nanoseconds
+        end_timestamp_ns = get_ros_time_ns(self._node)
         
         # Build timestamp dict (all from the same atomic snapshot)
         timestamp_dict = {

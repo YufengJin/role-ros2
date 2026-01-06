@@ -1,7 +1,40 @@
 """Utility functions for role-ros2."""
 
+import time as python_time
+
 import numpy as np
 import rclpy
+from rclpy.node import Node
+
+
+def get_ros_time_ns(node: Node) -> int:
+    """
+    Get current ROS time in nanoseconds from a node.
+    
+    Args:
+        node: ROS2 node with clock
+    
+    Returns:
+        Current ROS time in nanoseconds
+    """
+    if node is not None and hasattr(node, 'get_clock'):
+        return node.get_clock().now().nanoseconds
+    else:
+        # Fallback to system time
+        return python_time.time_ns()
+
+
+def get_ros_time_ms(node: Node) -> int:
+    """
+    Get current ROS time in milliseconds from a node.
+    
+    Args:
+        node: ROS2 node with clock
+    
+    Returns:
+        Current ROS time in milliseconds
+    """
+    return get_ros_time_ns(node) // 1_000_000
 
 
 def ros_time_to_ns(ros_time: rclpy.time.Time) -> int:

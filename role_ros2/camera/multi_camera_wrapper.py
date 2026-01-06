@@ -18,7 +18,7 @@ from sensor_msgs.msg import CameraInfo
 import message_filters
 
 from role_ros2.camera.ros2_camera_reader import ROS2CameraReader, SENSOR_DATA_QOS
-from role_ros2.misc.ros2_utils import ros_time_to_ns
+from role_ros2.misc.ros2_utils import get_ros_time_ns
 from role_ros2.misc.config_loader import get_package_config_path, load_yaml_config
 
 
@@ -294,8 +294,7 @@ class MultiCameraWrapper:
             *camera_info_msgs: Synchronized CameraInfo messages
         """
         try:
-            ros_time_start = self._node.get_clock().now()
-            start_t_ns = ros_time_to_ns(ros_time_start)
+            start_t_ns = get_ros_time_ns(self._node)
             
             # Extract timestamps from each camera_info message
             camera_timestamps = {}
@@ -395,8 +394,7 @@ class MultiCameraWrapper:
             sync_request: The completed SyncRequest
         """
         try:
-            ros_time_start = self._node.get_clock().now()
-            process_start_ns = ros_time_to_ns(ros_time_start)
+            process_start_ns = get_ros_time_ns(self._node)
             
             # Collect data from all cameras
             sync_data_dict = defaultdict(dict)
@@ -428,8 +426,7 @@ class MultiCameraWrapper:
                 sync_timestamp_dict.update(timestamp_dict)
             
             # Get end timestamp
-            ros_time_end = self._node.get_clock().now()
-            end_t_ns = ros_time_to_ns(ros_time_end)
+            end_t_ns = get_ros_time_ns(self._node)
             
             # Store synchronized data
             with self._sync_data_lock:
@@ -530,8 +527,7 @@ class MultiCameraWrapper:
             
             # If we got data from all cameras, use it
             if cameras_with_data == len(sync_request.camera_id_list):
-                ros_time_end = self._node.get_clock().now()
-                end_t_ns = ros_time_to_ns(ros_time_end)
+                end_t_ns = get_ros_time_ns(self._node)
                 
                 with self._sync_data_lock:
                     self._latest_sync_data_dict = fallback_data_dict

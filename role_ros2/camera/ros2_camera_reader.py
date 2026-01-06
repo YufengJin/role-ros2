@@ -17,7 +17,7 @@ import message_filters
 from tf2_ros import Buffer, TransformListener
 import tf2_ros
 
-from role_ros2.misc.ros2_utils import ros_time_to_ns, transform_to_matrix
+from role_ros2.misc.ros2_utils import get_ros_time_ns, transform_to_matrix
 
 
 # Sensor Data QoS profile for reliable sensor data reception
@@ -167,8 +167,7 @@ class ROS2CameraReader:
         """
         try:
             # Get ROS time at subscription (for latency tracking)
-            ros_time_sub = self.node.get_clock().now()
-            sub_t_ns = ros_time_to_ns(ros_time_sub)
+            sub_t_ns = get_ros_time_ns(self.node)
             
             # Get published timestamp from message header
             pub_t_ns = int(
@@ -248,8 +247,7 @@ class ROS2CameraReader:
             Tuple of (data_dict, timestamp_dict)
         """
         # Get ROS time at decode (end processing time)
-        ros_time_end = self.node.get_clock().now()
-        end_t_ns = ros_time_to_ns(ros_time_end)
+        end_t_ns = get_ros_time_ns(self.node)
         
         # Convert images
         rgb_cv = self.cv_bridge.imgmsg_to_cv2(rgb_msg, desired_encoding='bgr8')
@@ -373,7 +371,7 @@ class ROS2CameraReader:
             if self._last_message_time_ns is None:
                 return False
             
-            current_time_ns = ros_time_to_ns(self.node.get_clock().now())
+            current_time_ns = get_ros_time_ns(self.node)
             time_since_last_msg = current_time_ns - self._last_message_time_ns
             
             return time_since_last_msg < self._message_timeout_ns

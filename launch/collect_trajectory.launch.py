@@ -2,19 +2,27 @@
 """
 Launch file for Collect Trajectory Node
 
-This launch file starts the collect_trajectory_node for collecting robot trajectories
-using VR controller.
+This launch file starts the trajectory collection node with configurable parameters.
 
 Usage:
-    # Basic usage (default parameters)
+    # Basic usage (teleoperation only)
     ros2 launch role_ros2 collect_trajectory.launch.py
     
-    # With custom parameters
+    # With save folder (data collection mode)
+    ros2 launch role_ros2 collect_trajectory.launch.py save_folder:=/path/to/save
+    
+    # With all parameters
     ros2 launch role_ros2 collect_trajectory.launch.py \
+        save_folder:=/home/user/trajectories \
+        save_images:=true \
         action_space:=cartesian_velocity \
-        reset_robot_on_start:=true \
+        control_hz:=15.0 \
+        reset_robot:=true \
+        randomize_reset:=false \
         wait_for_controller:=true \
-        control_hz:=15.0
+        loop:=true \
+        right_controller:=true \
+        horizon:=-1
 
 Author: Role-ROS2 Team
 """
@@ -31,13 +39,13 @@ from launch_ros.actions import Node
 os.environ["RCUTILS_COLORIZED_OUTPUT"] = "1"
 
 
-def load_config_yaml(package_name, config_file):
+def load_config_yaml(package_name: str, config_file: str) -> dict:
     """
     Load launch configuration YAML file.
     
     Args:
         package_name: ROS2 package name
-        config_file: Config file name (e.g., 'vr_policy_config.yaml')
+        config_file: Config file name (e.g., 'collect_trajectory_config.yaml')
     
     Returns:
         dict: Configuration dictionary, or empty dict if file not found
@@ -56,143 +64,118 @@ def load_config_yaml(package_name, config_file):
     return {}
 
 
+def get_default(config_dict: dict, key: str, default_value) -> str:
+    """
+    Get default value from config dictionary and convert to string.
+    
+    Args:
+        config_dict: Configuration dictionary
+        key: Key to look up
+        default_value: Default value if key not found
+    
+    Returns:
+        str: Value as string for launch argument
+    """
+    value = config_dict.get(key, default_value)
+    # Convert boolean to string
+    if isinstance(value, bool):
+        return 'true' if value else 'false'
+    # Handle None values for optional parameters
+    if value is None:
+        return ''
+    return str(value)
+
+
 def generate_launch_description():
     """Generate launch description for collect trajectory node."""
     
-    # Load configuration files
-    vr_policy_config = load_config_yaml('role_ros2', 'vr_policy_config.yaml')
-    
-    # Helper function to convert config values to strings for launch arguments
-    def get_default(config_dict, key, default_value):
-        value = config_dict.get(key, default_value)
-        # Convert boolean to string
-        if isinstance(value, bool):
-            return 'true' if value else 'false'
-        # Handle None values for optional parameters
-        if value is None:
-            return ''
-        return str(value)
+    # Load configuration file
+    config = load_config_yaml('role_ros2', 'collect_trajectory_config.yaml')
     
     # ========== Launch Arguments ==========
     
-    # Action space parameters
-    action_space_arg = DeclareLaunchArgument(
-        'action_space',
-        default_value='cartesian_velocity',
-        description='Action space: cartesian_velocity, joint_velocity, etc.'
+    # Save settings
+    save_folder_arg = DeclareLaunchArgument(
+        'save_folder',
+        default_value=get_default(config, 'save_folder', ''),
+        description='Folder to save trajectory files. Empty for teleoperation-only mode.'
     )
     
-    gripper_action_space_arg = DeclareLaunchArgument(
-        'gripper_action_space',
-        default_value='',
-        description='Gripper action space: velocity or position (empty = auto)'
+    save_images_arg = DeclareLaunchArgument(
+        'save_images',
+        default_value=get_default(config, 'save_images', 'false'),
+        description='Whether to save images in trajectory files.'
+    )
+    
+    # Control settings
+    action_space_arg = DeclareLaunchArgument(
+        'action_space',
+        default_value=get_default(config, 'action_space', 'cartesian_velocity'),
+        description='Action space: cartesian_velocity, cartesian_position, joint_velocity, joint_position'
     )
     
     control_hz_arg = DeclareLaunchArgument(
         'control_hz',
-        default_value='15.0',
-        description='Control frequency in Hz'
+        default_value=get_default(config, 'control_hz', '15.0'),
+        description='Control frequency in Hz.'
     )
     
-    # Reset parameters
-    reset_robot_on_start_arg = DeclareLaunchArgument(
-        'reset_robot_on_start',
-        default_value='true',
-        description='Reset robot to home position on startup'
+    wait_for_controller_arg = DeclareLaunchArgument(
+        'wait_for_controller',
+        default_value=get_default(config, 'wait_for_controller', 'true'),
+        description='Whether to wait for controller movement before executing actions.'
+    )
+    
+    # Controller settings
+    right_controller_arg = DeclareLaunchArgument(
+        'right_controller',
+        default_value=get_default(config, 'right_controller', 'true'),
+        description='Use right controller (true) or left controller (false).'
+    )
+    
+    # Robot reset settings
+    reset_robot_arg = DeclareLaunchArgument(
+        'reset_robot',
+        default_value=get_default(config, 'reset_robot', 'true'),
+        description='Whether to reset robot to home position on startup.'
     )
     
     randomize_reset_arg = DeclareLaunchArgument(
         'randomize_reset',
-        default_value='false',
-        description='Add random cartesian noise to reset position'
+        default_value=get_default(config, 'randomize_reset', 'false'),
+        description='Whether to add random offset to home position on reset.'
     )
     
-    # Controller parameters
-    wait_for_controller_arg = DeclareLaunchArgument(
-        'wait_for_controller',
-        default_value='true',
-        description='Wait for controller grip button to enable movement'
+    # Trajectory settings
+    loop_arg = DeclareLaunchArgument(
+        'loop',
+        default_value=get_default(config, 'loop', 'false'),
+        description='Whether to continuously collect trajectories in loop mode.'
     )
     
-    # VR Policy parameters
-    right_controller_arg = DeclareLaunchArgument(
-        'right_controller',
-        default_value=get_default(vr_policy_config, 'right_controller', 'true'),
-        description='Use right controller (true) or left (false)'
+    horizon_arg = DeclareLaunchArgument(
+        'horizon',
+        default_value=get_default(config, 'horizon', '-1'),
+        description='Maximum steps per trajectory (-1 for unlimited).'
     )
     
-    max_lin_vel_arg = DeclareLaunchArgument(
-        'max_lin_vel',
-        default_value=get_default(vr_policy_config, 'max_lin_vel', '1.0'),
-        description='Maximum linear velocity'
-    )
+    # ========== Node ==========
     
-    max_rot_vel_arg = DeclareLaunchArgument(
-        'max_rot_vel',
-        default_value=get_default(vr_policy_config, 'max_rot_vel', '1.0'),
-        description='Maximum rotational velocity'
-    )
-    
-    max_gripper_vel_arg = DeclareLaunchArgument(
-        'max_gripper_vel',
-        default_value=get_default(vr_policy_config, 'max_gripper_vel', '1.0'),
-        description='Maximum gripper velocity'
-    )
-    
-    spatial_coeff_arg = DeclareLaunchArgument(
-        'spatial_coeff',
-        default_value=get_default(vr_policy_config, 'spatial_coeff', '1.0'),
-        description='Spatial scaling coefficient'
-    )
-    
-    pos_action_gain_arg = DeclareLaunchArgument(
-        'pos_action_gain',
-        default_value=get_default(vr_policy_config, 'pos_action_gain', '5.0'),
-        description='Position action gain'
-    )
-    
-    rot_action_gain_arg = DeclareLaunchArgument(
-        'rot_action_gain',
-        default_value=get_default(vr_policy_config, 'rot_action_gain', '2.0'),
-        description='Rotation action gain'
-    )
-    
-    gripper_action_gain_arg = DeclareLaunchArgument(
-        'gripper_action_gain',
-        default_value=get_default(vr_policy_config, 'gripper_action_gain', '3.0'),
-        description='Gripper action gain'
-    )
-    
-    # Debug parameters
-    debug_log_frequency_arg = DeclareLaunchArgument(
-        'debug_log_frequency',
-        default_value='1.0',
-        description='Debug log frequency in Hz (how often to print debug info)'
-    )
-    
-    # ========== Nodes ==========
-    
-    # Collect Trajectory Node
     collect_trajectory_node = Node(
         package='role_ros2',
         executable='collect_trajectory_node',
         name='collect_trajectory_node',
         parameters=[{
+            'save_folder': LaunchConfiguration('save_folder'),
+            'save_images': LaunchConfiguration('save_images'),
             'action_space': LaunchConfiguration('action_space'),
-            'gripper_action_space': LaunchConfiguration('gripper_action_space'),
             'control_hz': LaunchConfiguration('control_hz'),
-            'reset_robot_on_start': LaunchConfiguration('reset_robot_on_start'),
-            'randomize_reset': LaunchConfiguration('randomize_reset'),
             'wait_for_controller': LaunchConfiguration('wait_for_controller'),
             'right_controller': LaunchConfiguration('right_controller'),
-            'max_lin_vel': LaunchConfiguration('max_lin_vel'),
-            'max_rot_vel': LaunchConfiguration('max_rot_vel'),
-            'max_gripper_vel': LaunchConfiguration('max_gripper_vel'),
-            'spatial_coeff': LaunchConfiguration('spatial_coeff'),
-            'pos_action_gain': LaunchConfiguration('pos_action_gain'),
-            'rot_action_gain': LaunchConfiguration('rot_action_gain'),
-            'gripper_action_gain': LaunchConfiguration('gripper_action_gain'),
-            'debug_log_frequency': LaunchConfiguration('debug_log_frequency'),
+            'reset_robot': LaunchConfiguration('reset_robot'),
+            'randomize_reset': LaunchConfiguration('randomize_reset'),
+            'loop': LaunchConfiguration('loop'),
+            'horizon': LaunchConfiguration('horizon'),
         }],
         output='screen',
     )
@@ -201,41 +184,34 @@ def generate_launch_description():
     
     return LaunchDescription([
         # Launch arguments
+        save_folder_arg,
+        save_images_arg,
         action_space_arg,
-        gripper_action_space_arg,
         control_hz_arg,
-        reset_robot_on_start_arg,
-        randomize_reset_arg,
         wait_for_controller_arg,
         right_controller_arg,
-        max_lin_vel_arg,
-        max_rot_vel_arg,
-        max_gripper_vel_arg,
-        spatial_coeff_arg,
-        pos_action_gain_arg,
-        rot_action_gain_arg,
-        gripper_action_gain_arg,
-        debug_log_frequency_arg,
+        reset_robot_arg,
+        randomize_reset_arg,
+        loop_arg,
+        horizon_arg,
         
         # Info message
         LogInfo(msg=[
-            '=' * 70,
-            'Collect Trajectory Node Launch',
-            '=' * 70,
-            'Node: collect_trajectory_node - Collect robot trajectories using VR controller',
-            '',
-            'Control Instructions:',
-            '  • Hold GRIP button to enable movement',
-            '  • Press A (right) or X (left) to mark success',
-            '  • Press B (right) or Y (left) to mark failure',
-            '',
-            'Reset Robot:',
-            '  • Use service: ros2 service call /polymetis/reset role_ros2/srv/Reset "{randomize: false}"',
-            '  • Or set reset_robot_on_start:=true (default)',
-            '=' * 70,
+            '\n',
+            '=' * 70 + '\n',
+            '🎮 Collect Trajectory Node Launch\n',
+            '=' * 70 + '\n',
+            'Configuration:\n',
+            '  • Config file: config/collect_trajectory_config.yaml\n',
+            '  • Parameters can be overridden via command line\n',
+            '\n',
+            'Control Instructions:\n',
+            '  • Hold GRIP button to enable movement\n',
+            '  • Press A (right) or X (left) to mark SUCCESS\n',
+            '  • Press B (right) or Y (left) to mark FAILURE\n',
+            '=' * 70 + '\n',
         ]),
         
         # Node
         collect_trajectory_node,
     ])
-

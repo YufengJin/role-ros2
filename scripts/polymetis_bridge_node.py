@@ -97,7 +97,7 @@ MAX_CARTESIAN_ROT_VELOCITY = 0.3  # Maximum angular velocity (rad/s)
 
 # Gripper limits - matches robot_ik_solver.py
 MAX_GRIPPER_DELTA = 0.25  # Maximum gripper position delta per command (normalized 0-1) - matches robot_ik_solver.max_gripper_delta
-DEFAULT_GRIPPER_SPEED = 0.05  # Default gripper movement speed (m/s)
+DEFAULT_GRIPPER_SPEED = 0.1  # Default gripper movement speed (m/s)
 DEFAULT_GRIPPER_FORCE = 0.1  # Default gripper force (normalized 0-1)
 
 # Control frequency (Hz) - matches robot_ik_solver.py

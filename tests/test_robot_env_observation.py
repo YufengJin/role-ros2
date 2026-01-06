@@ -189,7 +189,7 @@ class ObservationTestNode(Node):
                     self.obs_dict_printed = True
                 
                 # Analyze robot timestamp latencies
-                robot_timestamp = obs.get("timestamp", {}).get("robot_state", {})
+                    robot_timestamp = obs.get("timestamp", {}).get("robot_state", {})
                 if robot_timestamp:
                     # Store raw timestamp data for visualization
                     self.robot_timestamps_raw.append(robot_timestamp.copy())
@@ -314,7 +314,7 @@ class ObservationTestNode(Node):
                 print(f"     Max:    {np.max(latencies):.3f} ms")
                 print(f"     Samples: {len(latencies)}")
                 print(f"     Note: Positive values mean camera timestamp is later than robot timestamp")
-        else:
+                else:
             print("   No camera-robot latency data collected")
         
         print("\n" + "=" * 80 + "\n")
@@ -456,8 +456,8 @@ class ObservationTestNode(Node):
                 self.read_cameras_stats["failed_calls"] += 1
                 self.get_logger().error(f"❌ Error in read_cameras: {e}")
                 if iteration <= 5:  # Only print first few errors
-                    import traceback
-                    self.get_logger().error(traceback.format_exc())
+                import traceback
+                self.get_logger().error(traceback.format_exc())
             
             # Record call end time
             call_end_time = time.time()
