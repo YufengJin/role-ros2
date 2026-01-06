@@ -96,8 +96,8 @@ MAX_CARTESIAN_LIN_VELOCITY = 0.1  # Maximum linear velocity (m/s)
 MAX_CARTESIAN_ROT_VELOCITY = 0.3  # Maximum angular velocity (rad/s)
 
 # Gripper limits - matches robot_ik_solver.py
-MAX_GRIPPER_DELTA = 0.25  # Maximum gripper position delta per command (normalized 0-1) - matches robot_ik_solver.max_gripper_delta
-DEFAULT_GRIPPER_SPEED = 0.1  # Default gripper movement speed (m/s)
+MAX_GRIPPER_DELTA = 0.5  # Maximum gripper position delta per command (normalized 0-1) - matches robot_ik_solver.max_gripper_delta
+DEFAULT_GRIPPER_SPEED = 0.15  # Default gripper movement speed (m/s)
 DEFAULT_GRIPPER_FORCE = 0.1  # Default gripper force (normalized 0-1)
 
 # Control frequency (Hz) - matches robot_ik_solver.py
@@ -809,6 +809,7 @@ class PolymetisCombinedNode(Node):
         
         # Initialize IK solver if available
         self._ik_solver = None
+        self._ik_solver_lock = threading.Lock()  # Lock for thread-safe IK solver access (MuJoCo is not thread-safe)
         if IK_SOLVER_AVAILABLE:
             try:
                 self.get_logger().info("Initializing RobotIKSolver...")
@@ -1387,7 +1388,9 @@ class PolymetisCombinedNode(Node):
                     # Use RobotIKSolver.gripper_velocity_to_delta if available, otherwise fallback
                     if self._ik_solver is not None:
                         # Use IK solver method (matches robot_ik_solver.py exactly)
-                        gripper_delta = self._ik_solver.gripper_velocity_to_delta(gripper_cmd)
+                        # NOTE: IK solver methods may access MuJoCo physics, use lock
+                        with self._ik_solver_lock:
+                            gripper_delta = self._ik_solver.gripper_velocity_to_delta(gripper_cmd)
                         gripper_position = robot_state_dict["gripper_position"] + gripper_delta
                         gripper_position = float(np.clip(gripper_position, 0, 1))
                     else:
@@ -1442,16 +1445,19 @@ class PolymetisCombinedNode(Node):
                             f"   Current EE position: {robot_state_dict.get('cartesian_position', [0,0,0])[:3]}"
                         )
                     
-                    joint_velocity = self._ik_solver.cartesian_velocity_to_joint_velocity(
-                        arm_cmd, robot_state=robot_state
-                    )
-                    # Use robot_ik_solver.joint_velocity_to_delta
-                    joint_delta = self._ik_solver.joint_velocity_to_delta(joint_velocity)
+                    # NOTE: IK solver uses MuJoCo physics which is NOT thread-safe, must use lock
+                    with self._ik_solver_lock:
+                        joint_velocity = self._ik_solver.cartesian_velocity_to_joint_velocity(
+                            arm_cmd, robot_state=robot_state
+                        )
+                        # Use robot_ik_solver.joint_velocity_to_delta
+                        joint_delta = self._ik_solver.joint_velocity_to_delta(joint_velocity)
                     joint_position = (np.array(robot_state_dict["joint_positions"]) + joint_delta).tolist()
                     
                     if self._debug_cmd_count % 15 == 0:
                         # Get expected EE delta from cartesian velocity
-                        cartesian_delta = self._ik_solver.cartesian_velocity_to_delta(arm_cmd)
+                        with self._ik_solver_lock:
+                            cartesian_delta = self._ik_solver.cartesian_velocity_to_delta(arm_cmd)
                         self.get_logger().info(
                             f"   Computed cartesian_delta: {cartesian_delta[:3]} (norm: {np.linalg.norm(cartesian_delta[:3]):.4f})\n"
                             f"   Joint velocity norm: {np.linalg.norm(joint_velocity):.4f}\n"
@@ -1485,10 +1491,12 @@ class PolymetisCombinedNode(Node):
                         "joint_positions": robot_state_dict["joint_positions"],
                         "joint_velocities": robot_state_dict["joint_velocities"]
                     }
-                    joint_velocity = self._ik_solver.cartesian_velocity_to_joint_velocity(
-                        cartesian_velocity, robot_state=robot_state
-                    )
-                    joint_delta = self._ik_solver.joint_velocity_to_delta(joint_velocity)
+                    # NOTE: IK solver uses MuJoCo physics which is NOT thread-safe, must use lock
+                    with self._ik_solver_lock:
+                        joint_velocity = self._ik_solver.cartesian_velocity_to_joint_velocity(
+                            cartesian_velocity, robot_state=robot_state
+                        )
+                        joint_delta = self._ik_solver.joint_velocity_to_delta(joint_velocity)
                     joint_position = (np.array(robot_state_dict["joint_positions"]) + joint_delta).tolist()
             
             elif "joint" in action_space:
@@ -1499,7 +1507,9 @@ class PolymetisCombinedNode(Node):
                     # Use robot_ik_solver.joint_velocity_to_delta (matches robot_ik_solver.py exactly)
                     if self._ik_solver is not None:
                         # Use IK solver method (matches robot_ik_solver.py)
-                        joint_delta = self._ik_solver.joint_velocity_to_delta(arm_cmd)
+                        # NOTE: IK solver methods may access internal state, use lock for safety
+                        with self._ik_solver_lock:
+                            joint_delta = self._ik_solver.joint_velocity_to_delta(arm_cmd)
                     else:
                         # Fallback: simplified version matching robot_ik_solver.py logic exactly
                         # Reference: robot_ik_solver.py joint_velocity_to_delta()
@@ -1639,47 +1649,49 @@ class PolymetisCombinedNode(Node):
             elif isinstance(self._robot, MockRobotInterface) and self._ik_solver is not None:
                 # Mock robot with IK solver: use IK solver's physics for accurate FK
                 # ee_pose should be panda_link8 frame, not panda_hand frame
-                joint_pos = np.array(joint_positions)
-                joint_vel = np.zeros(7)  # Use zero velocity for FK
-                
-                # Update physics state with current joint positions
-                self._ik_solver._arm.update_state(self._ik_solver._physics, joint_pos, joint_vel)
-                
-                # Get panda_link8 body pose (not wrist_site which is in panda_hand)
-                # Find panda_link8 body in the MJCF model
-                link8_body = self._ik_solver._arm.mjcf_model.find("body", "panda_link8")
-                if link8_body is not None:
-                    # Get panda_link8 body position and orientation from physics
-                    body_bind = self._ik_solver._physics.bind(link8_body)
-                    pos = body_bind.xpos.copy()  # 3D position
-                    quat_mat = body_bind.xmat.copy().reshape(3, 3)  # Rotation matrix (3x3)
+                # NOTE: MuJoCo physics is NOT thread-safe, must use lock
+                with self._ik_solver_lock:
+                    joint_pos = np.array(joint_positions)
+                    joint_vel = np.zeros(7)  # Use zero velocity for FK
                     
-                    # Convert rotation matrix to quaternion
-                    quat_rot = R.from_matrix(quat_mat)
-                    quat = quat_rot.as_quat()  # [x, y, z, w]
-                else:
-                    # Fallback: use wrist_site and transform from hand frame to link8 frame
-                    # wrist_site is in panda_hand, which is rotated -45deg around Z relative to link8
-                    # In XML: <body name="panda_hand" euler="0 0 -0.785398163397">
-                    # This means hand is rotated -45deg (euler="0 0 -0.785398163397") relative to link8
-                    site_bind = self._ik_solver._physics.bind(self._ik_solver._arm.wrist_site)
-                    wrist_pos = site_bind.xpos.copy()
-                    wrist_quat_mat = site_bind.xmat.copy().reshape(3, 3)
+                    # Update physics state with current joint positions
+                    self._ik_solver._arm.update_state(self._ik_solver._physics, joint_pos, joint_vel)
                     
-                    # Transform from hand frame to link8 frame
-                    # In world frame: wrist_rot = link8_rot * hand_rot (hand_rot is -45deg around Z)
-                    # So: link8_rot = wrist_rot * inverse(hand_rot)
-                    # hand_rot is -45deg around Z, so inverse is +45deg
-                    hand_rot = R.from_euler('z', -0.785398163397, degrees=False)  # -45deg (hand relative to link8)
-                    wrist_rot = R.from_matrix(wrist_quat_mat)
-                    # Compose: link8_rot = wrist_rot * hand_rot.inv()
-                    link8_rot = wrist_rot * hand_rot.inv()
-                    
-                    # Position: wrist_site is at origin of hand frame (0,0,0 in hand frame)
-                    # hand frame origin is same as link8 frame origin (no translation in XML: pos="0 0 0.107" is link8 relative to link7)
-                    # So position is the same
-                    pos = wrist_pos.copy()
-                    quat = link8_rot.as_quat()  # [x, y, z, w]
+                    # Get panda_link8 body pose (not wrist_site which is in panda_hand)
+                    # Find panda_link8 body in the MJCF model
+                    link8_body = self._ik_solver._arm.mjcf_model.find("body", "panda_link8")
+                    if link8_body is not None:
+                        # Get panda_link8 body position and orientation from physics
+                        body_bind = self._ik_solver._physics.bind(link8_body)
+                        pos = body_bind.xpos.copy()  # 3D position
+                        quat_mat = body_bind.xmat.copy().reshape(3, 3)  # Rotation matrix (3x3)
+                        
+                        # Convert rotation matrix to quaternion
+                        quat_rot = R.from_matrix(quat_mat)
+                        quat = quat_rot.as_quat()  # [x, y, z, w]
+                    else:
+                        # Fallback: use wrist_site and transform from hand frame to link8 frame
+                        # wrist_site is in panda_hand, which is rotated -45deg around Z relative to link8
+                        # In XML: <body name="panda_hand" euler="0 0 -0.785398163397">
+                        # This means hand is rotated -45deg (euler="0 0 -0.785398163397") relative to link8
+                        site_bind = self._ik_solver._physics.bind(self._ik_solver._arm.wrist_site)
+                        wrist_pos = site_bind.xpos.copy()
+                        wrist_quat_mat = site_bind.xmat.copy().reshape(3, 3)
+                        
+                        # Transform from hand frame to link8 frame
+                        # In world frame: wrist_rot = link8_rot * hand_rot (hand_rot is -45deg around Z)
+                        # So: link8_rot = wrist_rot * inverse(hand_rot)
+                        # hand_rot is -45deg around Z, so inverse is +45deg
+                        hand_rot = R.from_euler('z', -0.785398163397, degrees=False)  # -45deg (hand relative to link8)
+                        wrist_rot = R.from_matrix(wrist_quat_mat)
+                        # Compose: link8_rot = wrist_rot * hand_rot.inv()
+                        link8_rot = wrist_rot * hand_rot.inv()
+                        
+                        # Position: wrist_site is at origin of hand frame (0,0,0 in hand frame)
+                        # hand frame origin is same as link8 frame origin (no translation in XML: pos="0 0 0.107" is link8 relative to link7)
+                        # So position is the same
+                        pos = wrist_pos.copy()
+                        quat = link8_rot.as_quat()  # [x, y, z, w]
                 
                 return pos, quat
             else:
@@ -2066,8 +2078,6 @@ class PolymetisCombinedNode(Node):
                 threading.Thread(target=gripper_thread, daemon=True).start()
             else:
                 self._gripper.goto(width=width, speed=speed, force=force, blocking=False)
-            
-            self.get_logger().debug(f"Gripper command: width={width}, speed={speed}, force={force}, blocking={blocking}")
             
         except Exception as e:
             self.get_logger().error(f"Error processing gripper command: {e}\n{traceback.format_exc()}")

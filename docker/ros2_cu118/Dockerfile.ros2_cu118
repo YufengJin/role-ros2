@@ -230,7 +230,7 @@ RUN python3 -m pip install dm-control==1.0.5
 # 10.5 Install core Python dependencies for role_ros2 (from pyproject.toml)
 # Install scipy and other dependencies first (numpy will be installed last to prevent auto-upgrade)
 # Fix scipy version to 1.11.4 for compatibility with numpy 1.26.4
-RUN python3 -m pip install "scipy==1.11.4" matplotlib tqdm
+RUN python3 -m pip install matplotlib tqdm imageio[ffmpeg]
 
 # 10.6 Install role_ros2 dependencies from pyproject.toml
 # Use --ignore-installed to handle system-installed packages
@@ -238,7 +238,6 @@ RUN python3 -m pip install --ignore-installed \
     boto3 \
     customtkinter \
     gym \
-    h5py \
     imageio \
     open3d \
     opencv-python==4.6.0.66 \
@@ -259,13 +258,13 @@ RUN python3 -m pip install dm-robotics-moma==0.5.0 --no-deps && \
     python3 -m pip install dm-robotics-controllers==0.5.0 --no-deps && \
     echo "✓ dm-robotics packages installed successfully"
 
-# 10.8 Install NumPy last to prevent other packages from auto-upgrading it to 2.x
-# This must be done after all other packages to ensure NumPy 1.26.4 is the final version
-# Then reinstall scipy to ensure it's compiled against the correct NumPy version
-RUN python3 -m pip install --force-reinstall --no-deps "numpy==1.26.4" || \
-    python3 -m pip install --force-reinstall "numpy==1.26.4" && \
+# 10.8 Clean environment and install NumPy/h5py with fixed versions
+# This prevents NumPy 2.0 compatibility issues with h5py
+# Must be done after all other packages to ensure correct versions
+RUN python3 -m pip uninstall -y h5py numpy && \
+    python3 -m pip install "numpy==1.26.4" "h5py==3.11.0" && \
     python3 -m pip install --force-reinstall --no-deps "scipy==1.11.4" || \
-    python3 -m pip install --force-reinstall "scipy==1.11.4"
+    python3 -m pip install --force-reinstall "scipy==1.11.4" 
 
 # 10.9 Verify key installations
 RUN python3 -c "import numpy; print(f'✓ NumPy version: {numpy.__version__}')" && \

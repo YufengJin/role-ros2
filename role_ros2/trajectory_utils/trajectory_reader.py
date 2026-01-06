@@ -5,10 +5,12 @@ This module provides TrajectoryReader class for reading saved trajectory data fr
 Adapted from droid.trajectory_utils.trajectory_reader.
 """
 
+import json
 import tempfile
 
 import h5py
 import imageio
+import numpy as np
 
 
 def create_video_file(suffix=".mp4", byte_contents=None):
@@ -32,18 +34,21 @@ def create_video_file(suffix=".mp4", byte_contents=None):
     return filename
 
 
-def get_hdf5_length(hdf5_file, keys_to_ignore=[]):
+def get_hdf5_length(hdf5_file, keys_to_ignore=[], strict=False):
     """
     Get the length of an HDF5 file (number of timesteps).
     
     Args:
         hdf5_file: HDF5 file or group
         keys_to_ignore: List of keys to skip
+        strict: If True, assert all datasets have same length. 
+                If False (default), use minimum length found.
     
     Returns:
-        Length of the trajectory
+        Length of the trajectory (minimum length across all datasets if not strict)
     """
     length = None
+    lengths_found = []
 
     for key in hdf5_file.keys():
         if key in keys_to_ignore:
@@ -51,17 +56,79 @@ def get_hdf5_length(hdf5_file, keys_to_ignore=[]):
 
         curr_data = hdf5_file[key]
         if isinstance(curr_data, h5py.Group):
-            curr_length = get_hdf5_length(curr_data, keys_to_ignore=keys_to_ignore)
+            curr_length = get_hdf5_length(curr_data, keys_to_ignore=keys_to_ignore, strict=strict)
+            if curr_length is not None:
+                lengths_found.append(curr_length)
         elif isinstance(curr_data, h5py.Dataset):
             curr_length = len(curr_data)
+            lengths_found.append(curr_length)
         else:
-            raise ValueError
+            # Skip unknown types
+            continue
 
         if length is None:
             length = curr_length
-        assert curr_length == length
+        elif strict:
+            assert curr_length == length, f"Length mismatch: {curr_length} != {length}"
+        else:
+            # Use minimum length to ensure we don't read beyond bounds
+            length = min(length, curr_length)
 
+    # Return minimum length found, or None if no datasets
+    if lengths_found:
+        return min(lengths_found)
     return length
+
+
+def _convert_hdf5_value(value):
+    """
+    Convert HDF5 attribute value back to Python type.
+    
+    This function handles the reverse conversion of _update_metadata in trajectory_writer.py:
+    - JSON strings -> list/dict/tuple
+    - "None" string -> None
+    - numpy types -> native Python types (if scalar)
+    
+    Args:
+        value: Value read from HDF5 attribute
+    
+    Returns:
+        Converted Python value
+    """
+    # Handle numpy scalar types
+    if isinstance(value, (np.integer, np.int64, np.int32, np.int16, np.int8)):
+        return int(value)
+    elif isinstance(value, (np.floating, np.float64, np.float32)):
+        return float(value)
+    elif isinstance(value, np.bool_):
+        return bool(value)
+    
+    # Handle string types (may be JSON or "None")
+    if isinstance(value, (str, bytes)):
+        # Try to decode bytes to string
+        if isinstance(value, bytes):
+            try:
+                value = value.decode('utf-8')
+            except UnicodeDecodeError:
+                return value  # Return as-is if not valid UTF-8
+        
+        # Check for "None" string
+        if value == "None":
+            return None
+        
+        # Try to parse as JSON (for list/dict/tuple that were serialized)
+        if value.startswith(('[', '{', '(')) or value.startswith(('"', "'")):
+            try:
+                return json.loads(value)
+            except (json.JSONDecodeError, ValueError):
+                pass  # Not JSON, return as string
+    
+    # Handle numpy arrays (keep as numpy array)
+    if isinstance(value, np.ndarray):
+        return value
+    
+    # Return as-is for other types
+    return value
 
 
 def load_hdf5_to_dict(hdf5_file, index, keys_to_ignore=[]):
@@ -86,7 +153,19 @@ def load_hdf5_to_dict(hdf5_file, index, keys_to_ignore=[]):
         if isinstance(curr_data, h5py.Group):
             data_dict[key] = load_hdf5_to_dict(curr_data, index, keys_to_ignore=keys_to_ignore)
         elif isinstance(curr_data, h5py.Dataset):
-            data_dict[key] = curr_data[index]
+            value = curr_data[index]
+            # Convert numpy scalar to Python native type if needed
+            # Note: Dataset values are typically numeric or arrays, not JSON strings
+            # JSON strings are only used in attrs (metadata), handled by get_metadata()
+            if isinstance(value, (np.integer, np.int64, np.int32, np.int16, np.int8)):
+                data_dict[key] = int(value)
+            elif isinstance(value, (np.floating, np.float64, np.float32)):
+                data_dict[key] = float(value)
+            elif isinstance(value, np.bool_):
+                data_dict[key] = bool(value)
+            else:
+                # For arrays, strings, and other types, return as-is
+                data_dict[key] = value
         else:
             raise ValueError
 
@@ -114,10 +193,34 @@ class TrajectoryReader:
         self._length = get_hdf5_length(self._hdf5_file)
         self._video_readers = {}
         self._index = 0
+        self._metadata = None  # Cache for metadata
 
     def length(self):
         """Get trajectory length."""
         return self._length
+    
+    def get_metadata(self):
+        """
+        Get file-level metadata with proper type conversion.
+        
+        This method reads HDF5 attributes and converts them back to their original types:
+        - JSON strings -> list/dict/tuple
+        - "None" string -> None
+        - numpy types -> native Python types
+        
+        Returns:
+            Dictionary containing file metadata
+        """
+        if self._metadata is not None:
+            return self._metadata
+        
+        metadata = {}
+        for key in self._hdf5_file.attrs.keys():
+            value = self._hdf5_file.attrs[key]
+            metadata[key] = _convert_hdf5_value(value)
+        
+        self._metadata = metadata
+        return metadata
 
     def read_timestep(self, index=None, keys_to_ignore=[]):
         """

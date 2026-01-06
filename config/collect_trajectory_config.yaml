@@ -3,17 +3,37 @@
 # You can override these values via launch arguments or command line
 
 # ============================================================================
+# Control Behavior
+# ============================================================================
+# 
+# The node always runs in loop mode:
+# - Long press A/X (0.5s) → SUCCESS: Save trajectory, start new trajectory
+# - Long press B/Y (0.5s) → FAILURE: Discard trajectory, reset robot, start new
+# - Ctrl+C → Clean shutdown
+#
+# If save_folder is empty: Teleoperation only (no data saved)
+# If save_folder is set: Trajectories saved on SUCCESS, discarded on FAILURE
+
+# ============================================================================
 # Save Settings
 # ============================================================================
 
-# Folder to save trajectory files (HDF5 format)
-# Leave empty for teleoperation-only mode (no saving)
+# Base folder to save trajectory files (HDF5 format)
+# Default: /app/ros2_ws/src/role-ros2/data
 # Example: "/home/user/trajectories" or "~/data/trajectories"
-save_folder: ""
+save_folder: "/app/ros2_ws/src/role-ros2/data"
+
+# Task name (optional)
+# If provided, automatically enables saving and trajectories will be saved to save_folder/task_name/
+# Task name will also be added to trajectory metadata
+# If not provided: Teleoperation only (no data saved)
+# Example: "pick_and_place", "assembly", "sorting"
+task: ""
 
 # Whether to save images in trajectory files
 # When true, images are embedded in HDF5 files (larger file size)
 # When false, only robot state and actions are saved
+# Only used when task is provided (saving is enabled)
 save_images: false
 
 # ============================================================================
@@ -56,14 +76,9 @@ randomize_reset: false
 # Trajectory Settings
 # ============================================================================
 
-# Whether to continuously collect trajectories in loop mode
-# When true: after trajectory ends, automatically starts a new one
-# When false: node stops after first trajectory completes
-loop: false
-
 # Maximum steps per trajectory (-1 for unlimited)
-# When set to positive value, trajectory ends after this many steps
-# When -1, trajectory ends only when user presses success/failure button
+# When set to positive value, trajectory ends after this many steps (auto SUCCESS)
+# When -1, trajectory ends only when user long-presses success/failure button
 horizon: -1
 
 # ============================================================================
@@ -80,7 +95,6 @@ horizon: -1
 # save_folder: "/home/user/trajectories"
 # save_images: true
 # control_hz: 15.0
-# loop: true
 # reset_robot: true
 # randomize_reset: true
 
@@ -93,6 +107,5 @@ horizon: -1
 # Configuration 4: Fixed horizon data collection
 # save_folder: "/home/user/trajectories"
 # horizon: 300  # 300 steps = 20 seconds at 15Hz
-# loop: true
 # reset_robot: true
 # randomize_reset: true

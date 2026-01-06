@@ -496,7 +496,7 @@ class FrankaRobot(BaseRobot):
         Update gripper position.
         
         Args:
-            command: Gripper command (0=closed, 1=open)
+            command: Gripper command (0=closed, 1=open for position; -1 to 1 for velocity)
             velocity: If True, command is velocity; if False, command is position
             blocking: Whether to wait for completion
         
@@ -506,7 +506,6 @@ class FrankaRobot(BaseRobot):
             Note: For true blocking, consider adding a Service in the future
         """
         if velocity:
-            # Get current gripper position
             current_pos = self.get_gripper_position()
             gripper_delta = self._ik_solver.gripper_velocity_to_delta(command)
             command = gripper_delta + current_pos
@@ -521,8 +520,6 @@ class FrankaRobot(BaseRobot):
         msg = GripperCommand()
         msg.header.stamp = self._node.get_clock().now().to_msg()
         msg.width = width
-        msg.speed = 0.05
-        msg.force = 0.1
         msg.blocking = blocking  # Bridge will handle blocking in thread if needed
         
         self._gripper_cmd_pub.publish(msg)

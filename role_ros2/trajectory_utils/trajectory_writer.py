@@ -14,6 +14,7 @@ from queue import Empty, Queue
 import h5py
 import imageio
 import numpy as np
+import json
 
 from role_ros2.misc.subprocess_utils import run_threaded_command
 
@@ -109,24 +110,42 @@ class TrajectoryWriter:
         self._queue_dict["hdf5"].put(timestep)
 
     def _update_metadata(self, metadata):
-        """Update file metadata."""
-        for key in metadata:
-            value = metadata[key]
-            # Handle non-serializable types
-            if isinstance(value, bool):
-                self._hdf5_file.attrs[key] = int(value)
-            elif isinstance(value, (int, float, str)):
-                self._hdf5_file.attrs[key] = value
-            elif isinstance(value, np.ndarray):
-                self._hdf5_file.attrs[key] = value
-            elif value is None:
+        """Update file metadata with type safety for HDF5/NumPy 2.0."""
+        for key, value in metadata.items():
+            # 1. Handle None (HDF5 does not support NoneType, store as string)
+            if value is None:
                 self._hdf5_file.attrs[key] = "None"
-            else:
+                continue
+            
+            # 2. Handle boolean values
+            # [Important] Must check before int, since in Python isinstance(True, int) is True
+            if isinstance(value, (bool, np.bool_)):
+                self._hdf5_file.attrs[key] = np.int64(value)  # Store as 0 or 1
+            
+            # 3. Handle integers (combine Python int and NumPy integer)
+            elif isinstance(value, (int, np.integer)):
+                self._hdf5_file.attrs[key] = np.int64(value)
+            
+            # 4. Handle floating point numbers (combine Python float and NumPy floating)
+            elif isinstance(value, (float, np.floating)):
+                self._hdf5_file.attrs[key] = np.float64(value)
+            
+            # 5. Handle natively supported types (string, bytes, NumPy array)
+            elif isinstance(value, (str, bytes, np.ndarray)):
+                self._hdf5_file.attrs[key] = value
+            
+            # 6. Handle complex structures (list, dict, tuple) -> convert to JSON string
+            # Note: deepcopy is often ineffective for HDF5 attrs as HDF5 cannot directly store dicts
+            elif isinstance(value, (list, dict, tuple)):
                 try:
-                    self._hdf5_file.attrs[key] = deepcopy(value)
-                except TypeError:
-                    # Skip non-serializable values
-                    pass
+                    self._hdf5_file.attrs[key] = json.dumps(value)
+                except (TypeError, ValueError):
+                    # If the structure contains unserializable objects (such as functions), fall back to string
+                    self._hdf5_file.attrs[key] = str(value)
+            
+            # 7. Fallback: all other unknown types are converted to string
+            else:
+                self._hdf5_file.attrs[key] = str(value)
 
     def _write_from_queue(self, writer, queue):
         """Background thread function for writing data from queue."""

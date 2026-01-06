@@ -58,22 +58,22 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 # Note: launch and launch_ros are Python packages, declared in package.xml only
 # zed_wrapper and zed_components are runtime dependencies, declared in package.xml
 
-# Install Python nodes
+# Install Python nodes (from nodes/ directory)
 install(PROGRAMS
-  scripts/oculus_reader_node.py
+  nodes/oculus_reader_node.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME oculus_reader_node
 )
 install(PROGRAMS
-  scripts/polymetis_bridge_node.py
+  nodes/polymetis_bridge_node.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME polymetis_bridge
 )
-install(PROGRAMS
-  scripts/collect_trajectory_node.py
-  DESTINATION lib/${PROJECT_NAME}
-  RENAME collect_trajectory_node
-)
+
+# Note: scripts/ directory contains pure Python scripts (not ROS2 nodes)
+# They should be run directly with python3, e.g.:
+#   python3 scripts/collect_trajectory.py --task pick_and_place
+#   python3 scripts/replay_trajectory.py --filepath /path/to/trajectory.h5
 
 # Install configuration files
 install(DIRECTORY config

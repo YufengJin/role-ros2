@@ -9,7 +9,7 @@ class RobotIKSolver:
     def __init__(self):
         self.relative_max_joint_delta = np.array([0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2])
         self.max_joint_delta = self.relative_max_joint_delta.max()
-        self.max_gripper_delta = 0.25
+        self.max_gripper_delta = 0.5  # Increased from 0.25 for faster gripper response
         self.max_lin_delta = 0.075
         self.max_rot_delta = 0.15
         self.control_hz = 15
