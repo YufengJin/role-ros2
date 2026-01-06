@@ -3,11 +3,13 @@
 Fake camera image publisher for testing ROS2 camera synchronization.
 
 Publishes synthetic RGB, depth, and camera_info messages to simulate camera data.
+Uses static noise strategy: pre-generates and pre-serializes image data during initialization.
 Supports configurable publishing rate, delay, and image properties.
 """
 
 import sys
 import time
+import threading
 import argparse
 from pathlib import Path
 from typing import Optional
@@ -15,6 +17,7 @@ from typing import Optional
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.callback_groups import ReentrantCallbackGroup
 from sensor_msgs.msg import Image, CameraInfo
 from geometry_msgs.msg import TransformStamped
 from tf2_ros import StaticTransformBroadcaster
@@ -24,6 +27,9 @@ from role_ros2.misc.transformations import euler_to_quat
 class FakeCameraPublisher(Node):
     """
     Fake camera publisher that generates synthetic images.
+    
+    Uses static noise strategy: pre-generates random noise images during initialization
+    and pre-serializes them to bytes. The publish loop only updates timestamps.
     
     Publishes:
     - RGB image (sensor_msgs/Image)
@@ -44,7 +50,8 @@ class FakeCameraPublisher(Node):
         use_sim_time: bool = False,
         base_frame: str = "base_link",
         camera_frame: Optional[str] = None,
-        random_pose: bool = True
+        random_pose: bool = True,
+        empty_image: bool = False
     ):
         """
         Initialize fake camera publisher.
@@ -62,6 +69,7 @@ class FakeCameraPublisher(Node):
             base_frame: Base frame for TF transform (default: "base_link")
             camera_frame: Camera frame name for TF transform (default: None, uses camera_id)
             random_pose: Whether to use random pose for static transform (default: True)
+            empty_image: If True, publish empty images (default: False)
         """
         super().__init__(f'fake_camera_publisher_{camera_id}')
         
@@ -73,8 +81,9 @@ class FakeCameraPublisher(Node):
         self.use_sim_time = use_sim_time
         self.base_frame = base_frame
         self.camera_frame = camera_frame or f"{camera_id}_camera_frame_optical"
+        self.empty_image = empty_image
         
-        # Frame counter for generating patterns
+        # Frame counter for tracking
         self.frame_counter = 0
         
         # FPS tracking
@@ -84,18 +93,53 @@ class FakeCameraPublisher(Node):
         self._fps_last_update_time = None
         self._fps_current = 0.0
         
-        # Pre-allocate image arrays
-        self._rgb_img = np.zeros((self.image_height, self.image_width, 3), dtype=np.uint8)
-        self._depth_img = np.zeros((self.image_height, self.image_width), dtype=np.uint16)
+        # Thread safety
+        self._frame_counter_lock = threading.Lock()
+        
+        # Pre-allocate and pre-generate image data
+        # Generate random noise images once during initialization
+        if self.empty_image:
+            # Empty images (zeros)
+            rgb_img = np.zeros((self.image_height, self.image_width, 3), dtype=np.uint8)
+            depth_img = np.zeros((self.image_height, self.image_width), dtype=np.uint16)
+        else:
+            # Generate static random noise images
+            # Use deterministic seed based on camera_id for reproducibility
+            rng = np.random.default_rng(hash(self.camera_id) % (2**32))
+            rgb_img = rng.integers(0, 256, size=(self.image_height, self.image_width, 3), dtype=np.uint8)
+            depth_img = rng.integers(500, 1500, size=(self.image_height, self.image_width), dtype=np.uint16)
+        
+        # Pre-allocate message objects
+        self._rgb_msg = Image()
+        self._depth_msg = Image()
+        self._rgb_msg.header.frame_id = self.camera_frame
+        self._depth_msg.header.frame_id = self.camera_frame
+        self._rgb_msg.width = self.image_width
+        self._rgb_msg.height = self.image_height
+        self._rgb_msg.encoding = 'bgr8'
+        self._rgb_msg.is_bigendian = False
+        self._rgb_msg.step = self.image_width * 3  # BGR = 3 channels
+        self._depth_msg.width = self.image_width
+        self._depth_msg.height = self.image_height
+        self._depth_msg.encoding = '16UC1'
+        self._depth_msg.is_bigendian = False
+        self._depth_msg.step = self.image_width * 2  # uint16 = 2 bytes
+        
+        # Pre-serialize image data to bytes (done once during initialization)
+        self._rgb_msg.data = rgb_img.tobytes()
+        self._depth_msg.data = depth_img.tobytes()
+        
+        # Create ReentrantCallbackGroup for concurrent timer callbacks
+        self._cb_group = ReentrantCallbackGroup()
         
         # Create publishers with larger queue size for better performance
         self.rgb_pub = self.create_publisher(Image, rgb_topic, 10)
         self.depth_pub = self.create_publisher(Image, depth_topic, 10)
         self.camera_info_pub = self.create_publisher(CameraInfo, camera_info_topic, 10)
         
-        # Create timer for publishing
+        # Create timer with ReentrantCallbackGroup for concurrent execution
         period = 1.0 / publish_rate if publish_rate > 0 else 1.0
-        self.timer = self.create_timer(period, self.publish_images)
+        self.timer = self.create_timer(period, self.publish_images, callback_group=self._cb_group)
         
         # Generate camera info once
         self.camera_info = self._generate_camera_info()
@@ -118,7 +162,9 @@ class FakeCameraPublisher(Node):
             f"  Use sim time: {use_sim_time}\n"
             f"  Base frame: {base_frame}\n"
             f"  Camera frame: {self.camera_frame}\n"
-            f"  Random pose: {random_pose}"
+            f"  Random pose: {random_pose}\n"
+            f"  Empty image mode: {empty_image}\n"
+            f"  Strategy: Static noise (pre-generated and pre-serialized)"
         )
     
     def _generate_and_publish_static_transform(self):
@@ -205,83 +251,15 @@ class FakeCameraPublisher(Node):
         
         return camera_info
     
-    def _generate_rgb_image(self) -> np.ndarray:
-        """
-        Generate a synthetic RGB image with random noise.
-        
-        Uses pre-allocated arrays and fast NumPy random generation.
-        
-        Returns:
-            BGR image as numpy array (uint8)
-        """
-        # Generate random noise image (BGR format) - very fast
-        np.random.seed(self.frame_counter)  # Different seed per frame for different noise
-        self._rgb_img[:] = np.random.randint(0, 256, size=(self.image_height, self.image_width, 3), dtype=np.uint8)
-        
-        return self._rgb_img
-    
-    def _generate_depth_image(self) -> np.ndarray:
-        """
-        Generate a synthetic depth image with random noise.
-        
-        Uses pre-allocated arrays and fast NumPy random generation.
-        
-        Returns:
-            Depth image as numpy array (uint16, in millimeters)
-        """
-        # Generate random depth values (500-1500mm range) - very fast
-        np.random.seed(self.frame_counter + 1000)  # Different seed for depth
-        self._depth_img[:] = np.random.randint(500, 1500, size=(self.image_height, self.image_width), dtype=np.uint16)
-        
-        return self._depth_img
-    
-    def _numpy_to_image_msg(self, img: np.ndarray, encoding: str = 'bgr8') -> Image:
-        """
-        Convert numpy array to ROS2 Image message.
-        
-        Args:
-            img: Image as numpy array
-            encoding: Image encoding (default: 'bgr8' for RGB, '16UC1' for depth)
-            
-        Returns:
-            Image message
-        """
-        msg = Image()
-        
-        # Set header
-        if self.use_sim_time:
-            msg.header.stamp = self.get_clock().now().to_msg()
-        else:
-            # Use wall clock time
-            now = self.get_clock().now()
-            msg.header.stamp = now.to_msg()
-        
-        msg.header.frame_id = self.camera_frame
-        
-        # Set image properties
-        msg.height = img.shape[0]
-        msg.width = img.shape[1]
-        msg.encoding = encoding
-        msg.is_bigendian = False
-        
-        # Set step (bytes per row)
-        if len(img.shape) == 3:
-            # BGR image: width * channels * bytes_per_channel
-            msg.step = img.shape[1] * img.shape[2] * img.dtype.itemsize
-        else:
-            # Depth image: width * bytes_per_pixel
-            if encoding == '16UC1':
-                msg.step = img.shape[1] * 2  # uint16 = 2 bytes
-            else:
-                msg.step = img.shape[1] * img.dtype.itemsize
-        
-        # Set data
-        msg.data = img.tobytes()
-        
-        return msg
-    
     def publish_images(self):
-        """Publish RGB, depth, and camera_info messages."""
+        """
+        Publish RGB, depth, and camera_info messages.
+        
+        Optimized static noise strategy:
+        - No image generation (pre-generated in __init__)
+        - No serialization (pre-serialized in __init__)
+        - Only updates timestamps and publishes
+        """
         try:
             # Track FPS
             current_time = time.time()
@@ -289,63 +267,64 @@ class FakeCameraPublisher(Node):
                 self._fps_start_time = current_time
                 self._fps_last_update_time = current_time
             
-            # Generate images
-            rgb_img = self._generate_rgb_image()
-            depth_img = self._generate_depth_image()
+            # Get frame counter (thread-safe)
+            with self._frame_counter_lock:
+                frame_counter = self.frame_counter
+                self.frame_counter += 1
             
             # Apply delay if specified
             if self.delay_ms > 0:
                 time.sleep(self.delay_ms / 1000.0)
             
-            # Convert to ROS2 messages
-            rgb_msg = self._numpy_to_image_msg(rgb_img, encoding='bgr8')
-            depth_msg = self._numpy_to_image_msg(depth_img, encoding='16UC1')
-            
-            # Get timestamp after all data processing is complete, just before publishing
-            # This ensures RGB, depth, and camera_info from the same camera have identical timestamps
-            # and the timestamp represents the latest time after all data preparation
+            # Get current ROS time and update timestamps only
             timestamp = self.get_clock().now()
             timestamp_msg = timestamp.to_msg()
             
-            # Set same timestamp for all messages from this camera (for synchronization)
-            # Different cameras will have different timestamps since each camera has its own timer
-            rgb_msg.header.stamp = timestamp_msg
-            depth_msg.header.stamp = timestamp_msg
-            
-            # Update camera info with current timestamp
+            # Update timestamps (data is already pre-serialized)
+            self._rgb_msg.header.stamp = timestamp_msg
+            self._depth_msg.header.stamp = timestamp_msg
             self.camera_info.header.stamp = timestamp_msg
             self.camera_info.header.frame_id = self.camera_frame
             
-            # Publish messages
-            self.rgb_pub.publish(rgb_msg)
-            self.depth_pub.publish(depth_msg)
+            # Publish messages (non-blocking)
+            self.rgb_pub.publish(self._rgb_msg)
+            self.depth_pub.publish(self._depth_msg)
             self.camera_info_pub.publish(self.camera_info)
             
-            # Increment frame counter
-            self.frame_counter += 1
-            self._fps_frame_count += 1
+            # Update FPS tracking (thread-safe)
+            with self._frame_counter_lock:
+                self._fps_frame_count += 1
             
             # Calculate and update FPS (only log every second to reduce overhead)
             elapsed_since_last_update = current_time - self._fps_last_update_time
             if elapsed_since_last_update >= self._fps_update_interval:
-                # Calculate FPS
-                self._fps_current = self._fps_frame_count / elapsed_since_last_update
+                with self._frame_counter_lock:
+                    fps_count = self._fps_frame_count
+                    self._fps_frame_count = 0
                 
-                # Log FPS and frame info (use print for faster output, or reduce logging level)
+                # Calculate FPS
+                self._fps_current = fps_count / elapsed_since_last_update
+                
+                # Log FPS
                 print(
-                    f"[{self.camera_id}] Frame #{self.frame_counter} | "
-                    f"FPS: {self._fps_current:.2f} Hz (target: {self.publish_rate:.2f} Hz) | "
-                    f"Delay: {self.delay_ms:.1f} ms"
+                    f"[{self.camera_id}] Frame #{frame_counter} | "
+                    f"FPS: {self._fps_current:.2f} Hz (target: {self.publish_rate:.2f} Hz)"
                 )
                 
-                # Reset counters
-                self._fps_frame_count = 0
                 self._fps_last_update_time = current_time
         
         except Exception as e:
             self.get_logger().error(f"Error publishing images: {e}")
             import traceback
             self.get_logger().error(traceback.format_exc())
+    
+    def shutdown(self):
+        """
+        Clean up resources.
+        
+        No thread pool to shut down in static noise strategy.
+        """
+        pass
 
 
 def load_camera_config(config_file: Optional[str] = None):
@@ -398,6 +377,8 @@ def main():
                        help='Use random pose for static transform (default: True)')
     parser.add_argument('--no-random-pose', dest='random_pose', action='store_false',
                        help='Disable random pose for static transform')
+    parser.add_argument('--empty-image', action='store_true',
+                       help='Publish empty images (zeros) instead of random noise')
     
     args = parser.parse_args()
     
@@ -452,7 +433,8 @@ def main():
                 use_sim_time=args.use_sim_time,
                 base_frame=base_frame,
                 camera_frame=camera_frame,
-                random_pose=args.random_pose
+                random_pose=args.random_pose,
+                empty_image=args.empty_image
             )
             publishers.append(publisher)
         
@@ -465,6 +447,8 @@ def main():
         print(f"   Delay: {args.delay_ms} ms")
         print(f"   Default image size: {args.image_width}x{args.image_height}")
         print(f"   Use sim time: {args.use_sim_time}")
+        print(f"   Empty image mode: {args.empty_image}")
+        print(f"   Strategy: Static noise (pre-generated and pre-serialized)")
         print("\nCamera configurations:")
         for publisher in publishers:
             print(f"   - {publisher.camera_id}: {publisher.publish_rate} Hz")
@@ -480,7 +464,10 @@ def main():
         except KeyboardInterrupt:
             print("\n⚠️  Shutting down...")
         finally:
+            # Shutdown publishers
             for publisher in publishers:
+                if hasattr(publisher, 'shutdown'):
+                    publisher.shutdown()
                 publisher.destroy_node()
             executor.shutdown()
             
@@ -495,4 +482,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
