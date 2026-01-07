@@ -1,7 +1,8 @@
 # ROBOT SPECIFIC IMPORTS
 import time
 import threading
-from typing import Optional, Tuple
+from collections import deque
+from typing import Optional, Tuple, List, Dict, Any
 
 import numpy as np
 import rclpy
@@ -69,6 +70,15 @@ class FrankaRobot(BaseRobot):
         self._robot_data_snapshot: Optional[Tuple[PolymetisRobotState, int, int]] = None
         self._gripper_data_snapshot: Optional[Tuple[PolymetisGripperState, int]] = None
         self._max_gripper_width = 0.08  # Default for Franka hand
+        
+        # Robot state cache for timestamp-based lookup
+        # Stores tuples of (pub_timestamp_ns, msg, received_time_ns)
+        # Lightweight storage - only raw snapshot, state_dict built on demand
+        # Max size = 100 (at 50Hz, this covers 2 seconds of history)
+        self._robot_state_cache: deque = deque(maxlen=100)
+        self._robot_state_cache_lock = threading.Lock()
+        # Pre-allocated numpy array for fast timestamp lookup (avoid for loop)
+        self._cache_timestamps_ns: np.ndarray = np.zeros(100, dtype=np.int64)
         
         # Latency logging counter (for lazy evaluation)
         self._latency_log_counter = 0
@@ -174,6 +184,7 @@ class FrankaRobot(BaseRobot):
         
         Creates an atomic snapshot: (message, pub_timestamp_ns, received_time_ns)
         This ensures all three values belong to the exact same message.
+        Also adds raw snapshot to cache for timestamp-based lookup (lightweight).
         """
         # Record ROS time when message is received
         received_time_ns = get_ros_time_ns(self._node)
@@ -188,6 +199,15 @@ class FrankaRobot(BaseRobot):
         
         with self._robot_state_lock:
             self._robot_data_snapshot = snapshot
+        
+        # Add raw snapshot to cache (no state_dict processing - done lazily on read)
+        # Cache entry: (pub_timestamp_ns, msg, received_time_ns)
+        with self._robot_state_cache_lock:
+            self._robot_state_cache.append((pub_timestamp_ns, msg, received_time_ns))
+            # Update timestamp array for fast numpy lookup
+            cache_len = len(self._robot_state_cache)
+            if cache_len <= len(self._cache_timestamps_ns):
+                self._cache_timestamps_ns[cache_len - 1] = pub_timestamp_ns
     
     def _gripper_state_callback(self, msg: PolymetisGripperState):
         """
@@ -653,6 +673,150 @@ class FrankaRobot(BaseRobot):
             )
         
         return state_dict, timestamp_dict
+    
+    def get_robot_state_for_timestamp(
+        self, 
+        timestamp_ns: int,
+        max_time_diff_ns: int = 100_000_000  # 100ms default tolerance
+    ) -> Tuple[Dict[str, Any], Dict[str, Any], int]:
+        """
+        Get the robot state closest to a given timestamp from the cache.
+        
+        This is useful for synchronizing robot state with camera timestamps.
+        Returns the state with the smallest |robot_pub_t - timestamp_ns|.
+        Uses numpy for O(1) lookup instead of O(n) for loop.
+        
+        Args:
+            timestamp_ns: Target timestamp in nanoseconds
+            max_time_diff_ns: Maximum allowed time difference in nanoseconds (default: 100ms)
+                             If no state is within this range, returns current state.
+        
+        Returns:
+            tuple: (state_dict, timestamp_dict, time_diff_ns)
+                - state_dict: Robot state dictionary
+                - timestamp_dict: Timestamp dictionary
+                - time_diff_ns: Signed time difference (positive=state newer, negative=state older)
+        
+        Note:
+            - Uses numpy argmin for O(1) lookup (no for loop)
+            - Falls back to get_robot_state() if cache is empty or no match within tolerance
+            - The cache stores the last 100 states (~2 seconds at 50Hz)
+        """
+        with self._robot_state_cache_lock:
+            cache_len = len(self._robot_state_cache)
+            
+            if cache_len == 0:
+                # Fallback: return current state
+                state_dict, timestamp_dict = self.get_robot_state()
+                return state_dict, timestamp_dict, 0
+            
+            # Use numpy for O(1) argmin lookup (avoid for loop)
+            timestamps = self._cache_timestamps_ns[:cache_len]
+            diffs = np.abs(timestamps - timestamp_ns)
+            best_idx = np.argmin(diffs)
+            best_diff = diffs[best_idx]
+            
+            if best_diff > max_time_diff_ns:
+                # Fallback: return current state if no match within tolerance
+                state_dict, timestamp_dict = self.get_robot_state()
+                # Log a warning if no cached state is close enough to the requested timestamp
+                self._node.get_logger().warn(
+                    f"get_robot_state_for_timestamp: No cached state within {max_time_diff_ns / 1e6:.1f} ms "
+                    f"of requested timestamp {timestamp_ns} ns (closest diff {best_diff / 1e6:.1f} ms). "
+                    "Returning current state instead."
+                )
+                return state_dict, timestamp_dict, int(best_diff)
+            
+            # Get the cached entry
+            pub_t, msg, received_time_ns = self._robot_state_cache[best_idx]
+        
+        # Build state_dict from cached message (outside lock)
+        state_dict = self._build_state_dict_from_msg(msg)
+
+        self._node.get_logger().info(f"get_robot_state_for_timestamp: Using cached state {best_idx} with pub_t {pub_t} and received_time_ns {received_time_ns}")
+        
+        # Build timestamp_dict
+        timestamp_dict = {
+            "robot_polymetis_t": int(msg.polymetis_timestamp_ns),
+            "robot_pub_t": int(pub_t),
+            "robot_sub_t": int(received_time_ns),
+            "robot_end_t": get_ros_time_ns(self._node),
+        }
+        
+        # Calculate signed time difference (positive if state is newer)
+        signed_diff = pub_t - timestamp_ns
+        
+        return state_dict, timestamp_dict, int(signed_diff)
+    
+    def _build_state_dict_from_msg(self, msg: PolymetisRobotState) -> Dict[str, Any]:
+        """
+        Build state_dict from a PolymetisRobotState message.
+        
+        Args:
+            msg: PolymetisRobotState message
+        
+        Returns:
+            dict: State dictionary
+        """
+        # Get gripper position from current snapshot
+        with self._robot_state_lock:
+            gripper_snapshot = self._gripper_data_snapshot
+        
+        if gripper_snapshot is not None:
+            gripper_state, _ = gripper_snapshot
+            gripper_position = float(gripper_state.position)
+        else:
+            gripper_position = 0.0
+        
+        cartesian_position = list(msg.ee_position) + list(msg.ee_euler)
+        
+        return {
+            "cartesian_position": cartesian_position,
+            "gripper_position": gripper_position,
+            "joint_positions": list(msg.joint_positions),
+            "joint_velocities": list(msg.joint_velocities),
+            "joint_torques_computed": list(msg.joint_torques_computed),
+            "prev_joint_torques_computed": list(msg.prev_joint_torques_computed),
+            "prev_joint_torques_computed_safened": list(msg.prev_joint_torques_computed_safened),
+            "motor_torques_measured": list(msg.motor_torques_measured),
+            "prev_controller_latency_ms": msg.prev_controller_latency_ms,
+            "prev_command_successful": msg.prev_command_successful,
+        }
+    
+    def get_robot_state_cache_info(self) -> Dict[str, Any]:
+        """
+        Get information about the robot state cache.
+        
+        Returns:
+            dict: Cache information including:
+                - size: Current number of entries in cache
+                - max_size: Maximum cache size
+                - oldest_timestamp_ns: Oldest timestamp in cache (or None)
+                - newest_timestamp_ns: Newest timestamp in cache (or None)
+                - time_span_ms: Time span covered by cache in milliseconds
+        """
+        with self._robot_state_cache_lock:
+            size = len(self._robot_state_cache)
+            if size == 0:
+                return {
+                    "size": 0,
+                    "max_size": self._robot_state_cache.maxlen,
+                    "oldest_timestamp_ns": None,
+                    "newest_timestamp_ns": None,
+                    "time_span_ms": 0.0
+                }
+            
+            oldest_ts = self._robot_state_cache[0][0]
+            newest_ts = self._robot_state_cache[-1][0]
+            time_span_ns = newest_ts - oldest_ts
+            
+            return {
+                "size": size,
+                "max_size": self._robot_state_cache.maxlen,
+                "oldest_timestamp_ns": oldest_ts,
+                "newest_timestamp_ns": newest_ts,
+                "time_span_ms": time_span_ns / 1e6
+            }
     
     def _check_and_log_latency(
         self,

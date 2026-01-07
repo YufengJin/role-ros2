@@ -187,14 +187,30 @@ class RobotEnv(gym.Env):
         
         return camera_obs, camera_timestamp
 
-    def get_state(self):
+    def get_state(self, use_sync: bool = False, timestamp_ns: Optional[int] = None):
         """
         Get robot state.
+        
+        Args:
+            use_sync: If True and timestamp_ns is provided, get state closest to timestamp_ns.
+                     If False, get latest state.
+            timestamp_ns: Target timestamp in nanoseconds for synchronized lookup.
+                         Only used when use_sync=True.
+        
+        Returns:
+            Tuple[dict, dict]: (state_dict, timestamp_dict)
         
         No manual spin needed - background executor thread keeps data fresh.
         """
         read_start = get_ros_time_ns(self._node)
-        state_dict, timestamp_dict = self._robot.get_robot_state()
+        
+        if use_sync and timestamp_ns is not None:
+            # Get state closest to the given timestamp (for camera-robot sync)
+            state_dict, timestamp_dict, _ = self._robot.get_robot_state_for_timestamp(timestamp_ns)
+        else:
+            # Get latest state
+            state_dict, timestamp_dict = self._robot.get_robot_state()
+        
         timestamp_dict["read_start"] = read_start
         timestamp_dict["read_end"] = get_ros_time_ns(self._node)
         return state_dict, timestamp_dict
@@ -290,9 +306,15 @@ class RobotEnv(gym.Env):
             extrinsics[cam_id] = change_pose_frame(extrinsics[cam_id], gripper_pose)
         return extrinsics
 
-    def get_observation(self):
+    def get_observation(self, use_sync: bool = True):
         """
         Get comprehensive observation dictionary.
+        
+        Args:
+            use_sync: If True, synchronize camera and robot state timestamps.
+                     Camera sync timestamp (multi_camera_sync_start) is used to 
+                     lookup the closest robot state from cache.
+                     If False, get latest camera and robot data independently.
         
         Returns:
             dict: Observation dictionary with the following structure:
@@ -333,11 +355,13 @@ class RobotEnv(gym.Env):
                         "robot_end_t": int,  # Processing end time (nanoseconds, ROS time)
                         "read_start": int,  # get_state() start time (nanoseconds, ROS time)
                         "read_end": int,  # get_state() end time (nanoseconds, ROS time)
+                        "sync_time_diff_ns": int,  # (only when use_sync=True) Time diff to camera sync
                     },
                     "cameras": {
                         "{camera_id}_pub_t": int,  # Published time (nanoseconds, ROS time)
                         "{camera_id}_sub_t": int,  # Subscription time (nanoseconds, ROS time)
                         "{camera_id}_end_t": int,  # Processing end time (nanoseconds, ROS time)
+                        "multi_camera_sync_start": int,  # Multi-camera sync start time (nanoseconds)
                         "read_start": int,  # read_cameras() start time (nanoseconds, ROS time)
                         "read_end": int,  # read_cameras() end time (nanoseconds, ROS time)
                         ...
@@ -346,15 +370,36 @@ class RobotEnv(gym.Env):
             }
         """
         obs_dict = {"timestamp": {}}
-
-        # Robot State #
-        state_dict, timestamp_dict = self.get_state()
-        obs_dict["robot_state"] = state_dict
-        obs_dict["timestamp"]["robot_state"] = timestamp_dict
-
-        # Camera Readings (includes image, depth, intrinsics, and extrinsics) #
-        camera_obs, camera_timestamp = self.read_cameras()
+        
+        # Camera Readings (includes image, depth, intrinsics, and extrinsics)
+        camera_obs, camera_timestamp = self.read_cameras(use_sync=use_sync)
         obs_dict.update(camera_obs)
         obs_dict["timestamp"]["cameras"] = camera_timestamp
+
+        # Robot State
+        # When use_sync=True, use mean of all camera pub_t timestamps to get time-synchronized robot state
+        if use_sync:
+            # Calculate mean of all camera pub_t timestamps
+            camera_pub_timestamps = []
+            for key, value in camera_timestamp.items():
+                if key.endswith("_pub_t") and isinstance(value, (int, np.integer)):
+                    camera_pub_timestamps.append(int(value))
+            
+            if camera_pub_timestamps:
+                # Use mean of camera pub_t timestamps (more accurate for robot state lookup)
+                sync_timestamp_ns = int(np.mean(camera_pub_timestamps))
+            else:
+                # Fallback to multi_camera_sync_start if no pub_t found
+                sync_timestamp_ns = camera_timestamp.get("multi_camera_sync_start")
+            
+            state_dict, timestamp_dict = self.get_state(
+                use_sync=True, 
+                timestamp_ns=sync_timestamp_ns
+            )
+        else:
+            state_dict, timestamp_dict = self.get_state(use_sync=False)
+        
+        obs_dict["robot_state"] = state_dict
+        obs_dict["timestamp"]["robot_state"] = timestamp_dict
 
         return obs_dict

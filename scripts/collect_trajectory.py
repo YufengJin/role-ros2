@@ -290,7 +290,7 @@ class CollectTrajectory:
             control_timestamps = {"step_start": get_ros_time_ns(self._node)}
             
             # Get Observation
-            obs = self.env.get_observation()
+            obs = self.env.get_observation(use_sync=False)
             obs["controller_info"] = controller_info
             if "timestamp" not in obs:
                 obs["timestamp"] = {}
