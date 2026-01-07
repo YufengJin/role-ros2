@@ -1,0 +1,159 @@
+# ZED Cameras Configuration - LOW RESOLUTION MODE (for Robot Learning)
+# This configuration is optimized for robot learning tasks
+# - Base resolution: HD720 (1280x720)
+# - Downscaled: 2x downscale factor (effective: 640x360)
+# - High frame rate: 30Hz (suitable for real-time learning)
+# - ULTRA depth mode for quality
+# - Point cloud and depth confidence enabled
+#
+# Frame ID Prefix:
+#   The 'name' field is used as the frame_id prefix for all TF frames.
+#   For example, if name='hand_camera', frame_ids will be:
+#     - hand_camera_camera_center
+#     - hand_camera_left_camera_frame
+#     - hand_camera_left_camera_frame_optical
+#     - hand_camera_right_camera_frame
+#     - hand_camera_imu_link
+#     etc.
+#
+# Usage: ros2 launch role_ros2 zed_cameras.launch.py mode:=learning
+
+cameras:
+  # Hand Camera (mounted on gripper) - ZED-M
+  # Camera Serial Number: 11022812
+  # Configuration: LOW RESOLUTION (HD720/2) at 30Hz for robot learning
+  - name: 'hand_camera'  # [REQUIRED] Camera name used as frame_id prefix
+    activate: true  # [REQUIRED] Set to false to disable this camera
+    camera_model: 'zedm'  # [REQUIRED] Camera model
+    serial_number: 11022812  # [REQUIRED] Camera serial number
+    namespace: 'hand_camera'  # [REQUIRED] ROS 2 topic namespace
+    node_name: 'zed_node'  # [REQUIRED] ZED wrapper node name
+    
+    # Resolution and frame rate settings - LOW RESOLUTION for learning
+    grab_resolution: 'HD720'  # [REQUIRED] Native camera grab resolution: 1280x720
+                              # Base resolution before downscaling
+    grab_frame_rate: 30  # [REQUIRED] ZED SDK internal grabbing rate (FPS)
+    pub_resolution: 'CUSTOM'  # [REQUIRED] Use custom downscaled resolution
+                              # Enables pub_downscale_factor for bandwidth reduction
+    pub_downscale_factor: 2.0  # [REQUIRED] Downscale factor: HD720 / 2 = 640x360
+                               # Reduces bandwidth and computational load for real-time learning
+                               # Lower resolution is often sufficient for robot learning tasks
+    pub_frame_rate: 30.0  # [REQUIRED] Publishing frequency: 30Hz
+                          # High frame rate suitable for real-time robot learning
+                          # Lower resolution allows 30Hz with ULTRA mode
+    
+    # Sensor settings - ALL DISABLED
+    sensors:
+      publish_imu: false  # [DISABLED] IMU data publishing
+      publish_imu_raw: false  # [DISABLED] Raw IMU data publishing
+      publish_imu_tf: false  # [DISABLED] IMU TF broadcasting
+      sensors_pub_rate: 30.0  # [UNUSED] Not used when sensors disabled
+    
+    # Depth settings - ULTRA mode for quality
+    depth:
+      depth_mode: 'ULTRA'  # [REQUIRED] Highest quality depth mode
+                           # Note: With downscaled resolution, ULTRA mode can maintain 30Hz
+      depth_stabilization: 0  # [DISABLED] No depth stabilization
+      min_depth: 0.01  # [REQUIRED] Minimum depth in meters. Range: [0.01, 3.0]
+      max_depth: 2.0  # [REQUIRED] Maximum depth in meters. Range: [0.5, 15.0] for zedm
+      depth_confidence: 95  # [OPTIONAL] Depth confidence threshold
+      depth_texture_conf: 100  # [OPTIONAL] Depth texture confidence
+      remove_saturated_areas: true  # [OPTIONAL] Remove saturated areas
+      point_cloud_freq: 10.0  # [ENABLED] Point cloud publishing frequency (Hz)
+                             # Lower than pub_frame_rate to reduce computational load
+      point_cloud_res: 'COMPACT'  # [REQUIRED] Point cloud resolution
+      publish_depth_map: true  # [ENABLED] Registered depth map publishing
+      publish_point_cloud: true  # [ENABLED] Point cloud publishing
+      publish_depth_confidence: true  # [ENABLED] Depth confidence map publishing
+      publish_disparity: false  # [DISABLED] Disparity topic
+      publish_depth_info: false  # [OPTIONAL] Depth info topic
+    
+    # Position tracking settings - ALL DISABLED
+    pos_tracking:
+      publish_tf: false  # [DISABLED] TF publishing disabled
+      publish_map_tf: false  # [DISABLED] Map TF publishing disabled
+      pos_tracking_enabled: false  # [DISABLED] Positional tracking disabled
+      pos_tracking_mode: 'GEN_2'  # [UNUSED] Not used when disabled
+      imu_fusion: false  # [UNUSED] Not used when disabled
+      set_as_static: false  # [UNUSED] Not used when disabled
+    
+    # Video settings - RGB publishing enabled
+    video:
+      brightness: 4  # [OPTIONAL] Image brightness. Range: [0, 8]
+      contrast: 4  # [OPTIONAL] Image contrast. Range: [0, 8]
+      saturation: 4  # [OPTIONAL] Image saturation. Range: [0, 8]
+      sharpness: 4  # [OPTIONAL] Image sharpness. Range: [0, 8]
+      gamma: 8  # [OPTIONAL] Image gamma. Range: [0, 8]
+      auto_exposure_gain: true  # [OPTIONAL] Auto exposure/gain
+      auto_whitebalance: true  # [OPTIONAL] Auto white balance
+      publish_rgb: true  # [ENABLED] RGB image publishing
+      publish_left_right: false  # [DISABLED] Left/right images
+      publish_raw: false  # [DISABLED] Raw images
+      publish_gray: false  # [DISABLED] Gray images
+      publish_stereo: false  # [DISABLED] Stereo image pair
+
+  # Static Camera (fixed position) - ZED 2
+  # Camera Serial Number: 24285872
+  # Configuration: LOW RESOLUTION (HD720/2) at 30Hz for robot learning
+  - name: 'static_camera'  # [REQUIRED] Camera name used as frame_id prefix
+    activate: true  # [REQUIRED] Set to false to disable this camera
+    camera_model: 'zed2'  # [REQUIRED] Camera model: ZED 2
+    serial_number: 24285872  # [REQUIRED] Camera serial number
+    namespace: 'static_camera'  # [REQUIRED] ROS 2 topic namespace
+    node_name: 'zed_node'  # [REQUIRED] ZED wrapper node name
+    
+    # Resolution and frame rate settings - LOW RESOLUTION for learning
+    grab_resolution: 'HD720'  # [REQUIRED] Native camera grab resolution: 1280x720
+    grab_frame_rate: 30  # [REQUIRED] ZED SDK internal grabbing rate (FPS)
+    pub_resolution: 'CUSTOM'  # [REQUIRED] Use custom downscaled resolution
+    pub_downscale_factor: 2.0  # [REQUIRED] Downscale factor: HD720 / 2 = 640x360
+    pub_frame_rate: 30.0  # [REQUIRED] Publishing frequency: 30Hz
+    
+    # Sensor settings - ALL DISABLED
+    sensors:
+      publish_imu: false  # [DISABLED] IMU data publishing
+      publish_imu_raw: false  # [DISABLED] Raw IMU data publishing
+      publish_imu_tf: false  # [DISABLED] IMU TF broadcasting
+      sensors_pub_rate: 30.0  # [UNUSED] Not used when sensors disabled
+    
+    # Depth settings - ULTRA mode for quality
+    depth:
+      depth_mode: 'ULTRA'  # [REQUIRED] Highest quality depth mode
+      depth_stabilization: 0  # [DISABLED] No depth stabilization
+      min_depth: 0.01  # [REQUIRED] Minimum depth in meters. Range: [0.01, 3.0]
+      max_depth: 5.0  # [REQUIRED] Maximum depth in meters. Range: [0.5, 20.0] for zed2
+      depth_confidence: 95  # [OPTIONAL] Depth confidence threshold
+      depth_texture_conf: 100  # [OPTIONAL] Depth texture confidence
+      remove_saturated_areas: true  # [OPTIONAL] Remove saturated areas
+      point_cloud_freq: 10.0  # [ENABLED] Point cloud publishing frequency (Hz)
+      point_cloud_res: 'COMPACT'  # [REQUIRED] Point cloud resolution
+      publish_depth_map: true  # [ENABLED] Registered depth map publishing
+      publish_point_cloud: true  # [ENABLED] Point cloud publishing
+      publish_depth_confidence: true  # [ENABLED] Depth confidence map publishing
+      publish_disparity: false  # [DISABLED] Disparity topic
+      publish_depth_info: false  # [OPTIONAL] Depth info topic
+    
+    # Position tracking settings - ALL DISABLED
+    pos_tracking:
+      publish_tf: false  # [DISABLED] TF publishing disabled
+      publish_map_tf: false  # [DISABLED] Map TF publishing disabled
+      pos_tracking_enabled: false  # [DISABLED] Positional tracking disabled
+      pos_tracking_mode: 'GEN_2'  # [UNUSED] Not used when disabled
+      imu_fusion: false  # [UNUSED] Not used when disabled
+      set_as_static: false  # [UNUSED] Not used when disabled
+    
+    # Video settings - RGB publishing enabled
+    video:
+      brightness: 4  # [OPTIONAL] Image brightness
+      contrast: 4  # [OPTIONAL] Image contrast
+      saturation: 4  # [OPTIONAL] Image saturation
+      sharpness: 4  # [OPTIONAL] Image sharpness
+      gamma: 8  # [OPTIONAL] Image gamma
+      auto_exposure_gain: true  # [OPTIONAL] Auto exposure/gain
+      auto_whitebalance: true  # [OPTIONAL] Auto white balance
+      publish_rgb: true  # [ENABLED] RGB image publishing
+      publish_left_right: false  # [DISABLED] Left/right images
+      publish_raw: false  # [DISABLED] Raw images
+      publish_gray: false  # [DISABLED] Gray images
+      publish_stereo: false  # [DISABLED] Stereo image pair
+

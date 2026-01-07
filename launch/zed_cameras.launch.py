@@ -30,10 +30,22 @@ def load_camera_config(config_file):
     role_ros2_share_dir = get_package_share_directory('role_ros2')
     config_path = os.path.join(role_ros2_share_dir, 'config', config_file)
     
+    # Also try source directory if not found in install directory
     if not os.path.exists(config_path):
-        print(f"⚠️  Warning: Config file not found: {config_path}")
-        print(f"   Falling back to default: zed_cameras_config.yaml")
-        config_path = os.path.join(role_ros2_share_dir, 'config', 'zed_cameras_config.yaml')
+        # Try source directory
+        role_ros2_src_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        src_config_path = os.path.join(role_ros2_src_dir, 'config', config_file)
+        if os.path.exists(src_config_path):
+            config_path = src_config_path
+            print(f"📋 Using config from source directory: {config_path}")
+        else:
+            raise FileNotFoundError(
+                f"❌ Config file not found: {config_file}\n"
+                f"   Tried:\n"
+                f"   - {config_path}\n"
+                f"   - {src_config_path}\n"
+                f"   Please ensure the config file exists and the package is installed."
+            )
     
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
@@ -47,18 +59,19 @@ def create_camera_params_file(camera_config):
     temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
     
     # Convert camera config to ROS2 parameter format
+    # Ensure pub_resolution is a string and pub_downscale_factor is a float
     ros_params = {
         '/**': {
             'ros__parameters': {
                 'general': {
-                    'camera_name': camera_config['name'],
-                    'camera_model': camera_config['camera_model'],
-                    'serial_number': camera_config['serial_number'],
-                    'grab_resolution': camera_config['grab_resolution'],
-                    'grab_frame_rate': camera_config['grab_frame_rate'],
-                    'pub_resolution': camera_config['pub_resolution'],
-                    'pub_downscale_factor': camera_config['pub_downscale_factor'],
-                    'pub_frame_rate': camera_config['pub_frame_rate'],
+                    'camera_name': str(camera_config['name']),
+                    'camera_model': str(camera_config['camera_model']),
+                    'serial_number': int(camera_config['serial_number']),
+                    'grab_resolution': str(camera_config['grab_resolution']),
+                    'grab_frame_rate': int(camera_config['grab_frame_rate']),
+                    'pub_resolution': str(camera_config['pub_resolution']),  # Ensure it's a string
+                    'pub_downscale_factor': float(camera_config['pub_downscale_factor']),  # Ensure it's a float
+                    'pub_frame_rate': float(camera_config['pub_frame_rate']),
                 },
                 'sensors': camera_config['sensors'],
                 'depth': camera_config['depth'],
@@ -68,8 +81,13 @@ def create_camera_params_file(camera_config):
         }
     }
     
-    yaml.dump(ros_params, temp_file, default_flow_style=False, sort_keys=False)
+    yaml.dump(ros_params, temp_file, default_flow_style=False, sort_keys=False, allow_unicode=True)
     temp_file.close()
+    
+    # Debug: Print the generated params file path and key parameters for troubleshooting
+    print(f"   📄 Generated params file: {temp_file.name}")
+    print(f"   ✅ Params: pub_resolution='{ros_params['/**']['ros__parameters']['general']['pub_resolution']}', "
+          f"pub_downscale_factor={ros_params['/**']['ros__parameters']['general']['pub_downscale_factor']}")
     
     return temp_file.name
 
@@ -80,8 +98,29 @@ def generate_camera_launches(context):
     zed_wrapper_share_dir = get_package_share_directory('zed_wrapper')
     role_ros2_share_dir = get_package_share_directory('role_ros2')
     
+    # Get mode from launch argument
+    mode = context.perform_substitution(LaunchConfiguration('mode'))
+    
     # Get config file from launch argument
-    config_file = context.perform_substitution(LaunchConfiguration('config_file'))
+    config_file_arg = context.perform_substitution(LaunchConfiguration('config_file'))
+    
+    # Determine config file based on mode (mode takes priority over config_file)
+    if mode == 'calibration':
+        # High resolution mode for calibration: HD1080 at 15Hz
+        config_file = 'zed_cameras_config_high_res.yaml'
+    elif mode == 'learning':
+        # Low resolution mode for robot learning: HD720/2 at 30Hz
+        config_file = 'zed_cameras_config_low_res.yaml'
+    else:
+        # Use explicit config file if provided
+        if config_file_arg and config_file_arg != '':
+            config_file = config_file_arg
+        else:
+            raise ValueError(
+                f"❌ No config file specified!\n"
+                f"   Mode is '{mode}' but no config_file provided.\n"
+                f"   Use: mode:=calibration OR mode:=learning OR config_file:=<your_config.yaml>"
+            )
     
     # Load camera configuration
     cameras, config_path = load_camera_config(config_file)
@@ -90,6 +129,7 @@ def generate_camera_launches(context):
     print("\n" + "="*70)
     print("ZED Cameras Configuration")
     print("="*70)
+    print(f"Mode: {mode}")
     print(f"Config file: {config_path}")
     print("-"*70)
     for camera in cameras:
@@ -107,6 +147,8 @@ def generate_camera_launches(context):
         
         print(f"✅ Activating camera '{camera['name']}' (model: {camera['camera_model']}, serial: {camera['serial_number']})")
         print(f"   📋 Serial number will be used to select the correct camera device")
+        print(f"   🔧 Resolution: {camera['grab_resolution']} @ {camera['grab_frame_rate']}Hz")
+        print(f"   📊 Publish: {camera['pub_resolution']} (downscale: {camera['pub_downscale_factor']}x) @ {camera['pub_frame_rate']}Hz")
         
         # Create temporary parameters file
         params_file = create_camera_params_file(camera)
@@ -137,16 +179,27 @@ def generate_camera_launches(context):
 
 
 def generate_launch_description():
-    # Declare launch argument for config file selection
+    # Declare launch argument for mode selection
+    mode_arg = DeclareLaunchArgument(
+        'mode',
+        default_value=TextSubstitution(text='default'),
+        description='Camera configuration mode. '
+                   'Options: "calibration" (HD1080 @ 15Hz), "learning" (HD720/2 @ 30Hz), or "default" (uses config_file).'
+    )
+    
+    # Declare launch argument for config file selection (used when mode='default')
     config_file_arg = DeclareLaunchArgument(
         'config_file',
-        default_value=TextSubstitution(text='zed_cameras_config.yaml'),
-        description='Configuration file name (e.g., zed_cameras_config.yaml). '
+        default_value=TextSubstitution(text=''),
+        description='Configuration file name (e.g., zed_cameras_config_low_res.yaml). '
                    'File must be in role_ros2/config/ directory. '
+                   'Used when mode is "default" or empty. '
+                   'If mode is "calibration" or "learning", this parameter is ignored. '
                    'Note: ZED camera requires NVIDIA GPU and CUDA to run.'
     )
     
     return LaunchDescription([
+        mode_arg,
         config_file_arg,
         OpaqueFunction(function=generate_camera_launches),
     ])
