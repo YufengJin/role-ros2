@@ -438,7 +438,7 @@ class MultiCameraWrapper:
                 self._latest_sync_timestamp_dict["multi_camera_sync_ready"] = process_start_ns
                 self._latest_sync_timestamp_dict["multi_camera_sync_end"] = end_t_ns
                 self._latest_sync_timestamp_dict["multi_camera_sync_cameras_count"] = len(sync_request.cameras_ready)
-                self._latest_sync_timestamp_dict["multi_camera_sync_request_id"] = sync_request.request_id
+                self._latest_sync_timestamp_dict["multi_camera_sync_fallback"] = False  # Normal sync, not fallback
             
             # Clean up this request
             self._remove_sync_request(sync_request.request_id)

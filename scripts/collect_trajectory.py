@@ -79,8 +79,13 @@ class CollectTrajectory:
         self.randomize_reset = args.randomize_reset
         self.wait_for_controller = args.wait_for_controller
         self.save_images = args.save_images
+        self.save_depths = args.save_depths
         self.right_controller = args.right_controller
         self.horizon = None if args.horizon <= 0 else args.horizon
+        
+        # Validate: save_depths requires save_images
+        if self.save_depths and not self.save_images:
+            raise ValueError("--save-depths requires --save-images. Cannot save depth without images.")
         
         # Build save_folder: if task is provided, automatically enable saving
         if self.task_name:
@@ -161,6 +166,7 @@ class CollectTrajectory:
             self._print(f"   📂 Save folder: {self.save_folder}")
             self._print(f"   📋 Task name: {self.task_name}")
             self._print(f"   🖼️ Save images: {self.save_images}")
+            self._print(f"   📏 Save depths: {self.save_depths}")
         else:
             self._print("   ✅ Mode: Teleoperation only (no saving)")
             self._print("   ℹ️  No task specified (provide --task to enable saving)")
@@ -217,7 +223,8 @@ class CollectTrajectory:
             self._traj_writer = TrajectoryWriter(
                 self._current_traj_filepath, 
                 metadata=metadata,
-                save_images=self.save_images
+                save_images=self.save_images,
+                save_depths=self.save_depths
             )
             self._print(f"📁 Recording trajectory #{self._traj_count}...")
         else:
@@ -457,7 +464,12 @@ Examples:
     parser.add_argument(
         '--save-images',
         action='store_true',
-        help='Save images in trajectory files'
+        help='Save RGB images in trajectory files (MP4 video)'
+    )
+    parser.add_argument(
+        '--save-depths',
+        action='store_true',
+        help='Save depth images in trajectory files (PNG-in-HDF5, lossless). Requires --save-images.'
     )
     
     # Control settings

@@ -5,6 +5,7 @@ This module provides TrajectoryWriter class for saving robot trajectory data to 
 Adapted from droid.trajectory_utils.trajectory_writer.
 """
 
+import io
 import os
 import tempfile
 from collections import defaultdict
@@ -65,10 +66,10 @@ class TrajectoryWriter:
     Writer for trajectory HDF5 files.
     
     Provides asynchronous writing of trajectory timesteps to HDF5 format.
-    Optionally saves video data.
+    Optionally saves video and depth data.
     """
     
-    def __init__(self, filepath, metadata=None, exists_ok=False, save_images=True):
+    def __init__(self, filepath, metadata=None, exists_ok=False, save_images=False, save_depths=False):
         """
         Initialize trajectory writer.
         
@@ -76,16 +77,27 @@ class TrajectoryWriter:
             filepath: Path to save the HDF5 file
             metadata: Optional metadata dictionary to save
             exists_ok: If True, allow overwriting existing files
-            save_images: If True, save image data as video
+            save_images: If True, save RGB image data as MP4 video
+            save_depths: If True, save depth data as PNG-in-HDF5 (requires save_images=True)
+        
+        Note:
+            save_depths=True requires save_images=True. Depth-only saving is not supported.
         """
+        # Validate: save_depths requires save_images
+        if save_depths and not save_images:
+            raise ValueError("save_depths=True requires save_images=True. Cannot save depth without images.")
+        
         assert (not os.path.isfile(filepath)) or exists_ok
         self._filepath = filepath
         self._save_images = save_images
+        self._save_depths = save_depths
         self._hdf5_file = h5py.File(filepath, "w")
         self._queue_dict = defaultdict(Queue)
         self._video_writers = {}
         self._video_files = {}
         self._video_buffers = {}  # Track video buffers
+        self._depth_datasets = {}  # Track depth HDF5 datasets (lossless compressed)
+        self._depth_frame_counts = {}  # Track frame counts for each depth dataset
         self._open = True
 
         # Add Metadata
@@ -159,45 +171,107 @@ class TrajectoryWriter:
 
     def _update_video_files(self, timestep):
         """
-        Handle video file writing for image data.
+        Handle video file writing for image and depth data.
         
         Args:
-            timestep: Dictionary containing observation data with images
+            timestep: Dictionary containing observation data with images and/or depth
         """
-        # Check if observation has images
+        # Check if observation exists
         if "observation" not in timestep:
             return
         obs = timestep["observation"]
-        if "image" not in obs:
-            return
-            
-        image_dict = obs["image"]
 
-        for video_id in list(image_dict.keys()):
-            # Get Frame
-            img = image_dict[video_id]
-            del image_dict[video_id]
+        # Handle RGB image data (MP4 video)
+        if "image" in obs:
+            image_dict = obs["image"]
 
-            # Create Writer And Buffer
-            if video_id not in self._video_buffers:
-                filename = self.create_video_file(video_id, ".mp4")
-                self._video_writers[video_id] = imageio.get_writer(filename, macro_block_size=1)
-                self._video_buffers[video_id] = True
-                run_threaded_command(
-                    self._write_from_queue, 
-                    args=(self._video_writers[video_id].append_data, self._queue_dict[video_id])
-                )
+            for video_id in list(image_dict.keys()):
+                # Get Frame
+                img = image_dict[video_id]
+                del image_dict[video_id]
 
-            # Add Image To Queue
-            self._queue_dict[video_id].put(img)
+                # Create Writer And Buffer
+                if video_id not in self._video_buffers:
+                    filename = self.create_video_file(video_id, ".mp4")
+                    self._video_writers[video_id] = imageio.get_writer(filename, macro_block_size=1)
+                    self._video_buffers[video_id] = True
+                    run_threaded_command(
+                        self._write_from_queue, 
+                        args=(self._video_writers[video_id].append_data, self._queue_dict[video_id])
+                    )
 
-        # Remove empty image dict
-        if not image_dict:
-            del obs["image"]
+                # Add Image To Queue
+                self._queue_dict[video_id].put(img)
+
+            # Remove empty image dict
+            if not image_dict:
+                del obs["image"]
+        
+        # Handle depth data - save as PNG-in-HDF5 (lossless uint16 compression, more efficient than GZIP arrays)
+        # Only process if save_depths is enabled
+        if self._save_depths and "depth" in obs:
+            depth_dict = obs["depth"]
+
+            for depth_id in list(depth_dict.keys()):
+                # Get Frame
+                depth_img = depth_dict[depth_id]
+                del depth_dict[depth_id]
+
+                # Create HDF5 dataset path
+                dataset_key = f"depth_{depth_id}"
+
+                # Create dataset if not exists
+                if dataset_key not in self._depth_datasets:
+                    # Create group structure
+                    if "observations" not in self._hdf5_file:
+                        self._hdf5_file.create_group("observations")
+                    if "depth" not in self._hdf5_file["observations"]:
+                        self._hdf5_file["observations"].create_group("depth")
+                    
+                    # Create variable-length uint8 dataset for PNG-encoded depth images
+                    # Using vlen=np.uint8 to store binary data (supports NULL bytes)
+                    # This is more efficient than GZIP-compressed uint16 arrays
+                    dt = h5py.special_dtype(vlen=np.uint8)
+                    self._hdf5_file["observations"]["depth"].create_dataset(
+                        depth_id,
+                        shape=(1,),
+                        maxshape=(None,),
+                        dtype=dt,
+                        chunks=(1,),  # Chunk by frame
+                        compression="gzip",  # Compress the byte arrays
+                        compression_opts=4  # Compression level 1-9 (4 is balanced)
+                    )
+                    self._depth_datasets[dataset_key] = self._hdf5_file["observations"]["depth"][depth_id]
+                    self._depth_frame_counts[dataset_key] = 0
+
+                # Encode depth frame as PNG bytes (lossless uint16 compression)
+                # PNG is much more efficient than raw GZIP for uint16 depth images
+                png_bytes = io.BytesIO()
+                imageio.imwrite(png_bytes, depth_img, format='PNG', compress_level=3)
+                png_bytes.seek(0)
+                encoded_bytes = png_bytes.read()
+                
+                # Convert bytes to uint8 numpy array for HDF5 storage
+                encoded_array = np.frombuffer(encoded_bytes, dtype=np.uint8)
+
+                # Write depth frame to dataset
+                dataset = self._depth_datasets[dataset_key]
+                frame_idx = self._depth_frame_counts[dataset_key]
+                
+                # Resize dataset if needed
+                if frame_idx >= dataset.shape[0]:
+                    dataset.resize(frame_idx + 1, axis=0)
+                
+                dataset[frame_idx] = encoded_array
+                self._depth_frame_counts[dataset_key] = frame_idx + 1
+
+            # Remove empty depth dict
+            if not depth_dict:
+                del obs["depth"]
 
     def create_video_file(self, video_id, suffix):
         """Create a temporary video file for storing video data."""
-        temp_file = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+        temp_file = tempfile.NamedTemporaryFile(suffix=suffix, delete=True)
         self._video_files[video_id] = temp_file
         return temp_file.name
 

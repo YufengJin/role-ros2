@@ -5,7 +5,9 @@ This module provides TrajectoryReader class for reading saved trajectory data fr
 Adapted from droid.trajectory_utils.trajectory_reader.
 """
 
+import io
 import json
+import os
 import tempfile
 
 import h5py
@@ -24,8 +26,10 @@ def create_video_file(suffix=".mp4", byte_contents=None):
     Returns:
         Filename of the temporary file
     """
-    temp_file = tempfile.NamedTemporaryFile(suffix=suffix)
+    # Use delete=False to keep file after temp_file object is garbage collected
+    temp_file = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
     filename = temp_file.name
+    temp_file.close()  # Close the file handle so we can write to it
 
     if byte_contents is not None:
         with open(filename, "wb") as binary_file:
@@ -185,13 +189,17 @@ class TrajectoryReader:
         
         Args:
             filepath: Path to the HDF5 trajectory file
-            read_images: If True, attempt to read video data
+            read_images: If True, attempt to read video/image data
         """
         self._hdf5_file = h5py.File(filepath, "r")
         is_video_folder = "observations/videos" in self._hdf5_file
-        self._read_images = read_images and is_video_folder
+        is_depth_folder = "observations/depth" in self._hdf5_file
+        self._read_images = read_images and (is_video_folder or is_depth_folder)
+        self._has_videos = is_video_folder
+        self._has_depth = is_depth_folder
         self._length = get_hdf5_length(self._hdf5_file)
         self._video_readers = {}
+        self._temp_video_files = {}  # Track temporary video files for cleanup
         self._index = 0
         self._metadata = None  # Cache for metadata
 
@@ -247,8 +255,15 @@ class TrajectoryReader:
 
         # Load High Dimensional Data
         if self._read_images:
-            camera_obs = self._uncompress_images()
-            timestep["observations"]["image"] = camera_obs
+            image_obs, depth_obs = self._uncompress_images()
+            # Only add to timestep if data exists
+            if image_obs or depth_obs:
+                if "observations" not in timestep:
+                    timestep["observations"] = {}
+                if image_obs:
+                    timestep["observations"]["image"] = image_obs
+                if depth_obs:
+                    timestep["observations"]["depth"] = depth_obs
 
         # Increment Read Index
         self._index += 1
@@ -257,25 +272,77 @@ class TrajectoryReader:
 
     def _uncompress_images(self):
         """
-        Uncompress images from video data.
+        Read images from video files and depth from HDF5 datasets.
         
-        WARNING: This function has not been fully tested.
+        - RGB images: stored as MP4 video in observations/videos
+        - Depth images: stored as HDF5 datasets in observations/depth (lossless, uint16)
+        
+        Returns:
+            Tuple of (image_dict, depth_dict)
         """
-        video_folder = self._hdf5_file["observations/videos"]
-        camera_obs = {}
+        image_obs = {}
+        depth_obs = {}
 
-        for video_id in video_folder:
-            # Create Video Reader If One Hasn't Been Made
-            if video_id not in self._video_readers:
-                serialized_video = video_folder[video_id]
-                filename = create_video_file(byte_contents=serialized_video)
-                self._video_readers[video_id] = imageio.get_reader(filename)
+        # Read RGB images from video files
+        if self._has_videos:
+            video_folder = self._hdf5_file["observations/videos"]
+            for video_id in video_folder:
+                # Create Video Reader If One Hasn't Been Made
+                if video_id not in self._video_readers:
+                    # Read serialized video data from HDF5 dataset and convert to bytes
+                    serialized_video = bytes(video_folder[video_id][:])
+                    filename = create_video_file(suffix=".mp4", byte_contents=serialized_video)
+                    self._temp_video_files[video_id] = filename  # Track for cleanup
+                    self._video_readers[video_id] = imageio.get_reader(filename)
 
-            # Read Next Frame
-            camera_obs[video_id] = yield self._video_readers[video_id]
+                # Read Next Frame
+                frame = self._video_readers[video_id].get_data(self._index)
+                image_obs[video_id] = frame
 
-        return camera_obs
+        # Read depth images from HDF5 datasets
+        # Supports both new PNG-in-HDF5 format and legacy GZIP array format (backward compatibility)
+        if self._has_depth:
+            depth_folder = self._hdf5_file["observations/depth"]
+            for depth_id in depth_folder:
+                dataset = depth_folder[depth_id]
+                
+                # Check dataset dtype to determine format
+                # New format: variable-length uint8 array containing PNG-encoded data
+                # Legacy format: numerical dtype (uint16 array)
+                vlen_type = h5py.check_dtype(vlen=dataset.dtype)
+                if vlen_type is not None:
+                    # New format: PNG-encoded as vlen uint8 array
+                    png_uint8_array = dataset[self._index]
+                    # Convert uint8 numpy array back to bytes
+                    if isinstance(png_uint8_array, np.ndarray):
+                        png_bytes = png_uint8_array.tobytes()
+                    elif isinstance(png_uint8_array, bytes):
+                        png_bytes = png_uint8_array
+                    else:
+                        # Fallback: try to convert to bytes
+                        png_bytes = bytes(png_uint8_array)
+                    # Decode PNG bytes back to uint16 numpy array
+                    depth_obs[depth_id] = imageio.imread(io.BytesIO(png_bytes))
+                else:
+                    # Legacy format: direct numerical array (backward compatibility)
+                    depth_obs[depth_id] = dataset[self._index]
+
+        return image_obs, depth_obs
 
     def close(self):
-        """Close the trajectory file."""
+        """Close the trajectory file and clean up temporary files."""
+        # Close video readers
+        for video_id, reader in self._video_readers.items():
+            try:
+                reader.close()
+            except Exception:
+                pass
+        
+        # Clean up temporary video files
+        for video_id, filename in self._temp_video_files.items():
+            try:
+                os.unlink(filename)
+            except Exception:
+                pass
+        
         self._hdf5_file.close()

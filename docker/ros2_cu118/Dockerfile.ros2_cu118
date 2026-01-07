@@ -280,7 +280,9 @@ RUN python3 -c "import numpy; print(f'✓ NumPy version: {numpy.__version__}')" 
 
 # --- 11. Setup ROS2 environment in bashrc ---
 RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc && \
-    echo "if [ -f /app/ros2_ws/install/setup.bash ]; then source /app/ros2_ws/install/setup.bash; fi" >> /root/.bashrc
+    echo "if [ -f /app/ros2_ws/install/setup.bash ]; then source /app/ros2_ws/install/setup.bash; fi" >> /root/.bashrc && \
+    # Set custom PS1 prompt to distinguish this container
+    echo "export PS1='[ros2_cu118]\\u@\\h:\\w\\$ '" >> /root/.bashrc
 
 # --- 12. Install ROS2 tf tree visualization tools (at the end to reduce build time) ---
 RUN apt-get update && apt-get install -y --no-install-recommends \

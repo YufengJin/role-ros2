@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+import cv2
 import rclpy
 from rclpy.node import Node
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -51,7 +52,9 @@ class FakeCameraPublisher(Node):
         base_frame: str = "base_link",
         camera_frame: Optional[str] = None,
         random_pose: bool = True,
-        empty_image: bool = False
+        empty_image: bool = False,
+        rgb_image_path: Optional[str] = None,
+        depth_image_path: Optional[str] = None
     ):
         """
         Initialize fake camera publisher.
@@ -70,6 +73,8 @@ class FakeCameraPublisher(Node):
             camera_frame: Camera frame name for TF transform (default: None, uses camera_id)
             random_pose: Whether to use random pose for static transform (default: True)
             empty_image: If True, publish empty images (default: False)
+            rgb_image_path: Path to RGB image file (default: None, uses random noise)
+            depth_image_path: Path to depth image file (default: None, uses random noise)
         """
         super().__init__(f'fake_camera_publisher_{camera_id}')
         
@@ -82,6 +87,8 @@ class FakeCameraPublisher(Node):
         self.base_frame = base_frame
         self.camera_frame = camera_frame or f"{camera_id}_camera_frame_optical"
         self.empty_image = empty_image
+        self.rgb_image_path = rgb_image_path
+        self.depth_image_path = depth_image_path
         
         # Frame counter for tracking
         self.frame_counter = 0
@@ -97,11 +104,19 @@ class FakeCameraPublisher(Node):
         self._frame_counter_lock = threading.Lock()
         
         # Pre-allocate and pre-generate image data
-        # Generate random noise images once during initialization
+        # Load images from files if provided, otherwise generate random noise
         if self.empty_image:
             # Empty images (zeros)
             rgb_img = np.zeros((self.image_height, self.image_width, 3), dtype=np.uint8)
             depth_img = np.zeros((self.image_height, self.image_width), dtype=np.uint16)
+        elif self.rgb_image_path or self.depth_image_path:
+            # Load images from files
+            rgb_img, depth_img = self._load_images_from_files()
+            # Update image dimensions based on loaded images
+            if rgb_img is not None:
+                self.image_height, self.image_width = rgb_img.shape[:2]
+            elif depth_img is not None:
+                self.image_height, self.image_width = depth_img.shape[:2]
         else:
             # Generate static random noise images
             # Use deterministic seed based on camera_id for reproducibility
@@ -151,6 +166,7 @@ class FakeCameraPublisher(Node):
         if random_pose:
             self._generate_and_publish_static_transform()
         
+        image_source = "files" if (self.rgb_image_path or self.depth_image_path) else ("empty" if self.empty_image else "random noise")
         self.get_logger().info(
             f"Fake camera publisher initialized for {camera_id}:\n"
             f"  RGB topic: {rgb_topic}\n"
@@ -158,14 +174,97 @@ class FakeCameraPublisher(Node):
             f"  Camera info topic: {camera_info_topic}\n"
             f"  Publish rate: {publish_rate} Hz\n"
             f"  Delay: {delay_ms} ms\n"
-            f"  Image size: {image_width}x{image_height}\n"
+            f"  Image size: {self.image_width}x{self.image_height}\n"
             f"  Use sim time: {use_sim_time}\n"
             f"  Base frame: {base_frame}\n"
             f"  Camera frame: {self.camera_frame}\n"
             f"  Random pose: {random_pose}\n"
-            f"  Empty image mode: {empty_image}\n"
-            f"  Strategy: Static noise (pre-generated and pre-serialized)"
+            f"  Image source: {image_source}\n"
+            f"  RGB image path: {self.rgb_image_path or 'N/A'}\n"
+            f"  Depth image path: {self.depth_image_path or 'N/A'}\n"
+            f"  Strategy: Static images (pre-loaded and pre-serialized)"
         )
+    
+    def _load_images_from_files(self):
+        """
+        Load RGB and depth images from files.
+        
+        Returns:
+            tuple: (rgb_img, depth_img) as numpy arrays
+        """
+        rgb_img = None
+        depth_img = None
+        
+        # Load RGB image
+        if self.rgb_image_path:
+            rgb_path = Path(self.rgb_image_path)
+            if not rgb_path.exists():
+                self.get_logger().warn(f"RGB image file not found: {self.rgb_image_path}, using random noise")
+            else:
+                try:
+                    # Load RGB image using OpenCV (BGR format)
+                    rgb_img = cv2.imread(str(rgb_path), cv2.IMREAD_COLOR)
+                    if rgb_img is None:
+                        self.get_logger().warn(f"Failed to load RGB image: {self.rgb_image_path}, using random noise")
+                    else:
+                        # Ensure BGR format (3 channels)
+                        if len(rgb_img.shape) == 2:
+                            rgb_img = cv2.cvtColor(rgb_img, cv2.COLOR_GRAY2BGR)
+                        elif rgb_img.shape[2] == 4:
+                            rgb_img = cv2.cvtColor(rgb_img, cv2.COLOR_BGRA2BGR)
+                        elif rgb_img.shape[2] == 1:
+                            rgb_img = cv2.cvtColor(rgb_img, cv2.COLOR_GRAY2BGR)
+                        self.get_logger().info(f"Loaded RGB image: {self.rgb_image_path}, shape: {rgb_img.shape}")
+                except Exception as e:
+                    self.get_logger().error(f"Error loading RGB image: {e}, using random noise")
+        
+        # Load depth image
+        if self.depth_image_path:
+            depth_path = Path(self.depth_image_path)
+            if not depth_path.exists():
+                self.get_logger().warn(f"Depth image file not found: {self.depth_image_path}, using random noise")
+            else:
+                try:
+                    # Load depth image (can be 16-bit PNG or grayscale)
+                    depth_img = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED)
+                    if depth_img is None:
+                        self.get_logger().warn(f"Failed to load depth image: {self.depth_image_path}, using random noise")
+                    else:
+                        # Convert to uint16 if needed
+                        if depth_img.dtype != np.uint16:
+                            # If 8-bit, scale to 16-bit range (0-65535)
+                            if depth_img.dtype == np.uint8:
+                                depth_img = (depth_img.astype(np.float32) * 65535.0 / 255.0).astype(np.uint16)
+                            else:
+                                # For float images, assume range [0, 1] and scale to [0, 65535]
+                                depth_img = (np.clip(depth_img, 0, 1) * 65535.0).astype(np.uint16)
+                        
+                        # Ensure single channel
+                        if len(depth_img.shape) == 3:
+                            # Take first channel if multi-channel
+                            depth_img = depth_img[:, :, 0]
+                        
+                        self.get_logger().info(f"Loaded depth image: {self.depth_image_path}, shape: {depth_img.shape}, dtype: {depth_img.dtype}")
+                except Exception as e:
+                    self.get_logger().error(f"Error loading depth image: {e}, using random noise")
+        
+        # If RGB not loaded, generate random noise
+        if rgb_img is None:
+            rng = np.random.default_rng(hash(self.camera_id) % (2**32))
+            rgb_img = rng.integers(0, 256, size=(self.image_height, self.image_width, 3), dtype=np.uint8)
+        
+        # If depth not loaded, generate random noise
+        if depth_img is None:
+            rng = np.random.default_rng(hash(self.camera_id) % (2**32))
+            depth_img = rng.integers(500, 1500, size=(self.image_height, self.image_width), dtype=np.uint16)
+        
+        # Resize images to match specified dimensions if needed
+        if rgb_img.shape[:2] != (self.image_height, self.image_width):
+            rgb_img = cv2.resize(rgb_img, (self.image_width, self.image_height), interpolation=cv2.INTER_LINEAR)
+        if depth_img.shape != (self.image_height, self.image_width):
+            depth_img = cv2.resize(depth_img, (self.image_width, self.image_height), interpolation=cv2.INTER_NEAREST)
+        
+        return rgb_img, depth_img
     
     def _generate_and_publish_static_transform(self):
         """
@@ -379,8 +478,26 @@ def main():
                        help='Disable random pose for static transform')
     parser.add_argument('--empty-image', action='store_true',
                        help='Publish empty images (zeros) instead of random noise')
+    parser.add_argument('--rgb-image', type=str, default=None,
+                       help='Path to RGB image file (default: None, uses random noise)')
+    parser.add_argument('--depth-image', type=str, default=None,
+                       help='Path to depth image file (default: None, uses random noise)')
+    parser.add_argument('--image-dir', type=str, default=None,
+                       help='Directory containing color.png and depth.png (default: None)')
     
     args = parser.parse_args()
+    
+    # If image-dir is provided, use it to set rgb-image and depth-image
+    if args.image_dir:
+        image_dir = Path(args.image_dir)
+        if not args.rgb_image:
+            rgb_path = image_dir / "color.png"
+            if rgb_path.exists():
+                args.rgb_image = str(rgb_path)
+        if not args.depth_image:
+            depth_path = image_dir / "depth.png"
+            if depth_path.exists():
+                args.depth_image = str(depth_path)
     
     rclpy.init()
     
@@ -421,6 +538,10 @@ def main():
             base_frame = camera_config.get("base_frame", config_data.get("base_frame", "base_link"))
             camera_frame = camera_config.get("camera_frame")
             
+            # Get image paths from config or command line args
+            rgb_image_path = camera_config.get("rgb_image_path", args.rgb_image)
+            depth_image_path = camera_config.get("depth_image_path", args.depth_image)
+            
             publisher = FakeCameraPublisher(
                 camera_id=camera_id,
                 rgb_topic=rgb_topic,
@@ -434,7 +555,9 @@ def main():
                 base_frame=base_frame,
                 camera_frame=camera_frame,
                 random_pose=args.random_pose,
-                empty_image=args.empty_image
+                empty_image=args.empty_image,
+                rgb_image_path=rgb_image_path,
+                depth_image_path=depth_image_path
             )
             publishers.append(publisher)
         
@@ -448,7 +571,10 @@ def main():
         print(f"   Default image size: {args.image_width}x{args.image_height}")
         print(f"   Use sim time: {args.use_sim_time}")
         print(f"   Empty image mode: {args.empty_image}")
-        print(f"   Strategy: Static noise (pre-generated and pre-serialized)")
+        if args.rgb_image or args.depth_image:
+            print(f"   RGB image: {args.rgb_image or 'N/A'}")
+            print(f"   Depth image: {args.depth_image or 'N/A'}")
+        print(f"   Strategy: Static images (pre-loaded and pre-serialized)")
         print("\nCamera configurations:")
         for publisher in publishers:
             print(f"   - {publisher.camera_id}: {publisher.publish_rate} Hz")

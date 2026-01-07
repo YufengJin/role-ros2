@@ -52,10 +52,18 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 # Install latest CMake version
-RUN wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | \
-    gpg --dearmor - | tee /etc/apt/trusted.gpg.d/kitware.gpg >/dev/null && \
-    apt-add-repository 'deb https://apt.kitware.com/ubuntu/ focal main' && \
+# Note: Kitware GPG key is rotated periodically, use the new keyring method
+RUN apt-get update && \
+    apt-get install -y ca-certificates gpg wget && \
+    # Download and install the new Kitware signing key
+    wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | \
+    gpg --dearmor - | tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null && \
+    # Add Kitware repository with signed-by option (new method)
+    echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ focal main' | \
+    tee /etc/apt/sources.list.d/kitware.list >/dev/null && \
     apt-get update && \
+    # Install kitware-archive-keyring to keep key updated
+    apt-get install -y kitware-archive-keyring && \
     apt-get install -y cmake && \
     rm -rf /var/lib/apt/lists/*
 
@@ -86,7 +94,9 @@ RUN apt-get update && \
 
 # Setup ROS2 environment in bashrc
 RUN echo "source /opt/ros/foxy/setup.bash" >> /root/.bashrc && \
-    echo "if [ -f /app/ros2_ws/install/setup.bash ]; then source /app/ros2_ws/install/setup.bash; fi" >> /root/.bashrc
+    echo "if [ -f /app/ros2_ws/install/setup.bash ]; then source /app/ros2_ws/install/setup.bash; fi" >> /root/.bashrc && \
+    # Set custom PS1 prompt to distinguish this container
+    echo "export PS1='[ros2_polymetis]\\u@\\h:\\w\\$ '" >> /root/.bashrc
 
 # ============================================================================
 # Install Polymetis Build Dependencies (matching environment.yml versions)
