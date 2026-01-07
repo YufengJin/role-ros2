@@ -36,8 +36,19 @@ def write_dict_to_hdf5(hdf5_file, data_dict, keys_to_ignore=["image", "depth", "
 
         # Examine Data
         curr_data = data_dict[key]
+        
+        # Skip None values - HDF5 does not support NoneType
+        if curr_data is None:
+            continue
+        
+        # Convert list to numpy array if needed
         if type(curr_data) == list:
             curr_data = np.array(curr_data)
+            # Check if resulting array has object dtype (contains non-numeric data)
+            # Object dtype arrays cannot be saved to HDF5, skip this key
+            if curr_data.dtype == object:
+                continue
+        
         dtype = type(curr_data)
 
         # Unwrap If Dictionary
@@ -51,9 +62,32 @@ def write_dict_to_hdf5(hdf5_file, data_dict, keys_to_ignore=["image", "depth", "
         if key not in hdf5_file:
             if dtype != np.ndarray:
                 dshape = ()
+                # Use numpy dtype conversion for scalar types
+                if dtype == int:
+                    hdf5_dtype = np.int64
+                elif dtype == float:
+                    hdf5_dtype = np.float64
+                elif dtype == bool:
+                    hdf5_dtype = np.bool_
+                else:
+                    # For other scalar types, try to convert to numpy array first
+                    try:
+                        curr_data = np.array(curr_data)
+                        if curr_data.dtype == object:
+                            # Cannot save object dtype, skip
+                            continue
+                        hdf5_dtype = curr_data.dtype
+                        dshape = curr_data.shape
+                    except (TypeError, ValueError):
+                        # Cannot convert, skip this key
+                        continue
             else:
-                dtype, dshape = curr_data.dtype, curr_data.shape
-            hdf5_file.create_dataset(key, (1, *dshape), maxshape=(None, *dshape), dtype=dtype)
+                hdf5_dtype, dshape = curr_data.dtype, curr_data.shape
+                # Double-check: skip object dtype arrays
+                if hdf5_dtype == object:
+                    continue
+            
+            hdf5_file.create_dataset(key, (1, *dshape), maxshape=(None, *dshape), dtype=hdf5_dtype)
         else:
             hdf5_file[key].resize(hdf5_file[key].shape[0] + 1, axis=0)
 

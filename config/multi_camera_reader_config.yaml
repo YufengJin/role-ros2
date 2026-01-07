@@ -31,8 +31,8 @@ cameras:
     rgb_topic: "/hand_camera/zed_node/rgb/image_rect_color"
     depth_topic: "/hand_camera/zed_node/depth/depth_registered"
     camera_info_topic: "/hand_camera/zed_node/rgb/camera_info"
-    camera_frame: "hand_camera_left_camera_frame_optical"  # Optional: for TF lookup
-    camera_base_frame: "hand_camera_left_camera_frame"
+    camera_frame: "hand_camera_left_camera_optical_frame"  # Optional: for TF lookup
+    camera_base_frame: "hand_camera_camera_link"
     camera_base_parent_frame: "fr3_panda_link8"  # parent frame of camera_base_frame for calibration
     base_frame: "base_link"  # Optional: overrides global base_frame
     queue_size: 10  # Optional: queue size for TimeSynchronizer
@@ -42,8 +42,8 @@ cameras:
     rgb_topic: "/static_camera/zed_node/rgb/image_rect_color"
     depth_topic: "/static_camera/zed_node/depth/depth_registered"
     camera_info_topic: "/static_camera/zed_node/rgb/camera_info"
-    camera_frame: "static_camera_left_camera_frame_optical"  # Optional: for TF lookup
-    camera_base_frame: "static_camera_left_camera_frame"
+    camera_frame: "static_camera_left_camera_optical_frame"  # Optional: for TF lookup
+    camera_base_frame: "static_camera_camera_link"
     camera_base_parent_frame: "base_link"   # parent frame of camera_base_frame for calibration
     base_frame: "base_link"  # Optional: overrides global base_frame
     queue_size: 10  # Optional: queue size for TimeSynchronizer

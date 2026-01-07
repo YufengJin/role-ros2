@@ -699,6 +699,99 @@ class PolymetisCombinedNode(Node):
     - Converts ROS messages to PyTorch tensors for Polymetis API
     """
     
+    def _init_gripper_interface_with_retry(self, ip_address: str, max_retries: int = 10, retry_delay: float = 0.5):
+        """
+        Initialize GripperInterface with retry mechanism to handle metadata initialization race condition.
+        
+        Problem: When GripperInterface.__init__() is called, it immediately tries to get metadata
+        via GetRobotClientMetadata(). However, the gripper server's metadata may not be initialized yet
+        (franka_hand_client hasn't called InitRobotClient), causing:
+        1. gRPC serialization error (TypeError) when server returns None
+        2. Metadata unavailable warning
+        
+        Solution: Retry initialization with exponential backoff until metadata is available or max retries reached.
+        
+        Args:
+            ip_address: IP address of the gripper server
+            max_retries: Maximum number of retry attempts
+            retry_delay: Initial delay between retries in seconds
+        
+        Returns:
+            GripperInterface: Initialized gripper interface, or None if all retries failed
+        """
+        import grpc
+        
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    # Only log retry attempts at INFO level to show retry mechanism is working
+                    self.get_logger().info(
+                        f"Initializing GripperInterface (attempt {attempt + 1}/{max_retries})..."
+                    )
+                gripper = GripperInterface(ip_address=ip_address)
+                
+                # Check if metadata was successfully retrieved
+                if hasattr(gripper, 'metadata') and gripper.metadata is not None:
+                    self.get_logger().info(
+                        f"✓ GripperInterface initialized successfully with metadata "
+                        f"(max_width={gripper.metadata.max_width})"
+                    )
+                    return gripper
+                else:
+                    # Metadata not available yet, set default and continue
+                    self.get_logger().info(
+                        f"GripperInterface created but metadata not available yet (attempt {attempt + 1})"
+                    )
+                    # Set default metadata to avoid None errors
+                    try:
+                        import polymetis_pb2
+                        default_metadata = polymetis_pb2.GripperMetadata()
+                        default_metadata.polymetis_version = "0.2"
+                        default_metadata.hz = 50
+                        default_metadata.max_width = 0.08  # Default for Franka Hand
+                        gripper.metadata = default_metadata
+                        self.get_logger().info(
+                            "Set default gripper metadata (server metadata not available yet, will retry later)"
+                        )
+                        # Return it but we'll try to get real metadata later
+                        return gripper
+                    except ImportError as e:
+                        self.get_logger().warn(f"Could not import polymetis_pb2: {e}")
+                        if attempt < max_retries - 1:
+                            time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+                            continue
+                        return None
+                
+            except (grpc.RpcError, TypeError) as e:
+                # Catch both gRPC errors and serialization errors
+                error_type = type(e).__name__
+                if attempt < max_retries - 1:
+                    wait_time = retry_delay * (attempt + 1)  # Exponential backoff
+                    # Log at INFO level to show retry mechanism is working
+                    self.get_logger().info(
+                        f"GripperInterface initialization failed ({error_type}): {str(e)[:100]}. "
+                        f"Retrying in {wait_time:.1f}s... (attempt {attempt + 1}/{max_retries})"
+                    )
+                    time.sleep(wait_time)
+                else:
+                    self.get_logger().warn(
+                        f"GripperInterface initialization failed after {max_retries} attempts: {e}"
+                    )
+            except Exception as e:
+                # Other unexpected errors
+                self.get_logger().error(f"Unexpected error initializing GripperInterface: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay * (attempt + 1))
+                else:
+                    return None
+        
+        # All retries exhausted
+        self.get_logger().error(
+            f"Failed to initialize GripperInterface after {max_retries} attempts. "
+            "Gripper functionality will be limited."
+        )
+        return None
+    
     def __init__(self, use_mock: bool = False, ip_address: str = "localhost"):
         """
         Initialize the Polymetis Combined Node.
@@ -782,24 +875,63 @@ class PolymetisCombinedNode(Node):
                     self.get_logger().info("Waiting for Polymetis servers to initialize...")
                     time.sleep(5)
                 self._robot = RobotInterface(ip_address=ip_address)
-                self._gripper = GripperInterface(ip_address=ip_address)
                 
-                # Handle case where gripper server returns None metadata (prevents gRPC serialization errors)
-                # This happens when GetRobotClientMetadata is called before InitRobotClient
-                # We set a default metadata object to avoid None serialization errors
-                if not hasattr(self._gripper, 'metadata') or self._gripper.metadata is None:
-                    try:
-                        # Import polymetis_pb2 (same import path as GripperInterface uses)
-                        import polymetis_pb2
-                        default_metadata = polymetis_pb2.GripperMetadata()
-                        default_metadata.polymetis_version = "0.2"
-                        default_metadata.hz = 50
-                        default_metadata.max_width = 0.08  # Default for Franka Hand
-                        self._gripper.metadata = default_metadata
-                        self.get_logger().info("Set default gripper metadata (server metadata not available yet)")
-                    except ImportError as e:
-                        self.get_logger().warn(f"Could not import polymetis_pb2 to set default metadata: {e}")
-                        # Metadata will be handled in fallback code below
+                # Initialize gripper with retry mechanism to handle metadata race condition
+                # This avoids gRPC serialization errors when server metadata is not yet initialized
+                self._gripper = self._init_gripper_interface_with_retry(
+                    ip_address=ip_address,
+                    max_retries=10,
+                    retry_delay=0.5
+                )
+                
+                # Fallback to MockGripperInterface if initialization failed
+                if self._gripper is None:
+                    self.get_logger().warn(
+                        "Failed to initialize real GripperInterface. Using MockGripperInterface."
+                    )
+                    self._gripper = MockGripperInterface(update_rate=self.publish_rate)
+                else:
+                    # Try to refresh metadata if we got default metadata initially
+                    # This happens in a background thread to not block initialization
+                    def refresh_metadata():
+                        """Try to get real metadata from server after client initializes."""
+                        max_attempts = 20
+                        for attempt in range(max_attempts):
+                            try:
+                                time.sleep(1.0)  # Wait for client to initialize
+                                # Try to get metadata directly via gRPC
+                                import grpc
+                                import polymetis_pb2
+                                from polymetis_pb2_grpc import GripperServerStub
+                                
+                                channel = grpc.insecure_channel(f"{ip_address}:50052")
+                                stub = GripperServerStub(channel)
+                                
+                                try:
+                                    metadata = stub.GetRobotClientMetadata(polymetis_pb2.Empty())
+                                    if metadata is not None:
+                                        self._gripper.metadata = metadata
+                                        self.get_logger().info(
+                                            f"✓ Updated gripper metadata from server "
+                                            f"(max_width={metadata.max_width})"
+                                        )
+                                        channel.close()
+                                        return
+                                except grpc.RpcError:
+                                    # Metadata still not available, continue waiting
+                                    pass
+                                
+                                channel.close()
+                                
+                            except Exception as e:
+                                self.get_logger().debug(f"Metadata refresh attempt {attempt + 1} failed: {e}")
+                        
+                        self.get_logger().debug(
+                            "Could not refresh metadata from server, using default values"
+                        )
+                    
+                    # Start metadata refresh in background thread
+                    threading.Thread(target=refresh_metadata, daemon=True).start()
                 
                 self.get_logger().info("Successfully connected to Polymetis server")
         except Exception as e:
