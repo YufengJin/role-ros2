@@ -1,13 +1,14 @@
 # Scripts Documentation
 
-This directory contains Python scripts for robot trajectory collection and replay.
+This directory contains Python scripts for robot trajectory collection, replay, and camera calibration.
 
 ## Overview
 
 - **`collect_trajectory.py`**: Collect robot trajectories using VR controller (Oculus Quest)
 - **`replay_trajectory.py`**: Replay saved robot trajectories from HDF5 files
+- **`calibrate_camera.py`**: Perform hand-eye calibration for cameras using Charuco board
 
-Both scripts are pure Python scripts (not ROS2 nodes) that use `RobotEnv` internally for robot control.
+All scripts are pure Python scripts (not ROS2 nodes) that use `RobotEnv` internally for robot control.
 
 ---
 
@@ -258,6 +259,203 @@ python3 replay_trajectory.py \
 
 ---
 
+## 📷 calibrate_camera.py
+
+### Description
+
+Perform hand-eye calibration for cameras using a Charuco board. The script supports two calibration modes:
+
+1. **Hand Camera Calibration** (`--mode hand`): Calibrate hand-mounted camera (camera → gripper link)
+2. **Third-Person Camera Calibration** (`--mode third`): Calibrate static camera (camera → base_link)
+
+The calibration process:
+1. Resets robot to home position
+2. Waits for user to position robot facing Charuco board using VR controller
+3. Automatically executes calibration trajectory while collecting images
+4. Evaluates calibration accuracy
+5. Publishes static TF transform and saves results to YAML file
+
+### Features
+
+- Automatic calibration trajectory execution
+- Real-time Charuco board detection visualization
+- Calibration accuracy evaluation (linear and rotation error)
+- Static TF transform publishing
+- Results saved to YAML configuration file
+- Support for recalibration if accuracy is insufficient
+
+### Prerequisites
+
+- ROS2 environment initialized
+- Oculus Quest controller connected and configured
+- Robot hardware (Franka Panda) connected via Polymetis
+- Camera driver running (ZED cameras)
+- `polymetis_bridge_node` running
+- `oculus_reader_node` running
+- Charuco board (9x14, checker size: 0.0285m, marker size: 0.0215m)
+- Camera configuration in `config/multi_camera_reader_config.yaml` with:
+  - `camera_frame`: Camera optical frame name
+  - `camera_base_frame`: Camera base frame name
+  - `camera_base_parent_frame`: Parent frame for calibration (e.g., `base_link` or `fr3_panda_link8`)
+
+### Usage
+
+#### Basic Usage
+
+```bash
+# Calibrate static camera
+python3 calibrate_camera.py --camera_id 24285872 --mode third
+
+# Calibrate hand camera
+python3 calibrate_camera.py --camera_id 11022812 --mode hand
+```
+
+#### With Options
+
+```bash
+python3 calibrate_camera.py \
+    --camera_id 24285872 \
+    --mode third \
+    --output ../config/calibration_results.yaml \
+    --step_size 0.01 \
+    --pause_time 0.5 \
+    --image_freq 10 \
+    --right-controller
+```
+
+### Arguments
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--camera_id` | str | **Required** | Camera identifier (serial number) |
+| `--mode` | str | **Required** | Calibration mode: `hand` or `third` |
+| `--output` | str | `../config/calibration_results.yaml` | Output file path for calibration results |
+| `--step_size` | float | `0.01` | Trajectory step size (smaller = more samples) |
+| `--pause_time` | float | `0.5` | Pause time before capturing image (seconds) |
+| `--image_freq` | int | `10` | Take image every N steps |
+| `--right-controller` | flag | `True` | Use right VR controller (default) |
+| `--left-controller` | flag | - | Use left VR controller |
+
+### Control Instructions
+
+| Action | Description |
+|--------|-------------|
+| **Hold GRIP button** | Enable robot movement (during positioning phase) |
+| **Long press A/X** (0.5s) | **START**: Begin calibration trajectory |
+| **Long press A/X** (0.5s) | **ACCEPT**: Accept calibration, publish TF, save results |
+| **Long press B/Y** (0.5s) | **REJECT**: Reject calibration, reset robot, recalibrate |
+| **Ctrl+C** | Exit program |
+
+### Workflow
+
+1. **Initialization**:
+   - Load camera configuration from `multi_camera_reader_config.yaml`
+   - Initialize `RobotEnv` and `VRPolicy` (controller)
+   - Get camera intrinsics
+   - Lookup fixed TF transform (camera_base_frame → camera_frame)
+
+2. **Positioning Phase**:
+   - Reset robot to home position
+   - User moves robot with VR controller to face Charuco board
+   - Press A/X (long press) to start calibration
+
+3. **Calibration Trajectory**:
+   - Robot automatically moves through predefined trajectory
+   - Images captured at regular intervals
+   - Charuco board detection visualized in real-time
+   - Progress displayed (percentage and sample count)
+
+4. **Evaluation**:
+   - Calibration accuracy checked (linear and rotation error)
+   - Transformation computed (camera_base_frame → camera_base_parent_frame)
+   - Results displayed
+
+5. **User Decision**:
+   - **ACCEPT** (A/X): Publish static TF, save to YAML file
+   - **REJECT** (B/Y): Reset robot, return to positioning phase
+
+### Output
+
+Calibration results are saved to YAML file with the following structure:
+
+```yaml
+cameras:
+- camera_id: "24285872"
+  rgb_topic: "/static_camera/zed_node/rgb/image_rect_color"
+  child_frame: "static_camera_left_camera_frame"
+  parent_frame: "base_link"
+  transform:
+    x: 0.1234
+    y: -0.5678
+    z: 0.9012
+    rx: 0.0123
+    ry: -0.0456
+    rz: 0.0789
+- camera_id: "11022812"
+  rgb_topic: "/hand_camera/zed_node/rgb/image_rect_color"
+  child_frame: "hand_camera_left_camera_frame"
+  parent_frame: "fr3_panda_link8"
+  transform:
+    x: 0.0
+    y: 0.0
+    z: 0.0
+    rx: 0.0
+    ry: 0.0
+    rz: 0.0
+```
+
+The script also publishes a static TF transform using `ros2 run tf2_ros static_transform_publisher`.
+
+### Transform Computation
+
+The calibration process computes the transform chain:
+
+1. **Calibrator output**: `T_optical_to_parent` (camera_frame → camera_base_parent_frame)
+2. **TF lookup**: `T_base_to_optical` (camera_base_frame → camera_frame) [fixed, queried once]
+3. **Final result**: `T_base_to_parent = T_optical_to_parent @ T_base_to_optical`
+
+The final transform (`T_base_to_parent`) is published as static TF and saved to the YAML file.
+
+### Examples
+
+#### Example 1: Calibrate Static Camera
+
+```bash
+python3 calibrate_camera.py \
+    --camera_id 24285872 \
+    --mode third
+```
+
+#### Example 2: Calibrate Hand Camera with Custom Parameters
+
+```bash
+python3 calibrate_camera.py \
+    --camera_id 11022812 \
+    --mode hand \
+    --step_size 0.005 \
+    --image_freq 5 \
+    --pause_time 0.3
+```
+
+#### Example 3: Custom Output Path
+
+```bash
+python3 calibrate_camera.py \
+    --camera_id 24285872 \
+    --mode third \
+    --output /path/to/my_calibration_results.yaml
+```
+
+### Tips for Best Results
+
+1. **Lighting**: Ensure good, even lighting on the Charuco board
+2. **Distance**: Position camera about 1 foot away from the board
+3. **Visibility**: Make sure the entire board is visible in the camera frame
+4. **Stability**: Keep the board flat and stable during calibration
+5. **Multiple Attempts**: If accuracy check fails, try recalibrating with better positioning
+
+---
+
 ## 🔧 Common Issues
 
 ### collect_trajectory.py
@@ -302,6 +500,48 @@ python3 replay_trajectory.py --filepath $(pwd)/trajectory.h5
 - Check robot workspace limits
 - Verify trajectory file is valid
 - Check robot connection status
+
+### calibrate_camera.py
+
+#### Issue: Camera not found in config
+
+**Solution**: Ensure camera is configured in `config/multi_camera_reader_config.yaml` with:
+- `camera_id`: Matching the `--camera_id` argument
+- `camera_frame`: Camera optical frame name
+- `camera_base_frame`: Camera base frame name
+- `camera_base_parent_frame`: Parent frame for calibration
+
+#### Issue: TF lookup failed
+
+**Solution**: 
+- Ensure camera driver is running and publishing TF transforms
+- Check that `camera_base_frame` and `camera_frame` are correct in config
+- Verify TF tree: `ros2 run tf2_tools view_frames`
+
+#### Issue: No Charuco board detected
+
+**Solution**:
+- Ensure Charuco board is fully visible in camera frame
+- Check lighting conditions (improve if too dark or too bright)
+- Verify board is flat and not warped
+- Move camera closer to board (about 1 foot away)
+
+#### Issue: Calibration accuracy check failed
+
+**Solution**:
+- Recalibrate with better lighting
+- Ensure board remains stable during trajectory
+- Try adjusting `--step_size` (smaller = more samples)
+- Increase `--pause_time` to allow camera to stabilize
+- Make sure board is well-positioned at start
+
+#### Issue: Camera intrinsics not available
+
+**Solution**:
+- Ensure camera driver is running
+- Check that `camera_info_topic` is publishing
+- Verify camera is publishing on expected topics
+- Wait a few seconds after starting camera driver
 
 ---
 
@@ -350,15 +590,20 @@ Where `N` is the number of timesteps in the trajectory.
 - `role_ros2/controllers/oculus_controller.py`: VR controller implementation
 - `role_ros2/trajectory_utils/trajectory_reader.py`: Trajectory reading utilities
 - `role_ros2/trajectory_utils/trajectory_writer.py`: Trajectory writing utilities
+- `role_ros2/calibration/calibration_utils.py`: Camera calibration utilities
+- `role_ros2/calibration/config.py`: Calibration configuration parameters
+- `config/multi_camera_reader_config.yaml`: Camera configuration file
 
 ---
 
 ## 📝 Notes
 
-- Both scripts use `RobotEnv`'s internal `MultiThreadedExecutor` for ROS2 message processing
+- All scripts use `RobotEnv`'s internal `MultiThreadedExecutor` for ROS2 message processing
 - The main thread only handles control loop timing and user interaction
 - All timestamps use ROS nanoseconds for consistency
 - Trajectory files are compatible with the DROID dataset format
+- Camera calibration uses Charuco board (9x14 grid, DICT_5X5_100)
+- Static TF transforms published by `calibrate_camera.py` persist until the process exits
 
 ---
 
