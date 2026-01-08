@@ -37,7 +37,6 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PolymetisRobotCommand.msg"
   "msg/PolymetisRobotState.msg"
   "msg/PolymetisGripperState.msg"
-  "msg/PolymetisCommand.msg"
   "msg/GripperCommand.msg"
   "msg/ControllerStatus.msg"
   "msg/VRPolicyAction.msg"

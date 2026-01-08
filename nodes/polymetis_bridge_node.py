@@ -11,11 +11,21 @@ Features:
   - /polymetis/robot_state: Comprehensive robot state (similar to robot.py get_robot_state())
   - /polymetis/gripper_state: Gripper state information
 - Subscribers:
-  - /polymetis_cmd: Low-level impedance control (position, velocity, torque, Kp, Kd)
-  - /polymetis/robot_command: High-level control commands (cartesian/joint position/velocity)
+  - /polymetis/robot_command: High-level arm control commands (joint positions from FrankaRobot)
+  - /polymetis/gripper/command: Gripper control commands
+- Services:
+  - /polymetis/reset: Reset robot to home position
+  - /polymetis/arm/move_to_joint_positions: Blocking joint position control
+  - /polymetis/arm/move_to_ee_pose: Blocking end-effector pose control
+  - And more for controller management and computation
 - Mock interfaces for testing without hardware
 - Proper PyTorch tensor conversion for Polymetis API
-- IK solver integration for high-level control
+
+Design:
+- FrankaRobot (robot.py) handles all IK computations via create_action_dict()
+- FrankaRobot calls update_joints() and update_gripper() separately
+- This node only receives and executes joint position commands (no IK)
+- Gripper is handled separately via /polymetis/gripper/command topic
 
 Author: Role-ROS2 Team
 """
@@ -56,7 +66,7 @@ except ImportError:
 
 # Import custom messages
 from role_ros2.msg import (
-    PolymetisCommand, PolymetisRobotState, PolymetisRobotCommand, 
+    PolymetisRobotState, PolymetisRobotCommand, 
     PolymetisGripperState, GripperCommand, ControllerStatus
 )
 
@@ -70,7 +80,7 @@ from role_ros2.srv import (
 # Import IK solver and transformations
 try:
     from role_ros2.robot_ik.robot_ik_solver import RobotIKSolver
-    from role_ros2.misc.transformations import add_poses, euler_to_quat, pose_diff, quat_to_euler
+    from role_ros2.misc.transformations import add_poses, euler_to_quat, quat_to_euler
     IK_SOLVER_AVAILABLE = True
 except ImportError as e:
     IK_SOLVER_AVAILABLE = False
@@ -693,10 +703,15 @@ class PolymetisCombinedNode(Node):
     ROS 2 Node that bridges Polymetis Python SDK with ROS 2.
     
     This node:
-    - Subscribes to /polymetis_cmd for impedance control commands
+    - Subscribes to /polymetis/robot_command for arm joint position commands
+    - Subscribes to /polymetis/gripper/command for gripper commands
     - Publishes /joint_states at high frequency (50Hz+)
     - Handles both Arm and Gripper control
     - Converts ROS messages to PyTorch tensors for Polymetis API
+    
+    Design:
+    - FrankaRobot (robot.py) handles all IK computations
+    - This node only receives and executes joint position commands
     """
     
     def _init_gripper_interface_with_retry(self, ip_address: str, max_retries: int = 10, retry_delay: float = 0.5):
@@ -989,14 +1004,6 @@ class PolymetisCombinedNode(Node):
         self._timer_callback_group = ReentrantCallbackGroup()
         self._service_callback_group = MutuallyExclusiveCallbackGroup()
         
-        # Subscriber for impedance commands (low-level)
-        self._cmd_subscriber = self.create_subscription(
-            PolymetisCommand,
-            '/polymetis_cmd',
-            self._command_callback,
-            10
-        )
-        
         # Subscriber for high-level control commands (similar to update_command)
         self._robot_cmd_subscriber = self.create_subscription(
             PolymetisRobotCommand,
@@ -1163,36 +1170,28 @@ class PolymetisCombinedNode(Node):
             f'PolymetisCombinedNode initialized. Publishing states at {self.publish_rate} Hz'
         )
         self.get_logger().info('Publishers: /joint_states, /polymetis/robot_state, /polymetis/gripper_state, /polymetis/arm/ee_pose, /polymetis/controller/status')
-        self.get_logger().info('Subscribers: /polymetis_cmd, /polymetis/robot_command, /polymetis/gripper/command')
+        self.get_logger().info('Subscribers: /polymetis/robot_command, /polymetis/gripper/command')
         self.get_logger().info('Services: /polymetis/reset, /polymetis/arm/start_cartesian_impedance, /polymetis/arm/start_joint_impedance, /polymetis/arm/terminate_policy, /polymetis/arm/move_to_joint_positions, /polymetis/arm/move_to_ee_pose, /polymetis/arm/solve_ik, /polymetis/arm/compute_fk, /polymetis/arm/compute_time_to_go')
         
-        # Log IK solver status prominently
+        # Log IK solver status (IK is used for FK and services, but robot_command_callback uses joint positions directly)
         if self._ik_solver is None:
-            self.get_logger().error("=" * 80)
-            self.get_logger().error("⚠️  WARNING: RobotIKSolver is NOT available!")
-            self.get_logger().error("⚠️  High-level robot commands (/polymetis/robot_command) will NOT work!")
-            self.get_logger().error("=" * 80)
+            self.get_logger().warn("=" * 80)
+            self.get_logger().warn("⚠️  RobotIKSolver is NOT available!")
+            self.get_logger().warn("  - /polymetis/robot_command still works (receives joint positions)")
+            self.get_logger().warn("  - FK computation for mock mode will use simplified model")
+            self.get_logger().warn("  - IK services (/polymetis/arm/solve_ik) will not work")
             if IK_SOLVER_AVAILABLE:
-                self.get_logger().error("  - IK_SOLVER_AVAILABLE: True (import succeeded)")
-                self.get_logger().error("  - _ik_solver: None (initialization failed)")
-                self.get_logger().error("  - IK Solver Type: dm-robotics Cartesian6dVelocityEffector (based on MuJoCo)")
-                self.get_logger().error("  - Check startup logs above for initialization error details")
-                self.get_logger().error("  - Common causes:")
-                self.get_logger().error("    1. MuJoCo/dm_control/dm_robotics version incompatibility (eq_active error)")
-                self.get_logger().error("    2. Missing fr3.xml file (check CMakeLists.txt installation)")
-                self.get_logger().error("    3. Missing mesh files in robot_ik/franka/mesh/")
-                self.get_logger().error("    4. X11 display issues (set DISPLAY or use xvfb)")
-                self.get_logger().error("  - Recommended versions: mujoco==2.3.2, dm-control==1.0.5, dm-robotics-moma==0.5.0")
+                self.get_logger().warn("  - IK_SOLVER_AVAILABLE: True (import succeeded)")
+                self.get_logger().warn("  - _ik_solver: None (initialization failed)")
+                self.get_logger().warn("  - Common causes: MuJoCo/dm_control version incompatibility")
             else:
-                self.get_logger().error("  - IK_SOLVER_AVAILABLE: False (import failed)")
-                self.get_logger().error("  - Check if role_ros2.robot_ik module is installed")
-            self.get_logger().error("=" * 80)
+                self.get_logger().warn("  - IK_SOLVER_AVAILABLE: False (import failed)")
+            self.get_logger().warn("=" * 80)
         else:
             self.get_logger().info("=" * 80)
-            self.get_logger().info("✓ RobotIKSolver is available - High-level commands enabled")
-            self.get_logger().info("  - IK Solver Type: dm-robotics Cartesian6dVelocityEffector (based on MuJoCo)")
-            self.get_logger().info("  - Uses MuJoCo physics engine for Jacobian-based IK computation")
-            self.get_logger().info("  - Cartesian velocity/position commands will work")
+            self.get_logger().info("✓ RobotIKSolver is available")
+            self.get_logger().info("  - Used for: FK computation, IK services")
+            self.get_logger().info("  - Note: FrankaRobot (robot.py) handles IK for robot_command")
             self.get_logger().info("=" * 80)
         
         # Auto-reset robot on startup (delayed to avoid SIGSEGV and wait for servers)
@@ -1290,190 +1289,31 @@ class PolymetisCombinedNode(Node):
                     )
                     self._controller_ensure_thread.start()
     
-    def _command_callback(self, msg: PolymetisCommand):
-        """
-        Callback for PolymetisCommand messages.
-        
-        This function:
-        1. Unpacks the ROS message
-        2. Converts Python lists to PyTorch tensors
-        3. Calls robot_interface.send_torch_policy() with impedance arguments
-        4. Handles gripper commands if operate_gripper is True
-        
-        Args:
-            msg: PolymetisCommand message
-        """
-        with self._command_lock:
-            try:
-                # ========== ARM CONTROL ==========
-                # Extract arm command data from message
-                # Message fields map to Polymetis controller arguments:
-                # - joint_positions (q) -> desired joint angles
-                # - joint_velocities (qd) -> velocity feedforward
-                # - joint_torques (tau) -> torque control (if use_torque=True)
-                # - kp (Kq) -> position gains (stiffness)
-                # - kd (Kqd) -> velocity gains (damping)
-                
-                # Convert to lists and validate
-                joint_pos = list(msg.joint_positions) if len(msg.joint_positions) > 0 else None
-                joint_vel = list(msg.joint_velocities) if len(msg.joint_velocities) > 0 else None
-                joint_torque = list(msg.joint_torques) if len(msg.joint_torques) > 0 else None
-                kp = list(msg.kp) if len(msg.kp) > 0 else None
-                kd = list(msg.kd) if len(msg.kd) > 0 else None
-                
-                # Validate array lengths (should be 7 for Franka arm)
-                if joint_pos and len(joint_pos) != 7:
-                    self.get_logger().warn(f"Invalid joint_positions length: {len(joint_pos)}, expected 7")
-                    return
-                if joint_vel and len(joint_vel) != 7:
-                    self.get_logger().warn(f"Invalid joint_velocities length: {len(joint_vel)}, expected 7")
-                    return
-                if joint_torque and len(joint_torque) != 7:
-                    self.get_logger().warn(f"Invalid joint_torques length: {len(joint_torque)}, expected 7")
-                    return
-                if kp and len(kp) != 7:
-                    self.get_logger().warn(f"Invalid kp length: {len(kp)}, expected 7")
-                    return
-                if kd and len(kd) != 7:
-                    self.get_logger().warn(f"Invalid kd length: {len(kd)}, expected 7")
-                    return
-                
-                # Send impedance control command to robot interface
-                # For MockRobotInterface, use send_torch_policy()
-                if isinstance(self._robot, MockRobotInterface):
-                    self._robot.send_torch_policy(
-                        q=joint_pos,
-                        qd=joint_vel,
-                        Kq=kp,
-                        Kqd=kd,
-                        tau=joint_torque
-                    )
-                else:
-                    # Real Polymetis RobotInterface implementation
-                    # Update impedance gains if provided
-                    if kp is not None and kd is not None:
-                        if TORCH_AVAILABLE:
-                            kp_tensor = torch.tensor(kp, dtype=torch.float32)
-                            kd_tensor = torch.tensor(kd, dtype=torch.float32)
-                            # Restart impedance controller with new gains
-                            if not self._robot.is_running_policy():
-                                self._robot.start_joint_impedance(Kq=kp_tensor, Kqd=kd_tensor)
-                            else:
-                                # Update gains (may need to restart policy)
-                                self._robot.start_joint_impedance(Kq=kp_tensor, Kqd=kd_tensor)
-                    
-                    # Update desired joint positions
-                    if joint_pos is not None and msg.use_position:
-                        if TORCH_AVAILABLE:
-                            pos_tensor = torch.tensor(joint_pos, dtype=torch.float32)
-                            if not self._robot.is_running_policy():
-                                self._robot.start_joint_impedance()
-                            self._robot.update_desired_joint_positions(pos_tensor)
-                    
-                    # Handle blocking position control
-                    if joint_pos is not None and msg.blocking and msg.use_position:
-                        if TORCH_AVAILABLE:
-                            pos_tensor = torch.tensor(joint_pos, dtype=torch.float32)
-                            if self._robot.is_running_policy():
-                                self._robot.terminate_current_policy()
-                            # Calculate time to go (simple heuristic)
-                            curr_pos = self._robot.get_joint_positions()
-                            displacement = torch.abs(pos_tensor - curr_pos)
-                            max_displacement = torch.max(displacement).item()
-                            time_to_go = min(MAX_TIME_TO_GO, max(MIN_TIME_TO_GO, max_displacement / MAX_VELOCITY_FOR_TIME_CALC))
-                            self._robot.move_to_joint_positions(pos_tensor, time_to_go=time_to_go)
-                            self._robot.start_joint_impedance()
-                
-                # ========== GRIPPER CONTROL ==========
-                # Handle gripper command if operate_gripper is True
-                # Note: Don't block the main thread - use non-blocking mode
-                if msg.operate_gripper:
-                    gripper_width = msg.gripper_width
-                    gripper_speed = msg.gripper_speed
-                    gripper_force = msg.gripper_force
-                    gripper_blocking = msg.gripper_blocking
-                    
-                    # Call gripper interface (non-blocking in main thread)
-                    # If blocking is needed, it should be handled in a separate thread
-                    if gripper_blocking:
-                        # Run in separate thread to avoid blocking
-                        def gripper_thread():
-                            self._gripper.goto(
-                                width=gripper_width,
-                                speed=gripper_speed,
-                                force=gripper_force,
-                                blocking=True
-                            )
-                        threading.Thread(target=gripper_thread, daemon=True).start()
-                    else:
-                        self._gripper.goto(
-                            width=gripper_width,
-                            speed=gripper_speed,
-                            force=gripper_force,
-                            blocking=False
-                        )
-                
-                self._last_command_time = self.get_clock().now()
-                self.get_logger().debug("Polymetis command executed successfully")
-                
-            except Exception as e:
-                self.get_logger().error(f"Error processing command: {e}\n{traceback.format_exc()}")
-    
     def _robot_command_callback(self, msg: PolymetisRobotCommand):
         """
-        Callback for high-level PolymetisRobotCommand messages (NON-BLOCKING ONLY).
+        Callback for arm joint position commands (NON-BLOCKING ONLY).
         
-        This callback handles ONLY non-blocking commands via Topic.
-        Blocking commands should use Services instead.
+        Design Philosophy:
+        - FrankaRobot (robot.py) handles ALL IK computations via create_action_dict()
+        - FrankaRobot calls update_joints() and update_gripper() SEPARATELY
+        - This callback ONLY receives and executes joint positions (no IK needed)
+        - Gripper is handled by _gripper_command_callback via /polymetis/gripper/command
         
-        IMPORTANT: All control modes (cartesian/joint position/velocity) are converted
-        to joint position control, matching the behavior of droid/droid/franka/robot.py
-        update_command() method. This ensures consistent control behavior regardless of
-        the input action_space.
+        Data Flow:
+        1. User calls robot.update_command(cartesian_velocity, ...)
+        2. robot.py computes IK -> joint_position via create_action_dict()
+        3. robot.py calls update_joints(joint_position) -> publishes to /polymetis/robot_command
+        4. This callback receives joint_position and sends to Polymetis
+        5. robot.py calls update_gripper() -> publishes to /polymetis/gripper/command
         
-        Conversion logic (matching robot.py create_action_dict):
-        - cartesian_position/velocity -> joint_position (via IK solver)
-        - joint_position -> joint_position (direct)
-        - joint_velocity -> joint_position (via joint_velocity_to_delta)
-        - gripper commands -> gripper_position (velocity converted to position)
+        Note: The command array is [joint_positions (7), gripper_position (1)]
+        We only use the first 7 values; gripper is handled separately.
         
-        The actual command execution happens in a separate thread (like robot.py's
-        run_threaded_command(helper_non_blocking)), ensuring controller is ready
-        before sending commands.
+        Works identically for both Mock and real robot modes.
         
         Args:
-            msg: PolymetisRobotCommand message (blocking flag is ignored - always non-blocking)
+            msg: PolymetisRobotCommand with joint positions (blocking flag ignored)
         """
-        # Extract command parameters early
-        action_space = msg.action_space
-        gripper_action_space = msg.gripper_action_space if msg.gripper_action_space else None
-        command = list(msg.command)
-        
-        # Check if action space requires IK solver
-        requires_ik = "cartesian" in action_space
-        
-        # Check IK solver availability only for cartesian commands
-        if requires_ik and self._ik_solver is None:
-            # Only log once to avoid spam
-            if not hasattr(self, '_ik_solver_warned'):
-                error_msg = (
-                    "✗ RobotIKSolver not available. Cannot process cartesian commands.\n"
-                    f"  - Action space: {action_space} requires IK solver\n"
-                    f"  - IK_SOLVER_AVAILABLE: {IK_SOLVER_AVAILABLE}\n"
-                    f"  - _ik_solver is None: {self._ik_solver is None}\n"
-                    "  Please check node startup logs for initialization errors.\n"
-                    "  Common issues:\n"
-                    "  1. Missing fr3.xml model file (check CMakeLists.txt installation)\n"
-                    "  2. Missing X11 display (set DISPLAY or use xvfb)\n"
-                    "  3. dm_control/dm_robotics initialization failed (MuJoCo version incompatibility)\n"
-                    "  4. Check full error traceback in startup logs\n"
-                    "  Note: joint_position and joint_velocity commands work without IK solver"
-                )
-                self.get_logger().error(error_msg)
-                print(f"[ERROR] {error_msg}")
-                self._ik_solver_warned = True
-            return
-        
         # Skip if controller is being loaded (same as robot.py)
         if self._controller_not_loaded:
             self.get_logger().debug("Controller loading, skipping command")
@@ -1486,185 +1326,17 @@ class PolymetisCombinedNode(Node):
         )
         
         try:
-            # Get current robot state
-            self.get_logger().debug("Getting current robot state...")
-            robot_state_dict, _ = self._get_robot_state()
-            self.get_logger().debug(f"Got robot state: joints={len(robot_state_dict.get('joint_positions', []))}")
-            
-            # Extract command parameters
-            action_space = msg.action_space
-            gripper_action_space = msg.gripper_action_space if msg.gripper_action_space else None
             command = list(msg.command)
             
-            self.get_logger().debug(
-                f"Processing command: action_space={action_space}, "
-                f"gripper_action_space={gripper_action_space}, "
-                f"command_length={len(command)}"
-            )
-            
-            # Validate action space
-            if action_space not in ["cartesian_position", "joint_position", "cartesian_velocity", "joint_velocity"]:
-                self.get_logger().error(f"Invalid action_space: {action_space}")
+            # Validate command length (should have at least 7 joint positions)
+            if len(command) < 7:
+                self.get_logger().error(f"Invalid command length: {len(command)}, expected at least 7")
                 return
             
-            # Determine gripper action space if not specified
-            velocity = "velocity" in action_space
-            if gripper_action_space is None:
-                gripper_action_space = "velocity" if velocity else "position"
-            
-            # Process gripper command (non-blocking)
-            if len(command) > 0:
-                gripper_cmd = command[-1]
-                
-                if gripper_action_space == "velocity":
-                    # Use RobotIKSolver.gripper_velocity_to_delta if available, otherwise fallback
-                    if self._ik_solver is not None:
-                        # Use IK solver method (matches robot_ik_solver.py exactly)
-                        # NOTE: IK solver methods may access MuJoCo physics, use lock
-                        with self._ik_solver_lock:
-                            gripper_delta = self._ik_solver.gripper_velocity_to_delta(gripper_cmd)
-                        gripper_position = robot_state_dict["gripper_position"] + gripper_delta
-                        gripper_position = float(np.clip(gripper_position, 0, 1))
-                    else:
-                        # Fallback: simplified version matching robot_ik_solver.py logic
-                        gripper_vel_norm = np.linalg.norm(gripper_cmd) if isinstance(gripper_cmd, (list, np.ndarray)) else abs(gripper_cmd)
-                        if gripper_vel_norm > 1:
-                            gripper_cmd = gripper_cmd / gripper_vel_norm
-                        gripper_delta = gripper_cmd * MAX_GRIPPER_DELTA
-                        gripper_position = robot_state_dict["gripper_position"] + gripper_delta
-                        gripper_position = float(np.clip(gripper_position, 0, 1))
-                else:
-                    gripper_position = float(np.clip(gripper_cmd, 0, 1))
-                
-                # Update gripper (non-blocking)
-                gripper_width = self._max_gripper_width * (1 - gripper_position)
-                self._gripper.goto(width=gripper_width, speed=DEFAULT_GRIPPER_SPEED, force=DEFAULT_GRIPPER_FORCE, blocking=False)
-            
-            # Calculate target joint position based on action space
-            joint_position = None
-            
-            if "cartesian" in action_space:
-                # Cartesian commands require IK solver (matches robot_ik_solver.py)
-                # IK solver uses dm-robotics Cartesian6dVelocityEffector (based on MuJoCo)
-                if self._ik_solver is None:
-                    self.get_logger().error(
-                        f"Cannot process {action_space} command: IK solver not available.\n"
-                        "  - IK Solver Type: dm-robotics Cartesian6dVelocityEffector (MuJoCo-based)\n"
-                        "  - Check startup logs for initialization errors\n"
-                        "  - Common issue: MuJoCo/dm_control version incompatibility"
-                    )
-                    return
-                
-                arm_cmd = command[:-1] if len(command) > 1 else command
-                
-                if velocity:
-                    # Cartesian velocity -> joint velocity via IK (matches robot_ik_solver.py exactly)
-                    robot_state = {
-                        "joint_positions": robot_state_dict["joint_positions"],
-                        "joint_velocities": robot_state_dict["joint_velocities"]
-                    }
-                    # Use robot_ik_solver.cartesian_velocity_to_joint_velocity
-                    # Log input command for debugging
-                    if hasattr(self, '_debug_cmd_count'):
-                        self._debug_cmd_count += 1
-                    else:
-                        self._debug_cmd_count = 0
-                    
-                    if self._debug_cmd_count % 15 == 0:  # Log every 15 commands (~1 second at 15 Hz)
-                        self.get_logger().info(
-                            f"🔧 Command Processing:\n"
-                            f"   Input cartesian_velocity: {arm_cmd[:3]} (norm: {np.linalg.norm(arm_cmd[:3]):.4f})\n"
-                            f"   Current EE position: {robot_state_dict.get('cartesian_position', [0,0,0])[:3]}"
-                        )
-                    
-                    # NOTE: IK solver uses MuJoCo physics which is NOT thread-safe, must use lock
-                    with self._ik_solver_lock:
-                        joint_velocity = self._ik_solver.cartesian_velocity_to_joint_velocity(
-                            arm_cmd, robot_state=robot_state
-                        )
-                        # Use robot_ik_solver.joint_velocity_to_delta
-                        joint_delta = self._ik_solver.joint_velocity_to_delta(joint_velocity)
-                    joint_position = (np.array(robot_state_dict["joint_positions"]) + joint_delta).tolist()
-                    
-                    if self._debug_cmd_count % 15 == 0:
-                        # Get expected EE delta from cartesian velocity
-                        with self._ik_solver_lock:
-                            cartesian_delta = self._ik_solver.cartesian_velocity_to_delta(arm_cmd)
-                        self.get_logger().info(
-                            f"   Computed cartesian_delta: {cartesian_delta[:3]} (norm: {np.linalg.norm(cartesian_delta[:3]):.4f})\n"
-                            f"   Joint velocity norm: {np.linalg.norm(joint_velocity):.4f}\n"
-                            f"   Joint delta norm: {np.linalg.norm(joint_delta):.4f}"
-                        )
-                else:
-                    # Cartesian position -> joint position via iterative IK
-                    # Note: robot_ik_solver.py doesn't have direct position IK, so we use velocity-based approach
-                    # Convert position command to velocity command for iterative control
-                    curr_pos, curr_quat = self._get_current_ee_pose(robot_state_dict)
-                    target_pos = np.array(arm_cmd[:3])
-                    target_euler = np.array(arm_cmd[3:6])
-                    target_quat = euler_to_quat(target_euler)
-                    
-                    # Compute position error
-                    pos_error = target_pos - curr_pos
-                    # Compute orientation error (simplified: use euler difference)
-                    curr_euler = quat_to_euler(curr_quat)
-                    rot_error = target_euler - curr_euler
-                    
-                    # Convert to velocity command (proportional control)
-                    kp_pos = 2.0  # Position gain
-                    kp_rot = 1.0  # Rotation gain
-                    cartesian_velocity = np.concatenate([
-                        kp_pos * pos_error,
-                        kp_rot * rot_error
-                    ])
-                    
-                    # Use velocity-based IK (same as velocity command above)
-                    robot_state = {
-                        "joint_positions": robot_state_dict["joint_positions"],
-                        "joint_velocities": robot_state_dict["joint_velocities"]
-                    }
-                    # NOTE: IK solver uses MuJoCo physics which is NOT thread-safe, must use lock
-                    with self._ik_solver_lock:
-                        joint_velocity = self._ik_solver.cartesian_velocity_to_joint_velocity(
-                            cartesian_velocity, robot_state=robot_state
-                        )
-                        joint_delta = self._ik_solver.joint_velocity_to_delta(joint_velocity)
-                    joint_position = (np.array(robot_state_dict["joint_positions"]) + joint_delta).tolist()
-            
-            elif "joint" in action_space:
-                # Joint commands - use robot_ik_solver.py methods when available
-                arm_cmd = command[:-1] if len(command) > 1 else command
-                
-                if velocity:
-                    # Use robot_ik_solver.joint_velocity_to_delta (matches robot_ik_solver.py exactly)
-                    if self._ik_solver is not None:
-                        # Use IK solver method (matches robot_ik_solver.py)
-                        # NOTE: IK solver methods may access internal state, use lock for safety
-                        with self._ik_solver_lock:
-                            joint_delta = self._ik_solver.joint_velocity_to_delta(arm_cmd)
-                    else:
-                        # Fallback: simplified version matching robot_ik_solver.py logic exactly
-                        # Reference: robot_ik_solver.py joint_velocity_to_delta()
-                        joint_velocity = np.array(arm_cmd)
-                        # Compute relative_max_joint_vel (matches robot_ik_solver.py line 92)
-                        # joint_delta_to_velocity(relative_max_joint_delta) = relative_max_joint_delta / max_joint_delta
-                        relative_max_joint_vel = RELATIVE_MAX_JOINT_DELTA / MAX_JOINT_DELTA
-                        # Normalize based on relative_max_joint_vel (matches robot_ik_solver.py line 93)
-                        max_joint_vel_norm = (np.abs(joint_velocity) / relative_max_joint_vel).max()
-                        if max_joint_vel_norm > 1:
-                            joint_velocity = joint_velocity / max_joint_vel_norm
-                        # Convert to delta (matches robot_ik_solver.py line 98)
-                        joint_delta = joint_velocity * MAX_JOINT_DELTA
-                    
-                    joint_position = (np.array(robot_state_dict["joint_positions"]) + joint_delta).tolist()
-                else:
-                    # Direct joint position command (no conversion needed)
-                    joint_position = list(arm_cmd)
-            
-            # Execute command in thread (same pattern as robot.py helper_non_blocking)
-            if joint_position is None:
-                self.get_logger().warn(f"joint_position is None after processing {action_space} command")
-                return
+            # Extract joint positions (first 7 values)
+            # Note: FrankaRobot.update_joints() sends joint_position + gripper_position
+            # The gripper is handled separately via /polymetis/gripper/command
+            joint_position = command[:7]
             
             if not TORCH_AVAILABLE:
                 self.get_logger().error("PyTorch not available, cannot process command")
@@ -1672,7 +1344,7 @@ class PolymetisCombinedNode(Node):
             
             pos_tensor = torch.tensor(joint_position, dtype=torch.float32)
             self.get_logger().debug(
-                f"Target joint position: [{', '.join([f'{p:.3f}' for p in joint_position[:7]])}]"
+                f"Target joint position: [{', '.join([f'{p:.3f}' for p in joint_position])}]"
             )
             
             def helper_non_blocking():
@@ -1708,7 +1380,7 @@ class PolymetisCombinedNode(Node):
                         self.get_logger().debug("helper_non_blocking: Controller already running")
                     
                     # Step 2: Send command
-                    self.get_logger().debug(f"helper_non_blocking: Sending joint position command...")
+                    self.get_logger().debug("helper_non_blocking: Sending joint position command...")
                     try:
                         self._robot.update_desired_joint_positions(pos_tensor)
                         self.get_logger().debug("helper_non_blocking: Command sent successfully")
@@ -1727,29 +1399,12 @@ class PolymetisCombinedNode(Node):
             thread.start()
             self.get_logger().debug(f"helper_non_blocking thread started (daemon={thread.daemon})")
             
-            self.get_logger().debug(f"✓ Processed non-blocking robot command: {action_space}")
+            self.get_logger().debug(f"✓ Processed non-blocking robot command: {msg.action_space}")
             
         except Exception as e:
             error_msg = f"Error processing robot command: {e}\n{traceback.format_exc()}"
             self.get_logger().error(error_msg)
             print(f"[ERROR] {error_msg}")
-    
-    def _get_current_ee_pose(self, robot_state_dict):
-        """
-        Get current end-effector pose from robot state.
-        
-        Args:
-            robot_state_dict: Robot state dictionary
-            
-        Returns:
-            tuple: (position [x, y, z], quaternion [x, y, z, w])
-        """
-        cartesian_pos = robot_state_dict.get("cartesian_position", [0.0] * 6)
-        pos = np.array(cartesian_pos[:3])
-        # Convert euler to quaternion
-        euler = cartesian_pos[3:6] if len(cartesian_pos) >= 6 else [0.0, 0.0, 0.0]
-        quat = euler_to_quat(euler)
-        return pos, quat
     
     def _compute_forward_kinematics(self, joint_positions):
         """
