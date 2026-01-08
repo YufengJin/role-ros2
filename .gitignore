@@ -30,6 +30,9 @@ Thumbs.db
 *.bak
 *.log
 
+# .h5 files
+*.h5
+
 docs/
 logs/
 bags/
