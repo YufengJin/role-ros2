@@ -10,7 +10,7 @@ Usage:
     # With options
     python3 replay_trajectory_node.py \\
         --filepath /path/to/trajectory.h5 \\
-        --action-space cartesian_velocity \\
+        --action_space cartesian_velocity \\
         --control-hz 15.0 \\
         --speed-factor 1.5
 
@@ -244,7 +244,7 @@ Examples:
   # With options
   python3 replay_trajectory_node.py \\
       --filepath /path/to/trajectory.h5 \\
-      --action-space cartesian_velocity \\
+      --action_space cartesian_velocity \\
       --control-hz 15.0 \\
       --speed-factor 1.5
         """
@@ -257,11 +257,11 @@ Examples:
         help='Path to trajectory HDF5 file'
     )
     parser.add_argument(
-        '--action-space',
+        '--action_space',
         type=str,
         default='cartesian_velocity',
-        choices=['cartesian_velocity', 'cartesian_position', 'joint_velocity', 'joint_position'],
-        help='Action space for robot control (default: cartesian_velocity)'
+        choices=['joint_position', 'joint_velocity', 'cartesian_position', 'cartesian_velocity'],
+        help='Action space for robot control: joint_position, joint_velocity, cartesian_position, or cartesian_velocity (default: cartesian_velocity)'
     )
     parser.add_argument(
         '--control-hz',
