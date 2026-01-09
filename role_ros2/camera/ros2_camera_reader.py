@@ -109,6 +109,14 @@ class ROS2CameraReader:
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, node)
         
+        # TF caching and failure tracking
+        self._cached_static_extrinsic: Optional[np.ndarray] = None  # Cache for static TF
+        self._is_static_tf: Optional[bool] = None  # None=unknown, True=static, False=dynamic
+        self._tf_lookup_failure_count: int = 0
+        self._tf_lookup_max_failures: int = 10  # Stop trying after this many consecutive failures
+        self._tf_disabled: bool = False  # If True, skip TF lookup entirely
+        self._tf_lookup_success_count: int = 0  # Track successful lookups to detect static TF
+        
         # Create subscribers (camera_info is required for synchronization)
         if camera_info_topic is None:
             raise ValueError(f"camera_info_topic is required for camera {camera_id}")
@@ -447,20 +455,30 @@ class ROS2CameraReader:
         """
         Get camera extrinsic (transformation matrix from base_frame to camera_frame).
         
+        Optimized with caching and non-blocking TF lookup:
+        - Static TF: Cached after first successful lookup (detected by zero timestamp)
+        - Dynamic TF: Non-blocking lookup, returns None if not immediately available
+        - Disabled TF: After max consecutive failures, stops trying and returns None
+        
         Args:
             timestamp_dict: Optional timestamp dictionary for TF lookup
         
         Returns:
             4x4 transformation matrix or None if not available
         """
+        # Check if base_frame and camera_frame are set
         if self.base_frame is None or self.camera_frame is None:
-            self.node.get_logger().warning(
-                f"[CameraReader {self.camera_id}] Cannot get extrinsic: "
-                f"base_frame={self.base_frame}, camera_frame={self.camera_frame} not set"
-            )
             return None
         
-        # Determine timestamp to use
+        # If TF lookup is disabled due to repeated failures, return None immediately
+        if self._tf_disabled:
+            return None
+        
+        # If we have a cached static TF, return it immediately
+        if self._cached_static_extrinsic is not None:
+            return self._cached_static_extrinsic
+        
+        # For dynamic TF, determine timestamp to use
         timestamp_ns = None
         if timestamp_dict is not None:
             pub_t_key = self.camera_id + "_pub_t"
@@ -472,45 +490,147 @@ class ROS2CameraReader:
         if timestamp_ns is None:
             latest_timestamp = self.get_latest_pub_timestamp()
             if latest_timestamp is None:
-                self.node.get_logger().warning(
-                    f"[CameraReader {self.camera_id}] Cannot get extrinsic: no timestamp available"
-                )
+                # No timestamp available, but don't count as failure
                 return None
             timestamp_ns = latest_timestamp
         
-        # Convert to ROS Time
+        # Non-blocking TF lookup (timeout=0)
+        # For static TF, use Time(seconds=0) to get the latest available transform
+        # For dynamic TF, use the actual timestamp
+        transform = None
+        is_static = False
+        
         try:
-            ros_time = Time(nanoseconds=timestamp_ns)
+            # First, try to get static TF (using Time(seconds=0))
+            # Static TF is always available at time 0
+            if self._is_static_tf is None or self._is_static_tf:
+                try:
+                    transform = self._tf_buffer.lookup_transform(
+                        self.base_frame,
+                        self.camera_frame,
+                        Time(seconds=0),  # Time 0 returns latest available (works for static TF)
+                        timeout=Duration(seconds=0)  # Non-blocking
+                    )
+                    # Check if this is a static TF by examining the timestamp
+                    # Static TF has timestamp = 0 (sec=0, nanosec=0)
+                    stamp = transform.header.stamp
+                    is_static = (stamp.sec == 0 and stamp.nanosec == 0)
+                    
+                    if is_static and self._is_static_tf is None:
+                        self._is_static_tf = True
+                        self.node.get_logger().info(
+                            f"[CameraReader {self.camera_id}] Detected static TF: "
+                            f"{self.base_frame} -> {self.camera_frame}, will cache"
+                        )
+                except tf2_ros.TransformException:
+                    # Static TF not available, try dynamic
+                    pass
+            
+            # If no static TF found, try dynamic TF lookup
+            if transform is None and (self._is_static_tf is None or not self._is_static_tf):
+                try:
+                    ros_time = Time(nanoseconds=timestamp_ns)
+                    transform = self._tf_buffer.lookup_transform(
+                        self.base_frame,
+                        self.camera_frame,
+                        ros_time,
+                        timeout=Duration(seconds=0)  # Non-blocking
+                    )
+                    if self._is_static_tf is None:
+                        self._is_static_tf = False
+                        self.node.get_logger().info(
+                            f"[CameraReader {self.camera_id}] Detected dynamic TF: "
+                            f"{self.base_frame} -> {self.camera_frame}"
+                        )
+                except tf2_ros.TransformException:
+                    pass
+            
         except Exception as e:
-            self.node.get_logger().warning(
-                f"[CameraReader {self.camera_id}] Failed to convert timestamp: {e}"
-            )
+            # Unexpected error, log but don't spam
+            if self._tf_lookup_failure_count == 0:
+                self.node.get_logger().warning(
+                    f"[CameraReader {self.camera_id}] Unexpected TF error: {e}"
+                )
+        
+        # Handle lookup result
+        if transform is None:
+            # Lookup failed
+            self._tf_lookup_failure_count += 1
+            self._tf_lookup_success_count = 0
+            
+            # Check if we should disable TF lookup
+            if self._tf_lookup_failure_count >= self._tf_lookup_max_failures:
+                if not self._tf_disabled:
+                    self._tf_disabled = True
+                    self.node.get_logger().warning(
+                        f"[CameraReader {self.camera_id}] TF lookup disabled after "
+                        f"{self._tf_lookup_max_failures} consecutive failures. "
+                        f"No TF link found: {self.base_frame} -> {self.camera_frame}. "
+                        f"Extrinsics will return None."
+                    )
             return None
         
-        # Lookup transform
-        try:
-            transform = self._tf_buffer.lookup_transform(
-                self.base_frame,
-                self.camera_frame,
-                ros_time,
-                timeout=Duration(seconds=0.1)
-            )
-        except tf2_ros.TransformException as e:
-            self.node.get_logger().warning(
-                f"[CameraReader {self.camera_id}] TF lookup failed: {e}"
-            )
-            return None
-        except Exception as e:
-            self.node.get_logger().warning(
-                f"[CameraReader {self.camera_id}] Unexpected TF error: {e}"
-            )
-            return None
+        # Lookup succeeded
+        self._tf_lookup_failure_count = 0
+        self._tf_lookup_success_count += 1
         
         # Convert to matrix
         try:
-            return transform_to_matrix(transform)
+            extrinsic_matrix = transform_to_matrix(transform)
         except Exception as e:
             self.node.get_logger().warning(
                 f"[CameraReader {self.camera_id}] Failed to convert transform: {e}"
             )
             return None
+        
+        # Cache static TF
+        if is_static:
+            self._cached_static_extrinsic = extrinsic_matrix
+            self.node.get_logger().info(
+                f"[CameraReader {self.camera_id}] Cached static TF extrinsic"
+            )
+        
+        return extrinsic_matrix
+    
+    def reset_tf_state(self):
+        """
+        Reset TF lookup state to allow retrying after failures.
+        
+        Clears cached extrinsic, resets failure counter, and re-enables TF lookup.
+        Useful when TF tree is reconfigured at runtime.
+        """
+        self._cached_static_extrinsic = None
+        self._is_static_tf = None
+        self._tf_lookup_failure_count = 0
+        self._tf_disabled = False
+        self._tf_lookup_success_count = 0
+        self.node.get_logger().info(
+            f"[CameraReader {self.camera_id}] TF state reset, will retry TF lookup"
+        )
+    
+    def is_tf_available(self) -> bool:
+        """
+        Check if TF lookup is available (not disabled due to failures).
+        
+        Returns:
+            True if TF lookup is enabled, False if disabled
+        """
+        return not self._tf_disabled
+    
+    def get_tf_status(self) -> Dict:
+        """
+        Get current TF lookup status for debugging.
+        
+        Returns:
+            Dictionary with TF status information
+        """
+        return {
+            "camera_id": self.camera_id,
+            "base_frame": self.base_frame,
+            "camera_frame": self.camera_frame,
+            "is_static_tf": self._is_static_tf,
+            "tf_disabled": self._tf_disabled,
+            "failure_count": self._tf_lookup_failure_count,
+            "success_count": self._tf_lookup_success_count,
+            "has_cached_extrinsic": self._cached_static_extrinsic is not None,
+        }

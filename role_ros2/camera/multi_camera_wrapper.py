@@ -638,24 +638,39 @@ class MultiCameraWrapper:
             return None
         
         extrinsics = {}
-        try:
-            for cam in self.camera_dict.values():
-                camera_timestamp_dict = timestamp_dict if timestamp_dict else None
-                extrinsic_matrix = cam.get_extrinsic(camera_timestamp_dict)
-                
+        for cam in self.camera_dict.values():
+            try:
+                extrinsic_matrix = cam.get_extrinsic(timestamp_dict)
                 if extrinsic_matrix is not None:
                     extrinsics[cam.camera_id] = extrinsic_matrix
-                else:
-                    self._node.get_logger().debug(
-                        f"Failed to get extrinsic for camera {cam.camera_id}"
-                    )
-        except Exception as e:
-            self._node.get_logger().warning(f"Failed to get extrinsics: {e}")
-            import traceback
-            self._node.get_logger().warning(traceback.format_exc())
-            return None
+            except Exception as e:
+                self._node.get_logger().debug(
+                    f"Failed to get extrinsic for camera {cam.camera_id}: {e}"
+                )
         
         return extrinsics if extrinsics else None
+    
+    def reset_tf_states(self):
+        """
+        Reset TF lookup state for all cameras.
+        
+        Useful when TF tree is reconfigured at runtime.
+        """
+        for cam in self.camera_dict.values():
+            cam.reset_tf_state()
+        self._node.get_logger().info("Reset TF states for all cameras")
+    
+    def get_tf_status(self) -> Dict:
+        """
+        Get TF lookup status for all cameras.
+        
+        Returns:
+            Dictionary mapping camera_id to TF status
+        """
+        return {
+            cam_id: cam.get_tf_status()
+            for cam_id, cam in self.camera_dict.items()
+        }
     
     def _spin_executor(self):
         """

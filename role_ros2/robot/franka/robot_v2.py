@@ -39,7 +39,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 # ROS2 message imports (V2 messages)
 from role_ros2.msg import (
-    ArmState, GripperState, ControllerStatus,
+    ArmState, GripperState, ControllerStatus, RobotState,
     JointPositionCommand, JointVelocityCommand,
     CartesianPositionCommand, CartesianVelocityCommand,
     GripperCommand
@@ -107,38 +107,26 @@ class FrankaRobotV2(BaseRobot):
         # Create ReentrantCallbackGroup for parallel callback execution
         self._cb_group = ReentrantCallbackGroup()
         
-        # ==================== ARM STATE STORAGE ====================
-        self._arm_state_lock = threading.Lock()
-        self._arm_data_snapshot: Optional[Tuple[ArmState, int, int]] = None
+        # ==================== STATE STORAGE ====================
+        # Store the entire RobotState message (contains arm_states and gripper_states)
+        self._state_lock = threading.Lock()
+        self._robot_state_snapshot: Optional[Tuple[RobotState, int]] = None  # (msg, received_time_ns)
         
-        # Arm state cache for timestamp-based lookup
-        self._arm_state_cache: deque = deque(maxlen=100)
-        self._arm_state_cache_lock = threading.Lock()
+        # State cache for timestamp-based lookup
+        self._state_cache: deque = deque(maxlen=100)
+        self._state_cache_lock = threading.Lock()
         self._cache_timestamps_ns: np.ndarray = np.zeros(100, dtype=np.int64)
         
-        # ==================== GRIPPER STATE STORAGE ====================
-        self._gripper_state_lock = threading.Lock()
-        self._gripper_data_snapshot: Optional[Tuple[GripperState, int]] = None
         self._max_gripper_width = 0.08  # Default for Franka hand
         
-        # Latency logging counter
-        self._latency_log_counter = 0
-        
-        # ==================== ARM SUBSCRIBERS ====================
-        self._arm_state_sub = self._node.create_subscription(
-            ArmState,
-            f'/{arm_namespace}/arm_state',
-            self._arm_state_callback,
+        # ==================== STATE SUBSCRIBER ====================
+        # Subscribe to aggregated /robot_state (from robot_state_aggregator_node)
+        # This contains both arm and gripper states in a single message
+        self._robot_state_sub = self._node.create_subscription(
+            RobotState,
+            '/robot_state',
+            self._robot_state_callback,
             10,
-            callback_group=self._cb_group
-        )
-        
-        # ==================== GRIPPER SUBSCRIBERS ====================
-        self._gripper_state_sub = self._node.create_subscription(
-            GripperState,
-            f'/{gripper_namespace}/gripper_state',
-            self._gripper_state_callback,
-            1,
             callback_group=self._cb_group
         )
         
@@ -261,60 +249,60 @@ class FrankaRobotV2(BaseRobot):
     
     # ==================== CALLBACKS ====================
     
-    def _arm_state_callback(self, msg: ArmState):
-        """Callback for arm state updates."""
-        received_time_ns = get_ros_time_ns(self._node)
+    def _robot_state_callback(self, msg: RobotState):
+        """
+        Callback for aggregated robot state from robot_state_aggregator_node.
         
+        Simply stores the message - extraction is done lazily in getters.
+        """
+        received_time_ns = get_ros_time_ns(self._node)
         pub_stamp = msg.header.stamp
         pub_timestamp_ns = int(pub_stamp.sec * 1_000_000_000 + pub_stamp.nanosec)
         
-        snapshot = (msg, pub_timestamp_ns, received_time_ns)
+        # Store snapshot
+        with self._state_lock:
+            self._robot_state_snapshot = (msg, received_time_ns)
         
-        with self._arm_state_lock:
-            self._arm_data_snapshot = snapshot
-        
-        with self._arm_state_cache_lock:
-            self._arm_state_cache.append((pub_timestamp_ns, msg, received_time_ns))
-            cache_len = len(self._arm_state_cache)
+        # Add to cache for timestamp-based lookup
+        with self._state_cache_lock:
+            self._state_cache.append((pub_timestamp_ns, msg, received_time_ns))
+            cache_len = len(self._state_cache)
             if cache_len <= len(self._cache_timestamps_ns):
                 self._cache_timestamps_ns[cache_len - 1] = pub_timestamp_ns
-    
-    def _gripper_state_callback(self, msg: GripperState):
-        """Callback for gripper state updates."""
-        received_time_ns = get_ros_time_ns(self._node)
-        snapshot = (msg, received_time_ns)
-        
-        with self._gripper_state_lock:
-            self._gripper_data_snapshot = snapshot
-            if hasattr(msg, 'max_width') and msg.max_width > 0:
-                self._max_gripper_width = msg.max_width
     
     def _wait_for_state(self, timeout: float = 5.0):
         """Wait for initial state to be received."""
         start_time = time.time()
         while time.time() - start_time < timeout:
-            with self._arm_state_lock:
-                arm_ready = self._arm_data_snapshot is not None
-            with self._gripper_state_lock:
-                gripper_ready = self._gripper_data_snapshot is not None
-            if arm_ready and gripper_ready:
-                return
+            with self._state_lock:
+                if self._robot_state_snapshot is not None:
+                    return
             time.sleep(0.1)
         self._node.get_logger().warn("Timeout waiting for initial V2 robot state")
     
-    # ==================== ARM STATE GETTERS ====================
+    # ==================== STATE GETTERS ====================
+    
+    def _get_robot_state_msg(self) -> Optional[RobotState]:
+        """Get current RobotState message (thread-safe)."""
+        with self._state_lock:
+            snapshot = self._robot_state_snapshot
+        return snapshot[0] if snapshot is not None else None
     
     def _get_arm_state(self) -> Optional[ArmState]:
-        """Get current arm state (thread-safe)."""
-        with self._arm_state_lock:
-            snapshot = self._arm_data_snapshot
-        return snapshot[0] if snapshot is not None else None
+        """Get current arm state from RobotState (thread-safe)."""
+        msg = self._get_robot_state_msg()
+        if msg is None or not msg.arm_states:
+            return None
+        # Return first arm state (single robot case)
+        return msg.arm_states[0]
     
     def _get_gripper_state(self) -> Optional[GripperState]:
-        """Get current gripper state (thread-safe)."""
-        with self._gripper_state_lock:
-            snapshot = self._gripper_data_snapshot
-        return snapshot[0] if snapshot is not None else None
+        """Get current gripper state from RobotState (thread-safe)."""
+        msg = self._get_robot_state_msg()
+        if msg is None or not msg.gripper_states:
+            return None
+        # Return first gripper state (single robot case)
+        return msg.gripper_states[0]
     
     def get_joint_positions(self) -> List[float]:
         """Get current joint positions."""
@@ -412,36 +400,23 @@ class FrankaRobotV2(BaseRobot):
         Returns:
             tuple: (state_dict, timestamp_dict)
         """
-        # Get snapshots
-        with self._arm_state_lock:
-            arm_snapshot = self._arm_data_snapshot
-        with self._gripper_state_lock:
-            gripper_snapshot = self._gripper_data_snapshot
+        with self._state_lock:
+            snapshot = self._robot_state_snapshot
         
-        if arm_snapshot is None or gripper_snapshot is None:
+        if snapshot is None:
             return self._DEFAULT_STATE[0].copy(), self._DEFAULT_STATE[1].copy()
         
-        arm_state, pub_timestamp_ns, received_timestamp_ns = arm_snapshot
-        gripper_state, _ = gripper_snapshot
+        msg, received_timestamp_ns = snapshot
         
-        processing_start_timestamp_ns = get_ros_time_ns(self._node)
+        # Build state_dict using shared helper method
+        state_dict = self._build_state_dict_from_msg(msg)
         
-        cartesian_position = list(arm_state.ee_position) + list(arm_state.ee_euler)
+        # Build timestamp_dict
+        pub_stamp = msg.header.stamp
+        pub_timestamp_ns = int(pub_stamp.sec * 1_000_000_000 + pub_stamp.nanosec)
         
-        state_dict = {
-            "cartesian_position": cartesian_position,
-            "gripper_position": float(gripper_state.position),
-            "joint_positions": list(arm_state.joint_positions),
-            "joint_velocities": list(arm_state.joint_velocities),
-            "joint_torques_computed": list(arm_state.joint_torques_computed),
-            "prev_joint_torques_computed": list(arm_state.prev_joint_torques_computed),
-            "prev_joint_torques_computed_safened": list(arm_state.prev_joint_torques_computed_safened),
-            "motor_torques_measured": list(arm_state.motor_torques_measured),
-            "prev_controller_latency_ms": arm_state.prev_controller_latency_ms,
-            "prev_command_successful": arm_state.prev_command_successful,
-        }
-        
-        polymetis_timestamp_ns = arm_state.polymetis_timestamp_ns
+        arm_state = msg.arm_states[0] if msg.arm_states else None
+        polymetis_timestamp_ns = arm_state.polymetis_timestamp_ns if arm_state else 0
         end_timestamp_ns = get_ros_time_ns(self._node)
         
         timestamp_dict = {
@@ -452,6 +427,115 @@ class FrankaRobotV2(BaseRobot):
         }
         
         return state_dict, timestamp_dict
+    
+    def get_robot_state_for_timestamp(
+        self, 
+        timestamp_ns: int,
+        max_time_diff_ns: int = 100_000_000  # 100ms default tolerance
+    ) -> Tuple[Dict[str, Any], Dict[str, Any], int]:
+        """
+        Get the robot state closest to a given timestamp from the cache.
+        
+        This is useful for synchronizing robot state with camera timestamps.
+        Returns the state with the smallest |robot_pub_t - timestamp_ns|.
+        Uses numpy for O(1) lookup instead of O(n) for loop.
+        
+        Args:
+            timestamp_ns: Target timestamp in nanoseconds
+            max_time_diff_ns: Maximum allowed time difference in nanoseconds (default: 100ms)
+                             If no state is within this range, returns current state.
+        
+        Returns:
+            tuple: (state_dict, timestamp_dict, time_diff_ns)
+                - state_dict: Robot state dictionary
+                - timestamp_dict: Timestamp dictionary
+                - time_diff_ns: Signed time difference (positive=state newer, negative=state older)
+        
+        Note:
+            - Uses numpy argmin for O(1) lookup (no for loop)
+            - Falls back to get_robot_state() if cache is empty or no match within tolerance
+            - The cache stores the last 100 states (~2 seconds at 50Hz)
+        """
+        with self._state_cache_lock:
+            cache_len = len(self._state_cache)
+            
+            if cache_len == 0:
+                # Fallback: return current state
+                state_dict, timestamp_dict = self.get_robot_state()
+                return state_dict, timestamp_dict, 0
+            
+            # Use numpy for O(1) argmin lookup (avoid for loop)
+            timestamps = self._cache_timestamps_ns[:cache_len]
+            diffs = np.abs(timestamps - timestamp_ns)
+            best_idx = np.argmin(diffs)
+            best_diff = diffs[best_idx]
+            
+            if best_diff > max_time_diff_ns:
+                # Fallback: return current state if no match within tolerance
+                state_dict, timestamp_dict = self.get_robot_state()
+                self._node.get_logger().warn(
+                    f"get_robot_state_for_timestamp: No cached state within {max_time_diff_ns / 1e6:.1f} ms "
+                    f"of requested timestamp {timestamp_ns} ns (closest diff {best_diff / 1e6:.1f} ms). "
+                    "Returning current state instead."
+                )
+                return state_dict, timestamp_dict, int(best_diff)
+            
+            # Get the cached entry
+            pub_t, msg, received_time_ns = self._state_cache[best_idx]
+        
+        # Build state_dict from cached message (outside lock)
+        state_dict = self._build_state_dict_from_msg(msg)
+        
+        # Build timestamp_dict
+        arm_state = msg.arm_states[0] if msg.arm_states else None
+        polymetis_timestamp_ns = arm_state.polymetis_timestamp_ns if arm_state else 0
+        
+        timestamp_dict = {
+            "robot_polymetis_t": int(polymetis_timestamp_ns),
+            "robot_pub_t": int(pub_t),
+            "robot_sub_t": int(received_time_ns),
+            "robot_end_t": get_ros_time_ns(self._node),
+        }
+        
+        # Calculate signed time difference (positive if state is newer)
+        signed_diff = pub_t - timestamp_ns
+        
+        return state_dict, timestamp_dict, int(signed_diff)
+    
+    def _build_state_dict_from_msg(self, msg: RobotState) -> Dict[str, Any]:
+        """
+        Build state_dict from a RobotState message.
+        
+        Args:
+            msg: RobotState message
+        
+        Returns:
+            dict: State dictionary
+        """
+        # Extract arm state (first one for single robot)
+        arm_state = msg.arm_states[0] if msg.arm_states else None
+        
+        # Extract gripper state (first one for single robot)
+        gripper_state = msg.gripper_states[0] if msg.gripper_states else None
+        gripper_position = float(gripper_state.position) if gripper_state else 0.0
+        
+        if arm_state is None:
+            return self._DEFAULT_STATE[0].copy()
+        
+        cartesian_position = list(arm_state.ee_position) + list(arm_state.ee_euler)
+        
+        return {
+            "cartesian_position": cartesian_position,
+            "gripper_position": gripper_position,
+            "joint_positions": list(arm_state.joint_positions),
+            "joint_velocities": list(arm_state.joint_velocities),
+            "joint_torques_computed": list(arm_state.joint_torques_computed),
+            "prev_joint_torques_computed": list(arm_state.prev_joint_torques_computed),
+            "prev_joint_torques_computed_safened": list(arm_state.prev_joint_torques_computed_safened),
+            "motor_torques_measured": list(arm_state.motor_torques_measured),
+            "prev_controller_latency_ms": arm_state.prev_controller_latency_ms,
+            "prev_command_successful": arm_state.prev_command_successful,
+        }
     
     def get_arm_state_raw(self) -> Optional[ArmState]:
         """Get raw ArmState message for direct access."""

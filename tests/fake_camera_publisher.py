@@ -54,7 +54,8 @@ class FakeCameraPublisher(Node):
         random_pose: bool = True,
         empty_image: bool = False,
         rgb_image_path: Optional[str] = None,
-        depth_image_path: Optional[str] = None
+        depth_image_path: Optional[str] = None,
+        publish_tf: bool = True
     ):
         """
         Initialize fake camera publisher.
@@ -75,6 +76,7 @@ class FakeCameraPublisher(Node):
             empty_image: If True, publish empty images (default: False)
             rgb_image_path: Path to RGB image file (default: None, uses random noise)
             depth_image_path: Path to depth image file (default: None, uses random noise)
+            publish_tf: Whether to publish TF transform (default: True)
         """
         super().__init__(f'fake_camera_publisher_{camera_id}')
         
@@ -89,6 +91,7 @@ class FakeCameraPublisher(Node):
         self.empty_image = empty_image
         self.rgb_image_path = rgb_image_path
         self.depth_image_path = depth_image_path
+        self.publish_tf = publish_tf
         
         # Frame counter for tracking
         self.frame_counter = 0
@@ -159,12 +162,13 @@ class FakeCameraPublisher(Node):
         # Generate camera info once
         self.camera_info = self._generate_camera_info()
         
-        # Setup static transform broadcaster
-        self.tf_broadcaster = StaticTransformBroadcaster(self)
-        
-        # Generate random pose for static transform
-        if random_pose:
-            self._generate_and_publish_static_transform()
+        # Setup static transform broadcaster (only if publish_tf is True)
+        self.tf_broadcaster = None
+        if self.publish_tf:
+            self.tf_broadcaster = StaticTransformBroadcaster(self)
+            # Generate random pose for static transform
+            if random_pose:
+                self._generate_and_publish_static_transform()
         
         image_source = "files" if (self.rgb_image_path or self.depth_image_path) else ("empty" if self.empty_image else "random noise")
         self.get_logger().info(
@@ -178,7 +182,8 @@ class FakeCameraPublisher(Node):
             f"  Use sim time: {use_sim_time}\n"
             f"  Base frame: {base_frame}\n"
             f"  Camera frame: {self.camera_frame}\n"
-            f"  Random pose: {random_pose}\n"
+            f"  Publish TF: {self.publish_tf}\n"
+            f"  Random pose: {random_pose if self.publish_tf else 'N/A'}\n"
             f"  Image source: {image_source}\n"
             f"  RGB image path: {self.rgb_image_path or 'N/A'}\n"
             f"  Depth image path: {self.depth_image_path or 'N/A'}\n"
@@ -472,8 +477,12 @@ def main():
                        help='Image height in pixels (default: 480)')
     parser.add_argument('--use-sim-time', action='store_true',
                        help='Use ROS simulation time')
+    parser.add_argument('--publish-tf', action='store_true', default=True,
+                       help='Publish TF transform (default: True)')
+    parser.add_argument('--no-publish-tf', dest='publish_tf', action='store_false',
+                       help='Do not publish TF transform')
     parser.add_argument('--random-pose', action='store_true', default=True,
-                       help='Use random pose for static transform (default: True)')
+                       help='Use random pose for static transform (default: True, only if publish-tf)')
     parser.add_argument('--no-random-pose', dest='random_pose', action='store_false',
                        help='Disable random pose for static transform')
     parser.add_argument('--empty-image', action='store_true',
@@ -557,7 +566,8 @@ def main():
                 random_pose=args.random_pose,
                 empty_image=args.empty_image,
                 rgb_image_path=rgb_image_path,
-                depth_image_path=depth_image_path
+                depth_image_path=depth_image_path,
+                publish_tf=args.publish_tf
             )
             publishers.append(publisher)
         
