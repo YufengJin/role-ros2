@@ -34,14 +34,25 @@ echo ""
 
 # Add NVIDIA Container Toolkit repository
 echo "Step 1: Adding NVIDIA Container Toolkit repository..."
+
+# Remove existing repository files to avoid conflicts
+rm -f /etc/apt/sources.list.d/nvidia-container-toolkit.list
+rm -f /etc/apt/sources.list.d/nvidia-*.list 2>/dev/null || true
+
+# Add GPG key (overwrite if exists, use batch mode to avoid prompts)
 curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
-    gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+    gpg --dearmor --batch --yes -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
 
-curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
-    sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
-    tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+# Detect architecture
+ARCH=$(dpkg --print-architecture)
 
-echo "✓ Repository added"
+# Create repository configuration manually (more reliable than downloading template)
+# Use stable/deb path which works for all Debian/Ubuntu distributions
+cat > /etc/apt/sources.list.d/nvidia-container-toolkit.list <<EOF
+deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://nvidia.github.io/libnvidia-container/stable/deb/$ARCH /
+EOF
+
+echo "✓ Repository added (distribution: $DISTRIBUTION, arch: $ARCH)"
 echo ""
 
 # Update package list
