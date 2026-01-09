@@ -85,14 +85,14 @@ def create_server_launch_processes(context: LaunchContext, robot_ip, use_mock,
     load_gripper_str = context.perform_substitution(load_gripper)
     robot_port_str = context.perform_substitution(robot_port)
     gripper_port_str = context.perform_substitution(gripper_port)
-    use_real_time_str = context.perform_substitution(use_real_time)
     gripper_type_str = context.perform_substitution(gripper_type)
+    # Note: use_real_time is kept as launch arg for backwards compatibility but not used
     
     # Convert to bool
     use_mock_bool = use_mock_str.lower() == 'true'
     auto_launch_bool = auto_launch_str.lower() == 'true'
     load_gripper_bool = load_gripper_str.lower() == 'true'
-    use_real_time_bool = use_real_time_str.lower() == 'true'
+    # Note: use_real_time is no longer used as Polymetis doesn't support it as runtime arg
     
     processes = []
     
@@ -136,26 +136,24 @@ def create_server_launch_processes(context: LaunchContext, robot_ip, use_mock,
         )
     
     # Step 2: Build launch_robot.py command with configurable parameters
-    real_time_arg = '--use_real_time' if use_real_time_bool else ''
+    # Note: Polymetis uses Hydra config system. Real-time control is configured at build time,
+    # not as a runtime argument. The --use_real_time flag is not supported.
     
     robot_launch_cmd = (
         'if command -v micromamba &> /dev/null; then '
         '  eval "$(micromamba shell hook --shell=bash)" && micromamba activate polymetis-local && '
         f'  launch_robot.py robot_client=franka_hardware '
         f'  robot_client.executable_cfg.robot_ip={robot_ip_str} '
-        f'  port={robot_port_str} '
-        f'  {real_time_arg}; '
+        f'  port={robot_port_str}; '
         'elif command -v conda &> /dev/null; then '
         '  source $(conda info --base)/etc/profile.d/conda.sh && conda activate polymetis-local && '
         f'  launch_robot.py robot_client=franka_hardware '
         f'  robot_client.executable_cfg.robot_ip={robot_ip_str} '
-        f'  port={robot_port_str} '
-        f'  {real_time_arg}; '
+        f'  port={robot_port_str}; '
         'else '
         f'  launch_robot.py robot_client=franka_hardware '
         f'  robot_client.executable_cfg.robot_ip={robot_ip_str} '
-        f'  port={robot_port_str} '
-        f'  {real_time_arg}; '
+        f'  port={robot_port_str}; '
         'fi'
     )
     
@@ -264,7 +262,10 @@ def create_robot_nodes(context: LaunchContext, arm_id, urdf_file, use_mock,
     nodes = []
     
     # Calculate delay for nodes (if auto-launching servers, wait for them to start)
-    node_delay = 5.0 if (auto_launch_bool and not use_mock_bool) else 0.0
+    # Arm node delay: 5s to wait for robot server
+    # Gripper node needs extra delay: 5s (robot server) + 5s (gripper server) + 3s (initialization)
+    arm_node_delay = 5.0 if (auto_launch_bool and not use_mock_bool) else 0.0
+    gripper_node_delay = 13.0 if (auto_launch_bool and not use_mock_bool) else 0.0
     
     # ========== Robot Arm Interface Node ==========
     arm_node_params = [
@@ -344,18 +345,27 @@ def create_robot_nodes(context: LaunchContext, arm_id, urdf_file, use_mock,
         }],
     )
     
-    # If auto-launching servers, delay the nodes
-    if node_delay > 0:
-        delayed_nodes = [arm_node, aggregator_node, robot_state_publisher_node]
-        if gripper_node:
-            delayed_nodes.insert(1, gripper_node)
-        
+    # If auto-launching servers, delay the nodes appropriately
+    # Arm and other nodes: wait for robot server (5s)
+    # Gripper node: wait longer for gripper server to fully initialize (13s)
+    if arm_node_delay > 0:
+        # Arm node and other nodes with arm_node_delay
+        arm_and_other_nodes = [arm_node, aggregator_node, robot_state_publisher_node]
         nodes.append(
             TimerAction(
-                period=node_delay,
-                actions=delayed_nodes
+                period=arm_node_delay,
+                actions=arm_and_other_nodes
             )
         )
+        
+        # Gripper node with longer delay (gripper server needs more time)
+        if gripper_node:
+            nodes.append(
+                TimerAction(
+                    period=gripper_node_delay,
+                    actions=[gripper_node]
+                )
+            )
     else:
         nodes.append(arm_node)
         if gripper_node:
