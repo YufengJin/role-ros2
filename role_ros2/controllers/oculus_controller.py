@@ -161,11 +161,10 @@ class VRPolicy:
         vr_pos = self.spatial_coeff * rot_mat[:3, 3]
         vr_quat = rmat_to_quat(rot_mat[:3, :3])
         
-        # Read trigger value and invert to match gripper semantics:
-        # - Trigger pressed (value ≈ 1) -> gripper close (position = 0)
-        # - Trigger released (value ≈ 0) -> gripper open (position = 1)
-        trigger_value = self._state["buttons"]["rightTrig" if self.controller_id == "r" else "leftTrig"][0]
-        vr_gripper = 1.0 - trigger_value
+        # VR trigger value matches droid gripper convention:
+        # - Trigger pressed (value ≈ 1) -> gripper close (position = 1)
+        # - Trigger released (value ≈ 0) -> gripper open (position = 0)
+        vr_gripper = self._state["buttons"]["rightTrig" if self.controller_id == "r" else "leftTrig"][0]
 
         self.vr_state = {"pos": vr_pos, "quat": vr_quat, "gripper": vr_gripper}
 

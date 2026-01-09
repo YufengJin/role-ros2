@@ -446,8 +446,8 @@ class FrankaGripperInterfaceNode(Node):
             msg.header.frame_id = 'gripper_link'
             
             msg.width = float(gripper_state.width)
-            # position: 0=closed (width=0), 1=open (width=max)
-            msg.position = float(gripper_state.width / self._max_gripper_width)
+            # position: 0=open (width=max), 1=closed (width=0) - matches droid convention
+            msg.position = float(1.0 - gripper_state.width / self._max_gripper_width)
             msg.is_grasped = bool(getattr(gripper_state, 'is_grasped', False))
             msg.is_moving = bool(getattr(gripper_state, 'is_moving', False))
             msg.prev_command_successful = bool(getattr(gripper_state, 'prev_command_successful', True))

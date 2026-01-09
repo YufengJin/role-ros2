@@ -516,7 +516,8 @@ class FrankaRobot(BaseRobot):
         Update gripper position.
         
         Args:
-            command: Gripper command (0=closed, 1=open for position; -1 to 1 for velocity)
+            command: Gripper command (0=open, 1=closed for position; -1 to 1 for velocity)
+                     Matches droid convention: position=0 means open, position=1 means closed
             velocity: If True, command is velocity; if False, command is position
             blocking: Whether to wait for completion
         
@@ -532,7 +533,8 @@ class FrankaRobot(BaseRobot):
         
         command = float(np.clip(command, 0, 1))
         
-        # Convert normalized position (0=closed, 1=open) to width (0=closed, max_width=open)
+        # Convert normalized position to width (matches droid convention)
+        # command=0 -> width=max (open), command=1 -> width=0 (closed)
         width = self._max_gripper_width * (1 - command)
         
         # Publish gripper command using GripperCommand topic
@@ -559,7 +561,11 @@ class FrankaRobot(BaseRobot):
         return [0.0] * 7
     
     def get_gripper_position(self):
-        """Get current gripper position (normalized: 0=closed, 1=open)."""
+        """
+        Get current gripper position (normalized: 0=open, 1=closed).
+        
+        Matches droid convention where position=0 means fully open and position=1 means closed.
+        """
         _, gripper_state = self._get_current_state()
         if gripper_state is not None:
             return float(gripper_state.position)
