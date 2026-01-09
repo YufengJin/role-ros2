@@ -1,0 +1,18 @@
+# Gripper Goto Service
+# Move gripper to specified width
+
+# Target width in meters (0.0 = closed, max_width = open)
+float64 width
+
+# Movement speed (0.0-1.0, 0 = use default)
+float64 speed
+
+# Gripper force (0.0-1.0, 0 = use default)
+float64 force
+
+# Whether to block until command completes
+bool blocking
+---
+bool success
+string message
+

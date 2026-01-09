@@ -33,6 +33,9 @@ message(STATUS "Detected Python version: ${PYTHON_VERSION}")
 
 # Generate messages, services, and actions
 rosidl_generate_interfaces(${PROJECT_NAME}
+  # ============================================================================
+  # Legacy messages (V1 - for polymetis_bridge_node.py, franka_robot.launch.py)
+  # ============================================================================
   "msg/OculusButtons.msg"
   "msg/PolymetisRobotCommand.msg"
   "msg/PolymetisRobotState.msg"
@@ -40,6 +43,22 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/GripperCommand.msg"
   "msg/ControllerStatus.msg"
   "msg/VRPolicyAction.msg"
+  "msg/AggregatedRobotState.msg"
+  # ============================================================================
+  # V2 messages (for franka_robot_interface_node.py, franka_gripper_interface_node.py)
+  # ============================================================================
+  # Controller command messages
+  "msg/JointPositionCommand.msg"
+  "msg/JointVelocityCommand.msg"
+  "msg/CartesianPositionCommand.msg"
+  "msg/CartesianVelocityCommand.msg"
+  # State messages
+  "msg/ArmState.msg"
+  "msg/GripperState.msg"
+  "msg/RobotState.msg"
+  # ============================================================================
+  # Legacy services (V1)
+  # ============================================================================
   "srv/Reset.srv"
   "srv/Home.srv"
   "srv/StartCartesianImpedance.srv"
@@ -50,6 +69,15 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/SolveIK.srv"
   "srv/ComputeFK.srv"
   "srv/ComputeTimeToGo.srv"
+  # ============================================================================
+  # V2 services
+  # ============================================================================
+  "srv/StartJointVelocity.srv"
+  "srv/GripperGoto.srv"
+  "srv/GripperGrasp.srv"
+  # ============================================================================
+  # Actions
+  # ============================================================================
   "action/MoveToPose.action"
   DEPENDENCIES std_msgs geometry_msgs
 )
@@ -67,6 +95,22 @@ install(PROGRAMS
   nodes/polymetis_bridge_node.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME polymetis_bridge
+)
+# New refactored nodes
+install(PROGRAMS
+  nodes/franka_robot_interface_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME franka_robot_interface
+)
+install(PROGRAMS
+  nodes/franka_gripper_interface_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME franka_gripper_interface
+)
+install(PROGRAMS
+  nodes/robot_state_aggregator_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME robot_state_aggregator
 )
 
 # Note: scripts/ directory contains pure Python scripts (not ROS2 nodes)

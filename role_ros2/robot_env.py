@@ -12,6 +12,7 @@ from role_ros2.calibration.calibration_utils import load_calibration_info
 from role_ros2.camera.multi_camera_wrapper import MultiCameraWrapper
 from role_ros2.robot.base_robot import BaseRobot
 from role_ros2.robot.franka.robot import FrankaRobot
+from role_ros2.robot.franka.robot_v2 import FrankaRobotV2
 from role_ros2.misc.parameters import hand_camera_id
 from role_ros2.misc.ros2_utils import get_ros_time_ns
 from role_ros2.misc.transformations import change_pose_frame
@@ -71,7 +72,7 @@ class RobotEnv(gym.Env):
 
         # Initialize robot (before executor setup, so subscribers are registered)
         if robot is None:
-            self._robot: BaseRobot = FrankaRobot(node=self._node)
+            self._robot: BaseRobot = FrankaRobotV2(node=self._node)
         else:
             self._robot: BaseRobot = robot
 

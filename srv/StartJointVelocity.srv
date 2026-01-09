@@ -1,0 +1,9 @@
+# Start Joint Velocity Controller Service
+# Starts joint velocity control mode for non-blocking velocity commands
+
+# Initial joint velocities (7 DOF, optional - defaults to zeros)
+float64[] qd_init
+---
+bool success
+string message
+

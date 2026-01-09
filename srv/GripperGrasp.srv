@@ -1,0 +1,16 @@
+# Gripper Grasp Service
+# Close gripper to grasp an object
+
+# Movement speed (0.0-1.0, 0 = use default)
+float64 speed
+
+# Gripper force (0.0-1.0, 0 = use default)
+float64 force
+
+# Whether to block until command completes
+bool blocking
+---
+bool success
+string message
+bool is_grasped  # True if object is detected between fingers
+
