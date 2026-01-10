@@ -6,7 +6,7 @@
 
 ## 文件说明
 
-- **Dockerfile.ros2_cu118**: 基于 NVIDIA CUDA 11.8 和 Ubuntu 22.04 的 Docker 镜像
+- **Dockerfile**: 基于 NVIDIA CUDA 11.8 和 Ubuntu 22.04 的 Docker 镜像
 - **docker-compose.yaml**: Docker Compose 配置文件，包含 GPU 支持、网络配置和开发模式挂载
 - **docker-compose-no-gpu.yaml**: 无 GPU 模式的 Docker Compose 配置（用于没有 nvidia-container-toolkit 的系统）
 - **run_container.sh**: 辅助脚本，自动检测 docker compose 版本并支持 GPU/无 GPU 模式切换
@@ -591,7 +591,7 @@ colcon build --packages-select role_ros2 --symlink-install
 
 ```
 ros2_cu118/
-├── Dockerfile.ros2_cu118      # Docker 镜像定义
+├── Dockerfile                  # Docker 镜像定义
 ├── docker-compose.yaml         # Docker Compose 配置（包含 pid: host, ipc: host）
 ├── entrypoint.sh               # 容器入口脚本（自动配置环境并管理 daemon）
 ├── ros2_cu118.env              # 环境变量配置（ROS2 和 DDS 设置）

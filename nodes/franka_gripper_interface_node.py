@@ -55,7 +55,7 @@ from role_ros2.srv import GripperGoto, GripperGrasp
 # HYPERPARAMETERS
 # ============================================================================
 
-DEFAULT_GRIPPER_SPEED = 0.15  # Default gripper movement speed (m/s)
+DEFAULT_GRIPPER_SPEED = 0.05  # Default gripper movement speed (m/s)
 DEFAULT_GRIPPER_FORCE = 0.1  # Default gripper force (normalized 0-1)
 
 # ============================================================================

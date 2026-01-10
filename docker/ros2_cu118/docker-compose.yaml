@@ -4,7 +4,7 @@ services:
     container_name: ros2_cu118_container
     build:
       context: ../..  # From ros2_cu118 directory, go up 2 levels to role-ros2 root
-      dockerfile: docker/ros2_cu118/Dockerfile.ros2_cu118
+      dockerfile: docker/ros2_cu118/Dockerfile
       args:
         ZED_SDK_MAJOR: "4"
         ZED_SDK_MINOR: "1"

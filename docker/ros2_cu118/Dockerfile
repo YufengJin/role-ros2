@@ -81,6 +81,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ros-humble-rmw-cyclonedds-cpp is kept for optional future use
 # x11-apps includes xeyes, xclock, etc. for testing X11 forwarding
 
+# B.2. Install RealSense ROS2 packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-humble-librealsense2* ros-humble-realsense2-* \
+    && rm -rf /var/lib/apt/lists/*
+# Note: ros-humble-librealsense2* installs all RealSense2 ROS2 packages including:
+# - ros-humble-librealsense2: Core RealSense2 library ROS2 wrapper
+# - ros-humble-realsense2-camera: RealSense camera ROS2 driver
+# - ros-humble-realsense2-description: RealSense URDF descriptions
+# - ros-humble-realsense2-metadata: RealSense metadata messages
+
 # C. Network & Debugging Tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     iputils-ping \
