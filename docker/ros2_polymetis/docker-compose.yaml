@@ -6,10 +6,8 @@ services:
       context: ../..  # From ros2_polymetis directory, go up 2 levels to role-ros2 root
       dockerfile: docker/ros2_polymetis/Dockerfile.ros2_polymetis
       args:
-        LIBFRANKA_VERSION: "0.14.1"
+        LIBFRANKA_VERSION: "0.18.2"
         ROBOT_TYPE: "fr3"
-        ROBOT_IP: "172.17.0.2"
-        NUC_IP: "172.17.0.1"
     network_mode: host
     # Use host PID namespace for correct daemon PID detection
     pid: host

@@ -5,7 +5,10 @@ services:
     build:
       context: ../..  # From ros2_cu118 directory, go up 2 levels to role-ros2 root
       dockerfile: docker/ros2_cu118/Dockerfile.ros2_cu118
-      # args:  # Uncomment and add build args here if needed in the future
+      args:
+        ZED_SDK_MAJOR: "4"
+        ZED_SDK_MINOR: "1"
+        ZED_ROS2_WRAPPER_VERSION: "humble-v4.1.4"
     # Use host network mode for ROS2 communication
     network_mode: host
     # Use host PID namespace for correct daemon PID detection

@@ -39,7 +39,7 @@ source setup_x11.sh
 
 # 方法 2: 手动设置
 export DISPLAY=:0  # 或您的实际 DISPLAY 值
-xhost +local:      # 允许本地 X11 连接
+xhost +local:root      # 允许本地 X11 连接
 ```
 
 **注意**：
