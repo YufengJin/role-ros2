@@ -5,7 +5,7 @@
 # ============================================================================
 # Robot Connection Settings
 # ============================================================================
-robot_ip: "10.10.10.10"   # Robot IP address or hostname
+robot_ip: "172.17.0.2"   # Robot IP address or hostname
 
 # Robot identification
 arm_id: "fr3"  # Robot arm ID. Supported values: fer, fr3, fp3
@@ -17,7 +17,7 @@ arm_id: "fr3"  # Robot arm ID. Supported values: fer, fr3, fp3
 #   - fr3.urdf: Base version (no fingers)
 #   - fr3_w_fin.urdf: With fingers
 #   - fr3_w_soft_fin.urdf: With soft fingers
-urdf_file: "fr3_w_fin.urdf"
+urdf_file: "fr3_w_soft_fin.urdf"
 
 # ============================================================================
 # Joint Names Configuration

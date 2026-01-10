@@ -43,11 +43,6 @@ services:
       FASTDDS_BUILTIN_TRANSPORTS: "UDPv4"
       ROS_LOCALHOST_ONLY: "${ROS_LOCALHOST_ONLY:-0}"
       DISPLAY: "${DISPLAY}"
-      # Robot configuration (can be overridden)
-      ROBOT_IP: "${ROBOT_IP:-172.17.0.2}"
-      NUC_IP: "${NUC_IP:-172.17.0.1}"
-      LAPTOP_IP: "${LAPTOP_IP:-172.17.0.1}"
-      ROBOT_TYPE: "${ROBOT_TYPE:-fr3}"
       # ZED SDK environment variables
       ZED_SDK_ROOT: "/usr/local/zed"
     volumes:
@@ -60,7 +55,3 @@ services:
       # This allows editing code outside the container and building inside
       # Path: from ros2_cu118 directory, ../../ points to role-ros2 directory (up 2 levels)
       - ../../:/app/ros2_ws/src/role-ros2:rw
-      # Mount droid repository for testing VRPolicy comparison
-      # This allows importing droid.controllers.oculus_controller in test scripts
-      - /home/yjin/repos/droid:/app/droid:ro
-

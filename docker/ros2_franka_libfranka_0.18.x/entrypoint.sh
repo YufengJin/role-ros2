@@ -79,10 +79,10 @@ fi
 
 # Source ROS2 environment configuration (includes DDS settings)
 # This must be done before starting the daemon to ensure proper DDS configuration
-if [ -f "/app/ros2_ws/src/role-ros2/docker/ros2_polymetis/polymetis_ros2.env" ]; then
+if [ -f "/app/ros2_ws/src/role-ros2/docker/ros2_franka_libfranka_0.18.x/polymetis_ros2.env" ]; then
     # Suppress output when not in interactive terminal (e.g., from entrypoint)
-    source /app/ros2_ws/src/role-ros2/docker/ros2_polymetis/polymetis_ros2.env >/dev/null 2>&1 || \
-    source /app/ros2_ws/src/role-ros2/docker/ros2_polymetis/polymetis_ros2.env
+    source /app/ros2_ws/src/role-ros2/docker/ros2_franka_libfranka_0.18.x/polymetis_ros2.env >/dev/null 2>&1 || \
+    source /app/ros2_ws/src/role-ros2/docker/ros2_franka_libfranka_0.18.x/polymetis_ros2.env
 fi
 
 # Set Polymetis Python path
@@ -94,10 +94,6 @@ export CONDA_PREFIX=/opt/fairo/polymetis/polymetis/build
 # Set library paths
 export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/opt/ros/foxy/lib:/opt/ros/foxy/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH}
 export LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/opt/openrobots/lib:/usr/local/lib:/opt/fairo/polymetis/polymetis/build/torch_isolation
-
-# Robot configuration
-export ROBOT_IP=${ROBOT_IP:-172.17.0.2}
-export POLYMETIS_IP=${POLYMETIS_IP:-127.0.0.1}
 
 # ROS2 DDS configuration - using FastRTPS with shared memory disabled
 # This avoids SIGSEGV issues in Docker environment

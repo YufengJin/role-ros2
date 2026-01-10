@@ -4,7 +4,7 @@
 FROM ubuntu:20.04
 
 # Set build arguments
-ARG LIBFRANKA_VERSION=0.18.2
+ARG LIBFRANKA_VERSION=0.14.1
 ARG ROBOT_TYPE=fr3
 
 # Set environment variables
@@ -35,7 +35,6 @@ RUN apt-get update && \
     python3.8-venv \
     libspdlog-dev \
     libeigen3-dev \
-    libfmt-dev \
     lsb-release \
     ffmpeg \
     libsm6 \
@@ -269,7 +268,7 @@ RUN python3.8 -m pip install \
     pytest-benchmark==4.0.0 \
     grpcio==1.46.0 \
     grpcio-tools==1.46.0 \
-    protobuf \
+    protobuf==3.18.1 \
     pybullet \
     pymodbus==2.5.3 \
     pyserial \
@@ -316,7 +315,7 @@ RUN python3.8 -m pip install --ignore-installed \
     opencv-python==4.6.0.66 \
     opencv-contrib-python==4.6.0.66 \
     Pillow \
-    protobuf==3.20.1 \
+    protobuf==3.18.1 \
     psutil \
     pyrallis \
     lark \
@@ -469,11 +468,9 @@ RUN export CMAKE_PREFIX_PATH=/opt/openrobots:/usr/local:$CMAKE_PREFIX_PATH && \
     cd build && \
     cmake .. \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_CXX_STANDARD=17 \
     -DBUILD_TESTS=OFF \
     -DBUILD_EXAMPLES=OFF \
-    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-    -Dfmt_DIR=/usr/lib/x86_64-linux-gnu/cmake/fmt && \
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 && \
     make -j$(nproc)
 
 # ============================================================================
@@ -518,12 +515,10 @@ RUN TORCH_PATH=$(python3.8 -c "import torch; import os; print(os.path.dirname(to
     cd ./polymetis/build && \
     cmake .. \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_CXX_STANDARD=17 \
     -DBUILD_FRANKA=ON \
     -DBUILD_TESTS=OFF \
     -DBUILD_DOCS=OFF \
     -Dspdlog_DIR=/usr/lib/x86_64-linux-gnu/cmake/spdlog \
-    -Dfmt_DIR=/usr/lib/x86_64-linux-gnu/cmake/fmt \
     -DTorch_DIR=${TORCH_PATH}/share/cmake/Torch \
     -DgRPC_DIR=/usr/local/lib/cmake/grpc \
     -DProtobuf_DIR=/usr/local/lib/cmake/protobuf \
@@ -572,12 +567,12 @@ WORKDIR /app/ros2_ws
 # Copy Docker configuration files to image
 # ============================================================================
 # Build context is ../.. (role-ros2 root directory), so path is relative to that
-COPY docker/ros2_polymetis/entrypoint.sh /entrypoint.sh
-COPY docker/ros2_polymetis/polymetis_ros2.env /app/ros2_ws/src/role-ros2/docker/ros2_polymetis/polymetis_ros2.env
+COPY docker/ros2_franka_libfranka_0.14.x/entrypoint.sh /entrypoint.sh
+COPY docker/ros2_franka_libfranka_0.14.x/polymetis_ros2.env /app/ros2_ws/src/role-ros2/docker/ros2_franka_libfranka_0.14.x/polymetis_ros2.env
 RUN chmod +x /entrypoint.sh && \
-    chmod +x /app/ros2_ws/src/role-ros2/docker/ros2_polymetis/polymetis_ros2.env && \
+    chmod +x /app/ros2_ws/src/role-ros2/docker/ros2_franka_libfranka_0.14.x/polymetis_ros2.env && \
     # Add polymetis_ros2.env to bashrc so environment variables are set in new shells
-    echo "if [ -f /app/ros2_ws/src/role-ros2/docker/ros2_polymetis/polymetis_ros2.env ]; then source /app/ros2_ws/src/role-ros2/docker/ros2_polymetis/polymetis_ros2.env; fi" >> /root/.bashrc
+    echo "if [ -f /app/ros2_ws/src/role-ros2/docker/ros2_franka_libfranka_0.14.x/polymetis_ros2.env ]; then source /app/ros2_ws/src/role-ros2/docker/ros2_franka_libfranka_0.14.x/polymetis_ros2.env; fi" >> /root/.bashrc
 
 # Use the entrypoint from image
 ENTRYPOINT ["/entrypoint.sh"]

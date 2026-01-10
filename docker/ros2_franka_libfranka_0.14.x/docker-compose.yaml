@@ -1,0 +1,68 @@
+# Docker Compose configuration for ROS2 Polymetis with libfranka 0.14.x
+# Compatible with robot system 5.7.1
+# Uses C++14 and does not require fmt library
+
+services:
+  ros2_polymetis:
+    image: ros2_polymetis:0.14.1
+    container_name: ros2_polymetis_container
+    build:
+      context: ../..  # From ros2_franka_libfranka_0.14.x directory, go up 2 levels to role-ros2 root
+      dockerfile: docker/ros2_franka_libfranka_0.14.x/Dockerfile
+      args:
+        LIBFRANKA_VERSION: "0.14.1"
+        ROBOT_TYPE: "${ROBOT_TYPE:-fr3}"
+    network_mode: host
+    # Use host PID namespace for correct daemon PID detection
+    pid: host
+    # Use host IPC namespace for DDS zero-copy and shared memory
+    ipc: host
+    # Keep container running (required for background mode)
+    stdin_open: true
+    tty: true
+    # Enable privileged mode for hardware access (required for real-time and /dev/cpu_dma_latency)
+    # If you don't need real-time, you can remove this and run servers on host instead
+    privileged: true
+    # Mount all devices (required for /dev/cpu_dma_latency access)
+    # This is critical for real-time operations in Docker
+    devices:
+      - "/dev:/dev"
+    # Add real-time scheduling capability (required for SYS_NICE)
+    cap_add:
+      - SYS_NICE      # Real-time scheduling
+    # Set real-time priority and memory locking limits (required for mlockall)
+    # These limits allow the container to use real-time features
+    ulimits:
+      rtprio: 99          # Real-time priority limit (0-99)
+      memlock: 102400     # Memory locking limit in KB (100MB)
+    # Auto-restart policy (matches official NUC configuration)
+    deploy:
+      restart_policy:
+        condition: any
+    environment:
+      ROBOT_IP: "${ROBOT_IP:-172.17.0.2}"
+      POLYMETIS_IP: "${POLYMETIS_IP:-127.0.0.1}"
+      ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
+      # DDS Configuration: FastRTPS with shared memory disabled
+      # This avoids SIGSEGV issues in Docker environment
+      RMW_IMPLEMENTATION: "rmw_fastrtps_cpp"
+      FASTDDS_BUILTIN_TRANSPORTS: "UDPv4"
+      ROS_LOCALHOST_ONLY: "${ROS_LOCALHOST_ONLY:-0}"
+      DISPLAY: "${DISPLAY}"
+      # Set SKIP_AUTO_ENV=true to skip automatic environment configuration
+      # Then manually source: source /app/ros2_ws/src/role-ros2/docker/ros2_franka_libfranka_0.14.x/polymetis_ros2.env
+      SKIP_AUTO_ENV: "${SKIP_AUTO_ENV:-false}"
+      # Libfranka version for reference
+      LIBFRANKA_VERSION: "0.14.1"
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # Shared memory for DDS (optional but recommended for FastDDS)
+      - /dev/shm:/dev/shm:rw
+      # ========== 开发模式：挂载整个 role-ros2 源代码目录 ==========
+      # 从 ros2_franka_libfranka_0.14.x 目录，../.. 指向 role-ros2 目录
+      # 挂载整个 role-ros2 包，这样可以在容器外部修改代码，在容器内编译
+      # 注意：fairo/polymetis 已经在镜像中安装到 /opt/fairo/polymetis，但可以通过 volume 覆盖
+      - ../../:/app/ros2_ws/src/role-ros2:rw
+      # Mount droid repository for testing RobotEnv comparison
+      # This allows importing droid.robot_env in test scripts
+      - /home/yjin/repos/droid:/app/droid:ro

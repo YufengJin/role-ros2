@@ -183,10 +183,6 @@ volumes:
 | `ROS_DOMAIN_ID` | `0` | ROS2 域 ID |
 | `RMW_IMPLEMENTATION` | `rmw_fastrtps_cpp` | RMW 实现（使用 FastRTPS，与官方镜像一致） |
 | `ROS_LOCALHOST_ONLY` | `0` | 是否仅本地通信（0=允许多机通信） |
-| `ROBOT_IP` | `172.17.0.2` | 机器人 IP 地址 |
-| `NUC_IP` | `172.17.0.1` | NUC IP 地址 |
-| `LAPTOP_IP` | `172.17.0.1` | 笔记本电脑 IP 地址 |
-| `ROBOT_TYPE` | `fr3` | 机器人类型 |
 | `CUDA_VISIBLE_DEVICES` | - | 可见的 CUDA 设备 |
 
 ### 自定义环境变量
