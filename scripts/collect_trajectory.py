@@ -566,11 +566,10 @@ def main():
         # Main control loop
         # Note: RobotEnv has its own MultiThreadedExecutor that spins the node
         # in a background thread. We just need to keep the main thread alive.
-        timer_period = 1.0 / max(collector.control_hz, 1e-6)
+        # Note: Frequency control is handled inside _control_loop(), so no external sleep needed
         
         while rclpy.ok() and not collector._shutdown_requested:
             collector._control_loop()
-            time.sleep(timer_period)
             
     except KeyboardInterrupt:
         print("👋 Exiting...")

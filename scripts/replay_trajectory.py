@@ -151,6 +151,8 @@ class ReplayTrajectory:
         if self._replay_completed:
             return
         
+        start_time = time.time()  # Record start time for frequency control
+        
         try:
             # Check if we've reached the end
             if self._current_step >= self._horizon:
@@ -190,6 +192,14 @@ class ReplayTrajectory:
             # Execute action
             if movement_enabled:
                 self.env.step(action)
+            
+            # Regularize control frequency (matching collect_trajectory.py)
+            comp_time = time.time() - start_time
+            # Apply speed_factor to frequency: faster replay = shorter sleep time
+            effective_hz = self.control_hz * self.speed_factor
+            sleep_left = (1 / effective_hz) - comp_time
+            if sleep_left > 0:
+                time.sleep(sleep_left)
             
             # Progress logging
             self._current_step += 1
@@ -291,11 +301,10 @@ def main():
         # Main replay loop
         # Note: RobotEnv has its own MultiThreadedExecutor that spins the node
         # in a background thread. We just need to keep the main thread alive.
-        timer_period = (1.0 / max(replayer.control_hz, 1e-6)) / replayer.speed_factor
+        # Note: Frequency control is handled inside _replay_loop(), so no external sleep needed
         
         while rclpy.ok() and not replayer._replay_completed:
             replayer._replay_loop()
-            time.sleep(timer_period)
             
     except KeyboardInterrupt:
         print("\n⚠️  Interrupted by user")
