@@ -82,14 +82,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # x11-apps includes xeyes, xclock, etc. for testing X11 forwarding
 
 # B.2. Install RealSense ROS2 packages
+# Install RealSense ROS2 wrapper inside the container (Option B from RealSense docs)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ros-humble-librealsense2* ros-humble-realsense2-* \
+    ros-humble-realsense2-camera \
+    ros-humble-librealsense2 \
     && rm -rf /var/lib/apt/lists/*
-# Note: ros-humble-librealsense2* installs all RealSense2 ROS2 packages including:
-# - ros-humble-librealsense2: Core RealSense2 library ROS2 wrapper
+# Note: This installs the RealSense2 ROS2 packages:
 # - ros-humble-realsense2-camera: RealSense camera ROS2 driver
-# - ros-humble-realsense2-description: RealSense URDF descriptions
-# - ros-humble-realsense2-metadata: RealSense metadata messages
+# - ros-humble-librealsense2: Core RealSense2 library ROS2 wrapper
 
 # C. Network & Debugging Tools
 RUN apt-get update && apt-get install -y --no-install-recommends \

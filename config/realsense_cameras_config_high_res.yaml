@@ -1,0 +1,160 @@
+# RealSense Cameras Configuration - HIGH RESOLUTION MODE (for Calibration)
+# This configuration is optimized for camera calibration tasks
+# - High resolution: HD (1280x720) at 30Hz
+# - Suitable for calibration tasks requiring high image quality
+# - Point cloud and depth alignment enabled
+#
+# Frame ID Prefix:
+#   The 'name' field is used as the camera_name parameter for RealSense nodes.
+#   Frame IDs will be: {name}_color_optical_frame, {name}_depth_optical_frame, etc.
+#
+# Usage: ros2 launch role_ros2 realsense_cameras.launch.py mode:=calibration
+
+cameras:
+  # Hand Camera (mounted on gripper) - RealSense D435i
+  # Camera Serial Number: (to be filled in with actual serial number)
+  # Configuration: HIGH RESOLUTION (1280x720) at 30Hz for calibration
+  - name: 'hand_camera'  # [REQUIRED] Camera name used for frame_id prefix
+    activate: false  # [REQUIRED] Set to false to disable this camera
+    serial_number: '336222076118'  # [REQUIRED] Camera serial number (string, e.g., '123456789012')
+    namespace: 'realsense_node'  # [REQUIRED] ROS 2 topic namespace
+    
+    # Stream settings - HIGH RESOLUTION for calibration
+    enable_color: true  # [REQUIRED] Enable RGB color stream
+    enable_depth: true  # [REQUIRED] Enable depth stream
+    enable_infra: false  # [DISABLED] Infrared stream 0
+    enable_infra1: false  # [DISABLED] Infrared stream 1
+    enable_infra2: false  # [DISABLED] Infrared stream 2
+    
+    # RGB camera settings - HD resolution
+    rgb_camera:
+      color_profile: '1280x720x30'  # [REQUIRED] RGB stream profile: widthxheightxfps (use 'x' separator)
+      color_format: 'RGB8'  # [REQUIRED] RGB format
+      enable_auto_exposure: true  # [OPTIONAL] Auto exposure
+    
+    # Depth module settings - HD resolution
+    depth_module:
+      depth_profile: '1280x720x30'  # [REQUIRED] Depth stream profile: widthxheightxfps (use 'x' separator)
+      depth_format: 'Z16'  # [REQUIRED] Depth format
+      enable_auto_exposure: true  # [OPTIONAL] Auto exposure for depth
+    
+    # Point cloud settings - ENABLED
+    pointcloud:
+      enable: true  # [ENABLED] Point cloud publishing
+      stream_filter: 2  # [REQUIRED] Texture stream for pointcloud (2=color)
+      stream_index_filter: 0  # [REQUIRED] Texture stream index
+      ordered_pc: false  # [OPTIONAL] Ordered point cloud
+      allow_no_texture_points: false  # [OPTIONAL] Allow points without texture
+    
+    # Depth alignment - ENABLED (align depth to RGB)
+    align_depth:
+      enable: true  # [ENABLED] Align depth to color frame
+    
+    # TF settings - DISABLED
+    publish_tf: false  # [DISABLED] TF publishing disabled
+    tf_publish_rate: 0.0  # [UNUSED] Not used when publish_tf=false
+    base_frame_id: 'hand_camera_link'  # [OPTIONAL] Base frame ID (unused when publish_tf=false)
+    tf_prefix: ''  # [OPTIONAL] TF prefix (unused when publish_tf=false)
+    
+    # Sensor settings - ALL DISABLED
+    enable_gyro: false  # [DISABLED] Gyro stream
+    enable_accel: false  # [DISABLED] Accelerometer stream
+    enable_motion: false  # [DISABLED] IMU motion stream
+    gyro_fps: 0  # [UNUSED] Not used when disabled
+    accel_fps: 0  # [UNUSED] Not used when disabled
+    unite_imu_method: 0  # [UNUSED] Not used when disabled
+    
+    # Other settings
+    enable_sync: false  # [DISABLED] Hardware sync mode
+    enable_rgbd: false  # [DISABLED] RGBD topic
+    clip_distance: -2.0  # [OPTIONAL] Clip distance in meters (-2.0 = disabled)
+    diagnostics_period: 0.0  # [DISABLED] Diagnostics publishing rate (0=disabled)
+    
+    # Filters - ALL DISABLED for performance
+    decimation_filter:
+      enable: false
+      filter_magnitude: 2
+    spatial_filter:
+      enable: false
+    temporal_filter:
+      enable: false
+    disparity_filter:
+      enable: false
+    hole_filling_filter:
+      enable: false
+    colorizer:
+      enable: false
+
+  # Static Camera (fixed position) - RealSense D435i
+  # Camera Serial Number: (to be filled in with actual serial number)
+  # Configuration: HIGH RESOLUTION (1280x720) at 30Hz for calibration
+  - name: 'static_camera'  # [REQUIRED] Camera name used for frame_id prefix
+    activate: true  # [REQUIRED] Set to false to disable this camera
+    serial_number: '233522078330'  # [REQUIRED] Camera serial number (string)
+    namespace: 'realsense_node'  # [REQUIRED] ROS 2 topic namespace
+    
+    # Stream settings - HIGH RESOLUTION for calibration
+    enable_color: true
+    enable_depth: true
+    enable_infra: false
+    enable_infra1: false
+    enable_infra2: false
+    
+    # RGB camera settings - HD resolution
+    rgb_camera:
+      color_profile: '1280x720x30'  # HD resolution at 30Hz (use 'x' separator)
+      color_format: 'RGB8'
+      enable_auto_exposure: true
+    
+    # Depth module settings - HD resolution
+    depth_module:
+      depth_profile: '1280x720x30'  # HD resolution at 30Hz (use 'x' separator)
+      depth_format: 'Z16'
+      enable_auto_exposure: true
+    
+    # Point cloud settings - ENABLED
+    pointcloud:
+      enable: true
+      stream_filter: 2
+      stream_index_filter: 0
+      ordered_pc: false
+      allow_no_texture_points: false
+    
+    # Depth alignment - ENABLED
+    align_depth:
+      enable: true
+    
+    # TF settings - DISABLED
+    publish_tf: false
+    tf_publish_rate: 0.0
+    base_frame_id: 'static_camera_link'
+    tf_prefix: ''
+    
+    # Sensor settings - ALL DISABLED
+    enable_gyro: false
+    enable_accel: false
+    enable_motion: false
+    gyro_fps: 0
+    accel_fps: 0
+    unite_imu_method: 0
+    
+    # Other settings
+    enable_sync: false
+    enable_rgbd: false
+    clip_distance: -2.0
+    diagnostics_period: 0.0
+    
+    # Filters - ALL DISABLED for performance
+    decimation_filter:
+      enable: false
+      filter_magnitude: 2
+    spatial_filter:
+      enable: false
+    temporal_filter:
+      enable: false
+    disparity_filter:
+      enable: false
+    hole_filling_filter:
+      enable: false
+    colorizer:
+      enable: false
