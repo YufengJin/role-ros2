@@ -15,7 +15,7 @@ cameras:
   # Camera Serial Number: (to be filled in with actual serial number)
   # Configuration: LOW RESOLUTION (640x480) at 30Hz for robot learning
   - name: 'hand_camera'  # [REQUIRED] Camera name used for frame_id prefix
-    activate: false  # [REQUIRED] Set to false to disable this camera
+    activate: true # [REQUIRED] Set to false to disable this camera
     serial_number: '336222076118'  # [REQUIRED] Camera serial number (string, e.g., '123456789012')
     namespace: 'realsense_node'  # [REQUIRED] ROS 2 topic namespace
     
@@ -54,11 +54,11 @@ cameras:
     align_depth:
       enable: true  # [ENABLED] Align depth to color frame
     
-    # TF settings - DISABLED
-    publish_tf: false  # [DISABLED] TF publishing disabled
-    tf_publish_rate: 0.0  # [UNUSED] Not used when publish_tf=false
-    base_frame_id: 'hand_camera_link'  # [OPTIONAL] Base frame ID (unused when publish_tf=false)
-    tf_prefix: ''  # [OPTIONAL] TF prefix (unused when publish_tf=false)
+    # TF settings - ENABLED
+    publish_tf: true  # [ENABLED] TF publishing enabled
+    tf_publish_rate: 0.0  # [STATIC] 0.0 = static TF only (no dynamic TF)
+    base_frame_id: 'link'  # [REQUIRED] Base frame ID suffix (results in: hand_camera_link)
+    tf_prefix: ''  # [OPTIONAL] TF prefix (empty = no prefix)
     
     # Sensor settings - ALL DISABLED
     enable_gyro: false  # [DISABLED] Gyro stream
@@ -128,11 +128,11 @@ cameras:
     align_depth:
       enable: true
     
-    # TF settings - DISABLED
-    publish_tf: false
-    tf_publish_rate: 0.0
-    base_frame_id: 'static_camera_link'
-    tf_prefix: ''
+    # TF settings - ENABLED
+    publish_tf: true  # [ENABLED] TF publishing enabled
+    tf_publish_rate: 0.0  # [STATIC] 0.0 = static TF only (no dynamic TF)
+    base_frame_id: 'link'  # [REQUIRED] Base frame ID suffix (results in: static_camera_link)
+    tf_prefix: ''  # [OPTIONAL] TF prefix (empty = no prefix)
     
     # Sensor settings - ALL DISABLED
     enable_gyro: false

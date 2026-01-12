@@ -17,7 +17,7 @@ import tempfile
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument, OpaqueFunction
+from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument, OpaqueFunction, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, TextSubstitution
 
@@ -141,6 +141,7 @@ def generate_camera_launches(context):
     
     # Generate launch descriptions for activated cameras
     launches = []
+    camera_index = 0  # Track index of activated cameras
     
     for camera in cameras:
         if not camera.get('activate', False):
@@ -181,7 +182,20 @@ def generate_camera_launches(context):
             }.items()
         )
         
-        launches.append(camera_launch)
+        # Add delay for second and subsequent cameras to avoid device enumeration conflicts
+        # This helps when multiple RealSense cameras are connected simultaneously
+        if camera_index > 0:
+            delay_seconds = 3.0  # 3 second delay for subsequent cameras
+            print(f"   ⏱️  Delaying launch by {delay_seconds} seconds to avoid device conflicts")
+            delayed_launch = TimerAction(
+                period=delay_seconds,
+                actions=[camera_launch]
+            )
+            launches.append(delayed_launch)
+        else:
+            launches.append(camera_launch)
+        
+        camera_index += 1
     
     if not launches:
         print("⚠️  Warning: No cameras activated! Check 'activate' flags in config file.")

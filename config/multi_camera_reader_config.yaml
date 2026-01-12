@@ -26,24 +26,46 @@ global_sync:
 #   - queue_size: Queue size for TimeSynchronizer (default: uses global queue_size)
 # Note: slop parameter is deprecated for Layer 1 (TimeSynchronizer uses exact timestamp matching)
 cameras:
-  # Hand Camera (mounted on gripper)
-  - camera_id: "11022812"  # Serial number or identifier
-    rgb_topic: "/hand_camera/zed_node/rgb/image_rect_color"
-    depth_topic: "/hand_camera/zed_node/depth/depth_registered"
-    camera_info_topic: "/hand_camera/zed_node/rgb/camera_info"
-    camera_frame: "hand_camera_left_camera_optical_frame"  # Optional: for TF lookup
-    camera_base_frame: "hand_camera_camera_link"
+  # # Hand Camera (mounted on gripper)
+  # - camera_id: "11022812"  # Serial number or identifier
+  #   rgb_topic: "/hand_camera/zed_node/rgb/image_rect_color"
+  #   depth_topic: "/hand_camera/zed_node/depth/depth_registered"
+  #   camera_info_topic: "/hand_camera/zed_node/rgb/camera_info"
+  #   camera_frame: "hand_camera_left_camera_optical_frame"  # Optional: for TF lookup
+  #   camera_base_frame: "hand_camera_camera_link"
+  #   camera_base_parent_frame: "fr3_panda_link8"  # parent frame of camera_base_frame for calibration
+  #   base_frame: "base_link"  # Optional: overrides global base_frame
+  #   queue_size: 10  # Optional: queue size for TimeSynchronizer
+    
+  # # Static Camera (fixed position)
+  # - camera_id: "24285872"  # Serial number or identifier
+  #   rgb_topic: "/static_camera/zed_node/rgb/image_rect_color"
+  #   depth_topic: "/static_camera/zed_node/depth/depth_registered"
+  #   camera_info_topic: "/static_camera/zed_node/rgb/camera_info"
+  #   camera_frame: "static_camera_left_camera_optical_frame"  # Optional: for TF lookup
+  #   camera_base_frame: "static_camera_camera_link"
+  #   camera_base_parent_frame: "base_link"   # parent frame of camera_base_frame for calibration
+  #   base_frame: "base_link"  # Optional: overrides global base_frame
+  #   queue_size: 10  # Optional: queue size for TimeSynchronizer
+    
+  # Hand Camera (mounted on gripper) - RealSense D435i
+  - camera_id: "336222076118"  # Serial number or identifier
+    rgb_topic: "/realsense_node/hand_camera/color/image_raw"
+    depth_topic: "/realsense_node/hand_camera/aligned_depth_to_color/image_raw"
+    camera_info_topic: "/realsense_node/hand_camera/color/camera_info"
+    camera_frame: "hand_camera_color_optical_frame"  # Optional: for TF lookup
+    camera_base_frame: "hand_camera_link"
     camera_base_parent_frame: "fr3_panda_link8"  # parent frame of camera_base_frame for calibration
     base_frame: "base_link"  # Optional: overrides global base_frame
     queue_size: 10  # Optional: queue size for TimeSynchronizer
     
-  # Static Camera (fixed position)
-  - camera_id: "24285872"  # Serial number or identifier
-    rgb_topic: "/static_camera/zed_node/rgb/image_rect_color"
-    depth_topic: "/static_camera/zed_node/depth/depth_registered"
-    camera_info_topic: "/static_camera/zed_node/rgb/camera_info"
-    camera_frame: "static_camera_left_camera_optical_frame"  # Optional: for TF lookup
-    camera_base_frame: "static_camera_camera_link"
+  # Static Camera (fixed position) - RealSense D435i
+  - camera_id: "233522078330"  # Serial number or identifier
+    rgb_topic: "/realsense_node/static_camera/color/image_raw"
+    depth_topic: "/realsense_node/static_camera/aligned_depth_to_color/image_raw"
+    camera_info_topic: "/realsense_node/static_camera/color/camera_info"
+    camera_frame: "static_camera_color_optical_frame"  # Optional: for TF lookup
+    camera_base_frame: "static_camera_link"
     camera_base_parent_frame: "base_link"   # parent frame of camera_base_frame for calibration
     base_frame: "base_link"  # Optional: overrides global base_frame
     queue_size: 10  # Optional: queue size for TimeSynchronizer
