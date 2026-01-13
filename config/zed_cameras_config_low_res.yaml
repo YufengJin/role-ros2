@@ -68,14 +68,24 @@ cameras:
       publish_disparity: false  # [DISABLED] Disparity topic
       publish_depth_info: false  # [OPTIONAL] Depth info topic
     
-    # Position tracking settings - ALL DISABLED
+    # Position tracking settings - ALL DISABLED (no odom)
     pos_tracking:
-      publish_tf: false  # [DISABLED] TF publishing disabled
-      publish_map_tf: false  # [DISABLED] Map TF publishing disabled
-      pos_tracking_enabled: false  # [DISABLED] Positional tracking disabled
+      publish_tf: false  # [DISABLED] TF publishing disabled (no odom -> camera_link TF)
+      publish_map_tf: false  # [DISABLED] Map TF publishing disabled (no map -> odom TF)
+      pos_tracking_enabled: false  # [DISABLED] Positional tracking disabled (no odom)
       pos_tracking_mode: 'GEN_2'  # [UNUSED] Not used when disabled
       imu_fusion: false  # [UNUSED] Not used when disabled
       set_as_static: false  # [UNUSED] Not used when disabled
+    
+    # AI features - ALL DISABLED
+    # Note: Only set enabled flags to false. Other parameters are not needed when disabled
+    # and may cause type errors if set incorrectly.
+    object_detection:
+      od_enabled: false  # [DISABLED] Object detection disabled
+      enable_tracking: false  # [DISABLED] Object tracking disabled (required even when od_enabled=false)
+    
+    body_tracking:
+      bt_enabled: false  # [DISABLED] Body tracking disabled
     
     # Video settings - RGB publishing enabled
     video:
@@ -133,14 +143,24 @@ cameras:
       publish_disparity: false  # [DISABLED] Disparity topic
       publish_depth_info: false  # [OPTIONAL] Depth info topic
     
-    # Position tracking settings - ALL DISABLED
+    # Position tracking settings - ALL DISABLED (no odom)
     pos_tracking:
-      publish_tf: false  # [DISABLED] TF publishing disabled
-      publish_map_tf: false  # [DISABLED] Map TF publishing disabled
-      pos_tracking_enabled: false  # [DISABLED] Positional tracking disabled
+      publish_tf: false  # [DISABLED] TF publishing disabled (no odom -> camera_link TF)
+      publish_map_tf: false  # [DISABLED] Map TF publishing disabled (no map -> odom TF)
+      pos_tracking_enabled: false  # [DISABLED] Positional tracking disabled (no odom)
       pos_tracking_mode: 'GEN_2'  # [UNUSED] Not used when disabled
       imu_fusion: false  # [UNUSED] Not used when disabled
       set_as_static: false  # [UNUSED] Not used when disabled
+    
+    # AI features - ALL DISABLED
+    # Note: Only set enabled flags to false. Other parameters are not needed when disabled
+    # and may cause type errors if set incorrectly.
+    object_detection:
+      od_enabled: false  # [DISABLED] Object detection disabled
+      enable_tracking: false  # [DISABLED] Object tracking disabled (required even when od_enabled=false)
+    
+    body_tracking:
+      bt_enabled: false  # [DISABLED] Body tracking disabled
     
     # Video settings - RGB publishing enabled
     video:

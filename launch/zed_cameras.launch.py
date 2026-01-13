@@ -54,40 +54,89 @@ def load_camera_config(config_file):
 
 
 def create_camera_params_file(camera_config):
-    """Create a temporary ROS2 parameters file for a camera."""
+    """
+    Create a temporary ROS2 parameters file for a camera.
+    
+    This function converts the camera configuration dictionary into ROS2 parameter format
+    that matches zed_wrapper's expected structure. The format follows:
+    /**: ros__parameters: {group_name: {parameter_name: value}}
+    
+    All parameter groups from the config are included to ensure proper configuration.
+    """
     # Create temporary file
     temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
     
-    # Convert camera config to ROS2 parameter format
-    # Ensure pub_resolution is a string and pub_downscale_factor is a float
-    ros_params = {
+    # Start building ROS2 parameters dictionary
+    ros_params_dict = {
         '/**': {
-            'ros__parameters': {
-                'general': {
-                    'camera_name': str(camera_config['name']),
-                    'camera_model': str(camera_config['camera_model']),
-                    'serial_number': int(camera_config['serial_number']),
-                    'grab_resolution': str(camera_config['grab_resolution']),
-                    'grab_frame_rate': int(camera_config['grab_frame_rate']),
-                    'pub_resolution': str(camera_config['pub_resolution']),  # Ensure it's a string
-                    'pub_downscale_factor': float(camera_config['pub_downscale_factor']),  # Ensure it's a float
-                    'pub_frame_rate': float(camera_config['pub_frame_rate']),
-                },
-                'sensors': camera_config['sensors'],
-                'depth': camera_config['depth'],
-                'pos_tracking': camera_config['pos_tracking'],
-                'video': camera_config['video'],
-            }
+            'ros__parameters': {}
         }
     }
     
-    yaml.dump(ros_params, temp_file, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    # Extract general parameters (mapped from config to ROS2 parameter names)
+    ros_params_dict['/**']['ros__parameters']['general'] = {
+        'camera_name': str(camera_config['name']),
+        'camera_model': str(camera_config['camera_model']),
+        'serial_number': int(camera_config['serial_number']),
+        'grab_resolution': str(camera_config['grab_resolution']),
+        'grab_frame_rate': int(camera_config['grab_frame_rate']),
+        'pub_resolution': str(camera_config['pub_resolution']),
+        'pub_downscale_factor': float(camera_config['pub_downscale_factor']),
+        'pub_frame_rate': float(camera_config['pub_frame_rate']),
+    }
+    
+    # Required parameter groups (must exist in config)
+    required_groups = ['sensors', 'depth', 'pos_tracking', 'video']
+    
+    # Optional parameter groups (may or may not exist)
+    optional_groups = ['object_detection', 'body_tracking', 'advanced']
+    
+    # Add required parameter groups (with validation)
+    for group_name in required_groups:
+        if group_name not in camera_config:
+            raise ValueError(
+                f"❌ Missing required parameter group '{group_name}' in camera config for '{camera_config['name']}'"
+            )
+        ros_params_dict['/**']['ros__parameters'][group_name] = camera_config[group_name]
+    
+    # Add optional parameter groups if they exist
+    for group_name in optional_groups:
+        if group_name in camera_config:
+            ros_params_dict['/**']['ros__parameters'][group_name] = camera_config[group_name]
+    
+    # Add any other parameter groups that might exist in the config
+    # (excluding launch arguments which are not ROS parameters)
+    excluded_keys = {
+        'name', 'activate', 'camera_model', 'serial_number', 'namespace', 'node_name',
+        'grab_resolution', 'grab_frame_rate', 'pub_resolution', 'pub_downscale_factor', 'pub_frame_rate'
+    }
+    all_known_groups = set(required_groups + optional_groups)
+    
+    for key, value in camera_config.items():
+        if key not in excluded_keys and key not in all_known_groups:
+            ros_params_dict['/**']['ros__parameters'][key] = value
+    
+    # Write parameters to temporary file
+    yaml.dump(ros_params_dict, temp_file, default_flow_style=False, sort_keys=False, allow_unicode=True)
     temp_file.close()
     
-    # Debug: Print the generated params file path and key parameters for troubleshooting
+    # Debug: Print key information
     print(f"   📄 Generated params file: {temp_file.name}")
-    print(f"   ✅ Params: pub_resolution='{ros_params['/**']['ros__parameters']['general']['pub_resolution']}', "
-          f"pub_downscale_factor={ros_params['/**']['ros__parameters']['general']['pub_downscale_factor']}")
+    print(f"   ✅ Params: pub_resolution='{ros_params_dict['/**']['ros__parameters']['general']['pub_resolution']}', "
+          f"pub_downscale_factor={ros_params_dict['/**']['ros__parameters']['general']['pub_downscale_factor']}")
+    
+    # Debug: Print pos_tracking parameters to verify
+    if 'pos_tracking' in ros_params_dict['/**']['ros__parameters']:
+        pos_tracking = ros_params_dict['/**']['ros__parameters']['pos_tracking']
+        publish_tf = pos_tracking.get('publish_tf', 'NOT SET')
+        publish_map_tf = pos_tracking.get('publish_map_tf', 'NOT SET')
+        pos_tracking_enabled = pos_tracking.get('pos_tracking_enabled', 'NOT SET')
+        print(f"   🔍 pos_tracking: publish_tf={publish_tf}, publish_map_tf={publish_map_tf}, "
+              f"pos_tracking_enabled={pos_tracking_enabled}")
+    
+    # Debug: List all parameter groups included
+    included_groups = list(ros_params_dict['/**']['ros__parameters'].keys())
+    print(f"   📋 Parameter groups included: {', '.join(included_groups)}")
     
     return temp_file.name
 
@@ -154,9 +203,21 @@ def generate_camera_launches(context):
         # Create temporary parameters file
         params_file = create_camera_params_file(camera)
         
+        # Extract pos_tracking parameters for launch arguments
+        # Note: zed_wrapper launch file uses launch arguments to override YAML parameters
+        # Launch arguments have higher priority than ros_params_override_path
+        pos_tracking = camera.get('pos_tracking', {})
+        publish_tf = 'true' if pos_tracking.get('publish_tf', False) else 'false'
+        publish_map_tf = 'true' if pos_tracking.get('publish_map_tf', False) else 'false'
+        
+        # Extract sensors parameters for launch arguments
+        sensors = camera.get('sensors', {})
+        publish_imu_tf = 'true' if sensors.get('publish_imu_tf', False) else 'false'
+        
         # Create launch description for this camera
         # camera_name is used as frame_id prefix (e.g., hand_camera_camera_center, static_camera_camera_center)
         # serial_number must be passed as launch argument to ensure correct camera selection
+        # publish_tf and publish_map_tf are passed as launch arguments to override defaults
         camera_launch = IncludeLaunchDescription(
             PythonLaunchDescriptionSource([
                 os.path.join(zed_wrapper_share_dir, 'launch', 'zed_camera.launch.py')
@@ -168,6 +229,10 @@ def generate_camera_launches(context):
                 'serial_number': str(camera['serial_number']),  # Pass serial_number as launch argument (required for multi-camera setup)
                 'ros_params_override_path': params_file,
                 'node_name': camera['node_name'],
+                # Pass pos_tracking parameters as launch arguments (highest priority)
+                'publish_tf': publish_tf,  # Overrides default 'true' in zed_wrapper launch
+                'publish_map_tf': publish_map_tf,  # Overrides default 'true' in zed_wrapper launch
+                'publish_imu_tf': publish_imu_tf,  # Overrides default 'false' in zed_wrapper launch
             }.items()
         )
         
