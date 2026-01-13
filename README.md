@@ -410,6 +410,35 @@ role-ros2/
 - 检查相机时间戳是否同步
 - 确保相机发布频率一致
 
+### ZED 相机启动问题
+
+**问题：`CAMERA NOT DETECTED` 或 `MOTION SENSORS REQUIRED`**
+- **检查 USB 连接**：确保相机连接在 USB 3.0 接口（`lsusb -t` 显示 `5000M`）
+- **检查权限**：确保 udev 规则已配置并生效
+  ```bash
+  # 检查权限
+  ls -l /dev/bus/usb/$(lsusb -d 2b03: | awk '{print $2}')/$(lsusb -d 2b03: | awk '{print $4}' | tr -d ':')
+  # 应该显示 rw-rw-rw- (0666)
+  ```
+- **重新加载 udev 规则**：`sudo udevadm control --reload-rules && sudo udevadm trigger`
+- **物理重连**：拔掉相机 USB 线，等待 5 秒后重新插入
+
+**问题：`LOW USB BANDWIDTH` 或 `Unable to capture images`**
+- **降低分辨率或帧率**：在配置文件中将 `grab_resolution` 设为 `VGA` 或 `grab_frame_rate` 降到 10Hz
+- **检查 USB 总线分配**：确保两台相机连接在不同的 USB 总线（`lsusb -t` 显示不同的 Bus）
+- **降低深度模式**：将 `depth_mode` 从 `ULTRA` 改为 `PERFORMANCE`
+- **增加启动延迟**：在 launch 文件中增加相机启动间隔时间
+
+**问题：`libhid error: -6` 或 `can't claim interface`**
+- **检查 USB HID 权限**：确保 udev 规则包含 HID 设备权限
+- **检查设备占用**：确保没有其他进程占用相机设备
+- **重启容器**：`docker restart <container_name>`
+
+**问题：Docker 容器中无法访问相机**
+- **检查 Docker 配置**：确保 `docker-compose.yaml` 包含 `privileged: true` 和 `devices: - "/dev:/dev"`
+- **检查设备映射**：在容器内执行 `lsusb -d 2b03:` 确认能看到相机设备
+- **检查 NVIDIA 运行时**：确保使用 `nvidia` 运行时（GPU 支持）
+
 ### Python 导入错误
 
 **问题：`ModuleNotFoundError: No module named 'role_ros2'`**
