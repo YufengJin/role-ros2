@@ -23,10 +23,6 @@ services:
     # Enable privileged mode for hardware access (required for real-time and /dev/cpu_dma_latency)
     # If you don't need real-time, you can remove this and run servers on host instead
     privileged: true
-    # Mount all devices (required for /dev/cpu_dma_latency access)
-    # This is critical for real-time operations in Docker
-    devices:
-      - "/dev:/dev"
     # Add real-time scheduling capability (required for SYS_NICE)
     cap_add:
       - SYS_NICE      # Real-time scheduling
@@ -58,6 +54,9 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       # Shared memory for DDS (optional but recommended for FastDDS)
       - /dev/shm:/dev/shm:rw
+      # Mount all devices (required for /dev/cpu_dma_latency access)
+      # This is critical for real-time operations in Docker
+      - /dev:/dev
       # ========== 开发模式：挂载整个 role-ros2 源代码目录 ==========
       # 从 ros2_franka_libfranka_0.18.x 目录，../.. 指向 role-ros2 目录
       # 挂载整个 role-ros2 包，这样可以在容器外部修改代码，在容器内编译
