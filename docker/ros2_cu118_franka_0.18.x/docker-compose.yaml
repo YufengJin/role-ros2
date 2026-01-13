@@ -1,0 +1,112 @@
+# Docker Compose configuration for ROS2 CUDA 11.8 + Polymetis with libfranka 0.18.x
+# This configuration launches both:
+#   - ros2_cu118: ROS2 Humble with CUDA 11.8 and ZED SDK (for camera support)
+#   - ros2_polymetis: ROS2 Polymetis with libfranka 0.18.x (for robot control)
+#
+# Compatible with robot system 5.9.0+
+# Uses C++17 and requires fmt library
+
+services:
+  ros2_cu118:
+    image: ros2_cu118:latest
+    container_name: ros2_cu118_container
+    build:
+      context: ../..  # From ros2_cu118_franka_0.18.x directory, go up 2 levels to role-ros2 root
+      dockerfile: docker/ros2_cu118/Dockerfile
+      args:
+        ZED_SDK_MAJOR: "4"
+        ZED_SDK_MINOR: "1"
+        ZED_ROS2_WRAPPER_VERSION: "humble-v4.1.4"
+    # Use host network mode for ROS2 communication between containers
+    network_mode: host
+    # Use host PID namespace for correct daemon PID detection
+    pid: host
+    # Use host IPC namespace for DDS zero-copy and shared memory
+    ipc: host
+    # Keep container running (required for background mode)
+    stdin_open: true
+    tty: true
+    # Enable privileged mode for hardware access (USB devices, video devices, etc.)
+    privileged: true
+    # Enable NVIDIA GPU support (required for CUDA and ZED camera)
+    runtime: nvidia
+    # Auto-restart policy
+    deploy:
+      restart_policy:
+        condition: any
+    # Environment variables
+    environment:
+      # NVIDIA GPU environment variables
+      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
+      NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,video,utility}"
+      # ROS2 environment variables (must match ros2_polymetis for communication)
+      ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
+      RMW_IMPLEMENTATION: "rmw_fastrtps_cpp"
+      FASTDDS_BUILTIN_TRANSPORTS: "UDPv4"
+      ROS_LOCALHOST_ONLY: "${ROS_LOCALHOST_ONLY:-0}"
+      DISPLAY: "${DISPLAY}"
+      # ZED SDK environment variables
+      ZED_SDK_ROOT: "/usr/local/zed"
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # Shared memory for DDS (optional but recommended for FastDDS)
+      - /dev/shm:/dev/shm:rw
+      # Mount all devices (required for RealSense cameras and other video devices)
+      - /dev:/dev
+      # Development mode: Mount role-ros2 source code directory
+      - ../../:/app/ros2_ws/src/role-ros2:rw
+
+  ros2_polymetis:
+    image: ros2_polymetis:0.18.2
+    container_name: ros2_polymetis_container
+    build:
+      context: ../..  # From ros2_cu118_franka_0.18.x directory, go up 2 levels to role-ros2 root
+      dockerfile: docker/ros2_franka_libfranka_0.18.x/Dockerfile
+      args:
+        LIBFRANKA_VERSION: "0.18.2"
+        ROBOT_TYPE: "${ROBOT_TYPE:-fr3}"
+    network_mode: host
+    # Use host PID namespace for correct daemon PID detection
+    pid: host
+    # Use host IPC namespace for DDS zero-copy and shared memory
+    ipc: host
+    # Keep container running (required for background mode)
+    stdin_open: true
+    tty: true
+    # Enable privileged mode for hardware access (required for real-time and /dev/cpu_dma_latency)
+    privileged: true
+    # Add real-time scheduling capability (required for SYS_NICE)
+    cap_add:
+      - SYS_NICE      # Real-time scheduling
+    # Set real-time priority and memory locking limits (required for mlockall)
+    ulimits:
+      rtprio: 99          # Real-time priority limit (0-99)
+      memlock: 102400     # Memory locking limit in KB (100MB)
+    # Auto-restart policy
+    deploy:
+      restart_policy:
+        condition: any
+    environment:
+      ROBOT_IP: "${ROBOT_IP:-172.17.0.2}"
+      POLYMETIS_IP: "${POLYMETIS_IP:-127.0.0.1}"
+      # ROS2 environment variables (must match ros2_cu118 for communication)
+      ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
+      # DDS Configuration: FastRTPS with shared memory disabled
+      # This avoids SIGSEGV issues in Docker environment
+      RMW_IMPLEMENTATION: "rmw_fastrtps_cpp"
+      FASTDDS_BUILTIN_TRANSPORTS: "UDPv4"
+      ROS_LOCALHOST_ONLY: "${ROS_LOCALHOST_ONLY:-0}"
+      DISPLAY: "${DISPLAY}"
+      # Set SKIP_AUTO_ENV=true to skip automatic environment configuration
+      # Then manually source: source /app/ros2_ws/src/role-ros2/docker/ros2_franka_libfranka_0.18.x/polymetis_ros2.env
+      SKIP_AUTO_ENV: "${SKIP_AUTO_ENV:-false}"
+      # Libfranka version for reference
+      LIBFRANKA_VERSION: "0.18.2"
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # Shared memory for DDS (optional but recommended for FastDDS)
+      - /dev/shm:/dev/shm:rw
+      # Mount all devices (required for /dev/cpu_dma_latency access)
+      - /dev:/dev
+      # Development mode: Mount role-ros2 source code directory
+      - ../../:/app/ros2_ws/src/role-ros2:rw
