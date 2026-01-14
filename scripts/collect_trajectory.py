@@ -102,6 +102,7 @@ class CollectTrajectory:
         self._shutdown_requested = False
         self._traj_writer: Optional[TrajectoryWriter] = None
         self._current_traj_filepath: Optional[str] = None
+        self._recording_started = False  # Track if recording has started (after A button press)
         
         # Long press detection state
         self._success_button_press_start: Optional[float] = None
@@ -180,6 +181,7 @@ class CollectTrajectory:
         self._print("")
         self._print("📋 CONTROL INSTRUCTIONS:")
         self._print("   ┌─────────────────────────────────────────────────────────┐")
+        self._print("   │  🎮 Press A/X to start recording                        │")
         self._print("   │  🎮 Hold GRIP button      → Enable robot movement       │")
         self._print(f"   │  ✅ Long press A/X ({LONG_PRESS_THRESHOLD}s)  → SUCCESS: Save & Reset        │")
         self._print(f"   │  ❌ Long press B/Y ({LONG_PRESS_THRESHOLD}s)  → FAILURE: Discard & Reset     │")
@@ -187,7 +189,7 @@ class CollectTrajectory:
         self._print("   └─────────────────────────────────────────────────────────┘")
         self._print("")
         self._print("=" * 70)
-        self._print("🎯 Ready! Waiting for VR controller input...")
+        self._print("🎯 Ready! Press A (right) or X (left) to start recording...")
     
     def _print(self, msg: str):
         """Print message with timestamp."""
@@ -197,6 +199,7 @@ class CollectTrajectory:
         """Start a new trajectory recording."""
         self._traj_count += 1
         self._num_steps = 0
+        self._recording_started = False  # Reset recording state
         
         # Reset long press detection
         self._success_button_press_start = None
@@ -275,7 +278,25 @@ class CollectTrajectory:
             controller_info = self.controller.get_info()
             skip_action = self.wait_for_controller and (not controller_info["movement_enabled"])
             
-            # Check for long press termination
+            # Check if recording has started (wait for A button press)
+            if not self._recording_started:
+                success_pressed = controller_info.get("success", False)
+                if success_pressed:
+                    self._recording_started = True
+                    # Reset long press detection to avoid immediate trigger
+                    self._success_button_press_start = None
+                    self._failure_button_press_start = None
+                    self._print("")
+                    self._print("=" * 70)
+                    self._print("✅ Recording started! Long press A/X to mark SUCCESS, B/Y to mark FAILURE")
+                    self._print("=" * 70)
+                    self._print("")
+                else:
+                    # Not started yet, just wait
+                    time.sleep(0.05)
+                    return
+            
+            # Check for long press termination (only after recording started)
             is_success, is_failure = self._check_long_press(controller_info)
             
             # Handle trajectory end
@@ -332,7 +353,7 @@ class CollectTrajectory:
                 return
             
             # Progress logging
-            if self._num_steps % 50 == 0:
+            if self._num_steps % 50 == 0 and self._num_steps > 0:
                 movement_status = "🟢 MOVING" if controller_info["movement_enabled"] else "🔴 STOPPED"
                 self._print(f"Step {self._num_steps}: {movement_status}")
                 
@@ -365,6 +386,7 @@ class CollectTrajectory:
         time.sleep(0.5)
         self._print("🔄 Starting new trajectory...")
         self._start_new_trajectory()
+        self._print("⏸️  Press A (right) or X (left) to start recording...")
     
     def _handle_trajectory_failure(self):
         """Handle failed trajectory - DISCARD and reset robot."""
@@ -403,6 +425,7 @@ class CollectTrajectory:
         time.sleep(0.5)
         self._print("🔄 Starting new trajectory...")
         self._start_new_trajectory()
+        self._print("⏸️  Press A (right) or X (left) to start recording...")
     
     def shutdown(self):
         """Clean shutdown."""

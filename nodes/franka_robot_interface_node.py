@@ -1083,7 +1083,7 @@ class FrankaRobotInterfaceNode(Node):
                     self._robot.start_joint_impedance()
                     self._controller_mode = "joint_impedance"
                 else:
-                    self._robot.move_to_joint_positions(target_joints_tensor, time_to_go=20.0)
+                    self._robot.move_to_joint_positions(target_joints_tensor, time_to_go=5.0)
             
             self.get_logger().info("Robot reset to home position successfully")
         except Exception as e:

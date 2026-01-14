@@ -136,7 +136,7 @@ class RobotEnv(gym.Env):
         Args:
             randomize: If True, add random cartesian noise to reset position.
         """
-        self._robot.reset(randomize=randomize, wait_for_completion=True, wait_time_sec=20.0)
+        self._robot.reset(randomize=randomize, wait_for_completion=True, wait_time_sec=10.0)
 
     def update_robot(self, action, action_space="cartesian_velocity", gripper_action_space=None, blocking=False):
         action_info = self._robot.update_command(
