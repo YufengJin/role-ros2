@@ -20,7 +20,7 @@ Usage:
         --control-hz 15.0
 
 Control:
-    • Hold GRIP button to enable movement
+    • Hold GRIP button to start recording and enable movement
     • Long press A (right) or X (left) to mark SUCCESS and SAVE trajectory
     • Long press B (right) or Y (left) to mark FAILURE and DISCARD trajectory
     • Ctrl+C to exit
@@ -62,6 +62,7 @@ class CollectTrajectory:
     5. Optionally saves trajectory data (if task is provided)
     
     Control Logic:
+    - First grip button press starts recording automatically
     - Always loops (no single trajectory mode)
     - Long press A/X: SUCCESS → Save trajectory, start new trajectory
     - Long press B/Y: FAILURE → Discard trajectory, reset robot, start new trajectory
@@ -181,15 +182,14 @@ class CollectTrajectory:
         self._print("")
         self._print("📋 CONTROL INSTRUCTIONS:")
         self._print("   ┌─────────────────────────────────────────────────────────┐")
-        self._print("   │  🎮 Press A/X to start recording                        │")
-        self._print("   │  🎮 Hold GRIP button      → Enable robot movement       │")
+        self._print("   │  🎮 Hold GRIP button      → Start recording & move robot │")
         self._print(f"   │  ✅ Long press A/X ({LONG_PRESS_THRESHOLD}s)  → SUCCESS: Save & Reset        │")
         self._print(f"   │  ❌ Long press B/Y ({LONG_PRESS_THRESHOLD}s)  → FAILURE: Discard & Reset     │")
         self._print("   │  🛑 Ctrl+C               → Exit program                │")
         self._print("   └─────────────────────────────────────────────────────────┘")
         self._print("")
         self._print("=" * 70)
-        self._print("🎯 Ready! Press A (right) or X (left) to start recording...")
+        self._print("🎯 Ready! Hold GRIP button to start recording...")
     
     def _print(self, msg: str):
         """Print message with timestamp."""
@@ -278,10 +278,10 @@ class CollectTrajectory:
             controller_info = self.controller.get_info()
             skip_action = self.wait_for_controller and (not controller_info["movement_enabled"])
             
-            # Check if recording has started (wait for A button press)
+            # Check if recording has started (wait for first grip button press)
             if not self._recording_started:
-                success_pressed = controller_info.get("success", False)
-                if success_pressed:
+                movement_enabled = controller_info.get("movement_enabled", False)
+                if movement_enabled:
                     self._recording_started = True
                     # Reset long press detection to avoid immediate trigger
                     self._success_button_press_start = None
@@ -386,7 +386,7 @@ class CollectTrajectory:
         time.sleep(0.5)
         self._print("🔄 Starting new trajectory...")
         self._start_new_trajectory()
-        self._print("⏸️  Press A (right) or X (left) to start recording...")
+        self._print("⏸️  Hold GRIP button to start recording...")
     
     def _handle_trajectory_failure(self):
         """Handle failed trajectory - DISCARD and reset robot."""
@@ -425,7 +425,7 @@ class CollectTrajectory:
         time.sleep(0.5)
         self._print("🔄 Starting new trajectory...")
         self._start_new_trajectory()
-        self._print("⏸️  Press A (right) or X (left) to start recording...")
+        self._print("⏸️  Hold GRIP button to start recording...")
     
     def shutdown(self):
         """Clean shutdown."""

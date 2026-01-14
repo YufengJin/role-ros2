@@ -1,0 +1,12 @@
+cameras:
+- camera_id: '24285872'
+  rgb_topic: /static_camera/zed_node/rgb/image_rect_color
+  child_frame: static_camera_camera_link
+  parent_frame: base_link
+  transform:
+    x: 0.7538618008555883
+    y: -0.8005355517843195
+    z: 0.4203396066711417
+    rx: 0.055731442151349286
+    ry: 0.39377088243406266
+    rz: 2.390552088833406

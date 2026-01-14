@@ -17,11 +17,11 @@ Usage:
 
 Workflow:
     1. Reset robot to home position
-    2. Move robot with VR controller to position camera facing Charuco board
-    3. Press A/X to start calibration (robot will move automatically)
+    2. Hold GRIP button to start control, move robot with VR controller to position camera facing Charuco board
+    3. Long press A/X to start calibration (robot will move automatically)
     4. After calibration cycle completes, press:
-       - A/X: Accept calibration, publish static TF, save to config
-       - B/Y: Reject and recalibrate (reset robot, return to step 2)
+       - A/X (long press): Accept calibration, publish static TF, save to config
+       - B/Y (long press): Reject and recalibrate (reset robot, return to step 2)
 
 Author: Role-ROS2 Team
 """
@@ -51,6 +51,7 @@ from role_ros2.calibration.calibration_utils import (
 )
 from role_ros2.controllers.oculus_controller import VRPolicy
 from role_ros2.misc.config_loader import get_package_config_path
+from role_ros2.misc.ros2_utils import get_ros_time_ns
 from role_ros2.misc.transformations import change_pose_frame
 from role_ros2.robot_env import RobotEnv
 
@@ -150,7 +151,8 @@ def lookup_tf_transform(
     tf_buffer: tf2_ros.Buffer,
     target_frame: str,
     source_frame: str,
-    timeout_sec: float = 5.0
+    timeout_sec: float = 5.0,
+    debug: bool = False
 ) -> Optional[np.ndarray]:
     """
     Lookup transform from TF buffer and convert to 4x4 matrix.
@@ -160,11 +162,15 @@ def lookup_tf_transform(
         target_frame: Target frame name
         source_frame: Source frame name
         timeout_sec: Timeout in seconds
+        debug: Enable debug output
     
     Returns:
         4x4 transformation matrix or None if lookup failed
     """
     try:
+        if debug:
+            print(f"      [DEBUG] Attempting TF lookup: {source_frame} -> {target_frame} (timeout={timeout_sec}s)")
+        
         transform = tf_buffer.lookup_transform(
             target_frame,
             source_frame,
@@ -176,14 +182,24 @@ def lookup_tf_transform(
         t = transform.transform.translation
         q = transform.transform.rotation
         
+        if debug:
+            print(f"      [DEBUG] TF lookup successful!")
+        
         # Convert to 4x4 matrix
         T = np.eye(4)
         T[:3, 3] = [t.x, t.y, t.z]
         T[:3, :3] = R.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
         
         return T
+    except tf2_ros.TransformException as e:
+        if debug:
+            print(f"      [DEBUG] TransformException: {type(e).__name__}: {e}")
+        print(f"      TF lookup failed ({source_frame} -> {target_frame}): {type(e).__name__}: {e}")
+        return None
     except Exception as e:
-        print(f"TF lookup failed ({source_frame} -> {target_frame}): {e}")
+        if debug:
+            print(f"      [DEBUG] Unexpected exception: {type(e).__name__}: {e}")
+        print(f"      TF lookup failed ({source_frame} -> {target_frame}): {type(e).__name__}: {e}")
         return None
 
 
@@ -278,10 +294,6 @@ class CameraCalibrator:
             rclpy.init()
         self._node = Node('camera_calibrator_node')
         
-        # Initialize TF2 buffer and listener
-        self._tf_buffer = tf2_ros.Buffer()
-        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self._node)
-        
         # Print initialization header
         self._print("=" * 70)
         self._print("📷 Camera Calibration - Starting Initialization")
@@ -320,14 +332,22 @@ class CameraCalibrator:
         self._print(f"   ✅ RGB topic: {self.rgb_topic}")
         
         # Initialize RobotEnv
+        # NOTE: Use cartesian_velocity because VR controller outputs velocity commands
         self._print("🤖 [2/5] Initializing RobotEnv...")
         self.env = RobotEnv(
-            action_space="cartesian_position",
+            action_space="cartesian_velocity",  # Changed from cartesian_position to match VR controller output
             do_reset=False,
             node=self._node,
             control_hz=15.0
         )
         self._print("   ✅ RobotEnv initialized")
+        
+        # Initialize TF2 buffer and listener AFTER RobotEnv executor starts
+        # TF listener needs executor to receive TF data
+        self._print("🔗 [2.5/5] Initializing TF buffer and listener...")
+        self._tf_buffer = tf2_ros.Buffer()
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self._node)
+        self._print("   ✅ TF buffer and listener created (executor is running)")
         
         # Initialize VR controller
         self._print("🎮 [3/5] Initializing VR controller...")
@@ -352,26 +372,55 @@ class CameraCalibrator:
         
         # Lookup fixed transform: camera_base_frame -> camera_frame (optical)
         self._print("🔗 [5/5] Looking up TF transform (camera_base_frame -> camera_frame)...")
+        self._print(f"   Looking for: {self.camera_base_frame} -> {self.camera_frame}")
+        
+        # Give TF listener time to subscribe and receive data
+        # RobotEnv executor is already running, so TF listener should be active
+        initial_wait_time = 2.0
+        self._print(f"   ⏳ Waiting {initial_wait_time}s for TF listener to receive data...")
+        time.sleep(initial_wait_time)
+        
         self._T_base_to_optical = None
         max_tf_retries = 20
+        last_error = None
         for i in range(max_tf_retries):
-            # Wait a bit for TF to be available
-            time.sleep(0.5)
+            self._print(f"   [DEBUG] Attempt {i+1}/{max_tf_retries}")
             self._T_base_to_optical = lookup_tf_transform(
                 self._tf_buffer,
                 self.camera_frame,  # target (optical)
                 self.camera_base_frame,  # source (base)
-                timeout_sec=2.0
+                timeout_sec=2.0,
+                debug=True  # Enable debug output
             )
             if self._T_base_to_optical is not None:
+                self._print(f"   [DEBUG] TF lookup succeeded on attempt {i+1}")
                 break
+            
+            # Store last error for final error message
+            if i == max_tf_retries - 1:
+                self._print(f"   [DEBUG] All {max_tf_retries} attempts failed")
+            
             self._print(f"   ⏳ Waiting for TF... ({i+1}/{max_tf_retries})")
+            time.sleep(0.5)
         
         if self._T_base_to_optical is None:
-            raise ValueError(
-                f"Could not lookup TF transform from {self.camera_base_frame} "
-                f"to {self.camera_frame}. Make sure camera driver is running."
+            error_msg = (
+                f"\n❌ Could not lookup TF transform from {self.camera_base_frame} "
+                f"to {self.camera_frame} after {max_tf_retries} attempts.\n\n"
+                f"Please check:\n"
+                f"  1. Camera driver is running and publishing TF\n"
+                f"     → Check: ros2 node list | grep camera\n"
+                f"     → Check: ros2 topic list | grep tf\n"
+                f"  2. Frame names are correct:\n"
+                f"     - Source frame: {self.camera_base_frame}\n"
+                f"     - Target frame: {self.camera_frame}\n"
+                f"  3. Verify TF is available:\n"
+                f"     → ros2 run tf2_ros tf2_echo {self.camera_base_frame} {self.camera_frame}\n"
+                f"  4. Check TF tree:\n"
+                f"     → ros2 run tf2_tools view_frames\n"
+                f"  5. Ensure camera driver started BEFORE this script\n"
             )
+            raise ValueError(error_msg)
         
         self._print(f"   ✅ TF transform received:")
         tf_pose = transform_matrix_to_pose(self._T_base_to_optical)
@@ -428,25 +477,79 @@ class CameraCalibrator:
     def wait_for_start_position(self):
         """
         Wait for user to move robot to start position using VR controller.
-        Press A/X to start calibration, B/Y to exit.
+        
+        Control flow (matching collect_trajectory.py exactly):
+        1. Wait for first grip button press to start control loop
+        2. Hold GRIP to enable movement
+        3. Long press A/X to START calibration
+        4. Long press B/Y to EXIT
         """
         self._print("")
         self._print("=" * 70)
         self._print("📍 Move robot to start position facing Charuco board")
         self._print("-" * 70)
+        self._print("   • Hold GRIP button to start control and move robot")
         self._print("   • Use VR controller to position the robot")
         self._print("   • Make sure Charuco board is visible in camera")
-        self._print(f"   • Press A/X (long press {LONG_PRESS_THRESHOLD}s) to START calibration")
-        self._print(f"   • Press B/Y (long press {LONG_PRESS_THRESHOLD}s) to EXIT")
+        self._print(f"   • Long press A/X ({LONG_PRESS_THRESHOLD}s) to START calibration")
+        self._print(f"   • Long press B/Y ({LONG_PRESS_THRESHOLD}s) to EXIT")
         self._print("=" * 70)
+        self._print("")
+        self._print("⏸️  Hold GRIP button to start control...")
         
+        # Reset controller state (matching collect_trajectory._start_new_trajectory)
         self.controller.reset_state()
         
+        # Wait for robot to stabilize before starting control
+        # This prevents origin mismatch when robot is still moving
+        time.sleep(0.5)
+        
+        # Reset long press detection
+        self._success_press_start = None
+        self._failure_press_start = None
+        
+        # Track if control has started (matching collect_trajectory._recording_started)
+        _control_started = False
+        
+        # Track step count (matching collect_trajectory.py)
+        _step_count = 0
+        
         while not self._shutdown_requested:
-            # Get controller info
-            controller_info = self.controller.get_info()
+            # Get controller info (matching collect_trajectory.py)
+            try:
+                controller_info = self.controller.get_info()
+            except Exception as e:
+                self._print(f"[ERROR] Failed to get controller info: {e}")
+                time.sleep(0.1)
+                continue
             
-            # Check for long press
+            # Calculate skip_action (matching collect_trajectory.py)
+            # In calibrate_camera, we always wait for controller (no wait_for_controller flag)
+            skip_action = not controller_info.get("movement_enabled", False)
+            
+            # Check if control has started (wait for first grip button press)
+            # (matching collect_trajectory.py _recording_started logic)
+            if not _control_started:
+                movement_enabled = controller_info.get("movement_enabled", False)
+                
+                if movement_enabled:
+                    _control_started = True
+                    # Reset long press detection to avoid immediate trigger
+                    self._success_press_start = None
+                    self._failure_press_start = None
+                    self._print("")
+                    self._print("=" * 70)
+                    self._print("✅ Control started! Long press A/X to START calibration, B/Y to EXIT")
+                    self._print("=" * 70)
+                    self._print("")
+                    # Wait a moment to ensure VR controller is stable before first forward() call
+                    time.sleep(0.1)
+                else:
+                    # Not started yet, just wait (matching collect_trajectory.py)
+                    time.sleep(0.05)
+                    continue
+            
+            # Check for long press (only after control started, matching collect_trajectory.py)
             is_success, is_failure = self._check_long_press(controller_info)
             
             if is_success:
@@ -456,30 +559,60 @@ class CameraCalibrator:
                 self._print("❌ Exiting calibration...")
                 return False
             
-            # Get state and read cameras
-            state, _ = self.env.get_state()
-            cam_obs, _ = self.env.read_cameras()
+            # Use ROS time for timestamps (matching collect_trajectory.py)
+            control_timestamps = {"step_start": get_ros_time_ns(self._node)}
+            
+            # Get observation (matching collect_trajectory.py)
+            obs = self.env.get_observation(use_sync=False)
+            obs["controller_info"] = controller_info
+            if "timestamp" not in obs:
+                obs["timestamp"] = {}
+            obs["timestamp"]["skip_action"] = skip_action
             
             # Augment image with detected markers
-            for full_cam_id in cam_obs.get("image", {}):
+            for full_cam_id in obs.get("image", {}):
                 if self.camera_id not in full_cam_id:
                     continue
                 self.calibrator._curr_cam_id = full_cam_id
-                cam_obs["image"][full_cam_id] = self.calibrator.augment_image(
-                    full_cam_id, cam_obs["image"][full_cam_id]
+                obs["image"][full_cam_id] = self.calibrator.augment_image(
+                    full_cam_id, obs["image"][full_cam_id],
                 )
             
-            # Get action from controller
-            action = self.controller.forward({"robot_state": state})
+            # Get action from controller with info (matching collect_trajectory.py)
+            control_timestamps["policy_start"] = get_ros_time_ns(self._node)
+            action, controller_action_info = self.controller.forward(obs, include_info=True)
             action[-1] = 0  # Keep gripper open
+            control_timestamps["policy_end"] = get_ros_time_ns(self._node)
             
-            # Regularize control frequency
-            time.sleep(1 / self.env.control_hz)
+            # Check for large actions and warn
+            action_norm = np.linalg.norm(action[:6])  # Linear + rotational velocity norm
+            if action_norm > 0.3:
+                self._print(f"⚠️ WARNING: Large action detected (norm={action_norm:.4f}) at step {_step_count}")
             
-            # Step environment only if movement is enabled
-            skip_step = not controller_info.get("movement_enabled", False)
-            if not skip_step:
-                self.env.step(action)
+            # Regularize control frequency (matching collect_trajectory.py)
+            control_timestamps["sleep_start"] = get_ros_time_ns(self._node)
+            comp_time_ns = get_ros_time_ns(self._node) - control_timestamps["step_start"]
+            comp_time_s = comp_time_ns / 1e9
+            sleep_left = (1 / self.env.control_hz) - comp_time_s
+            if sleep_left > 0:
+                time.sleep(sleep_left)
+            
+            # Step environment (matching collect_trajectory.py)
+            control_timestamps["control_start"] = get_ros_time_ns(self._node)
+            if skip_action:
+                # Movement disabled: create zero action dict (robot won't move)
+                action_info = self.env.create_action_dict(np.zeros_like(action))
+            else:
+                # Movement enabled: execute action
+                action_info = self.env.step(action)
+            # Update action_info with controller_action_info (matching collect_trajectory.py)
+            action_info.update(controller_action_info)
+            
+            # Progress logging (matching collect_trajectory.py)
+            _step_count += 1
+            if _step_count % 50 == 0 and _step_count > 0:
+                movement_status = "🟢 MOVING" if controller_info["movement_enabled"] else "🔴 STOPPED"
+                self._print(f"Step {_step_count}: {movement_status}")
         
         return False
     
@@ -532,7 +665,9 @@ class CameraCalibrator:
                 
                 self.calibrator._curr_cam_id = full_cam_id
                 cam_obs["image"][full_cam_id] = self.calibrator.augment_image(
-                    full_cam_id, cam_obs["image"][full_cam_id]
+                    full_cam_id, cam_obs["image"][full_cam_id],
+                    visualize=True,
+                    visual_type=["markers", "charuco", "axes"]
                 )
             
             # Move to desired next pose
