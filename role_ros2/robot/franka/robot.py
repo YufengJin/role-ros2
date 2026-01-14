@@ -1,4 +1,31 @@
 # ROBOT SPECIFIC IMPORTS
+"""
+FrankaRobotV2 - ROS2 Interface for V2 Franka Robot Nodes
+
+This class provides a Python interface for the V2 architecture which separates
+arm and gripper into different ROS2 nodes:
+- franka_robot_interface_node: Arm control (namespace: /{arm_namespace})
+- franka_gripper_interface_node: Gripper control (namespace: /{gripper_namespace})
+
+Key Differences from V1 (robot.py):
+- Separate arm and gripper subscriptions and publishers
+- Namespace-based topics: /{namespace}/joint_states, /{namespace}/arm_state, etc.
+- Separate control methods for arm and gripper
+- Support for multiple robots via different namespaces
+
+Usage:
+    # Default namespaces
+    robot = FrankaRobotV2()
+    
+    # Custom namespaces
+    robot = FrankaRobotV2(arm_namespace='robot1_arm', gripper_namespace='robot1_gripper')
+    
+    # Using shared node
+    robot = FrankaRobotV2(node=existing_node)
+
+Author: Role-ROS2 Team
+"""
+
 import time
 import threading
 from collections import deque
@@ -10,16 +37,20 @@ from rclpy.node import Node
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
-# ROS2 message imports
+# ROS2 message imports (V2 messages)
 from role_ros2.msg import (
-    PolymetisRobotCommand, PolymetisRobotState, PolymetisGripperState,
+    ArmState, GripperState, ControllerStatus, RobotState,
+    JointPositionCommand, JointVelocityCommand,
+    CartesianPositionCommand, CartesianVelocityCommand,
     GripperCommand
 )
 from role_ros2.srv import (
-    Reset, StartCartesianImpedance, StartJointImpedance,
+    Reset, StartCartesianImpedance, StartJointImpedance, StartJointVelocity,
     TerminatePolicy, MoveToJointPositions, MoveToEEPose,
-    SolveIK, ComputeFK, ComputeTimeToGo
+    SolveIK, ComputeFK, ComputeTimeToGo,
+    GripperGoto, GripperGrasp
 )
+from std_srvs.srv import Trigger
 
 # UTILITY SPECIFIC IMPORTS
 from role_ros2.misc.transformations import add_poses, euler_to_quat, pose_diff, quat_to_euler
@@ -30,26 +61,41 @@ from role_ros2.robot.base_robot import BaseRobot
 
 class FrankaRobot(BaseRobot):
     """
-    ROS2-based robot interface that communicates with polymetis_bridge_node.
+    ROS2-based robot interface for Franka Robot.
     
-    This class replaces direct Polymetis calls with ROS2 topic communication:
-    - Subscribes to /polymetis/robot_state and /polymetis/gripper_state for state
-    - Publishes to /polymetis/robot_command for control commands
-    - Uses service /polymetis/reset for robot initialization (home is alias for reset)
+    This class communicates with:
+    - franka_robot_interface_node for arm control
+    - franka_gripper_interface_node for gripper control
+    
+    Key Features:
+    - Separate arm and gripper state subscriptions
+    - Namespace-based topics for multi-robot support
+    - Separate command publishers for different control modes
+    - Full service support for blocking operations
     """
     
-    def __init__(self, node: Optional[Node] = None):
+    def __init__(
+        self,
+        node: Optional[Node] = None,
+        arm_namespace: str = "fr3_arm",
+        gripper_namespace: str = "fr3_gripper"
+    ):
         """
-        Initialize the robot interface.
+        Initialize the V2 robot interface.
         
         Args:
             node: Optional ROS2 node. If None, creates a new node.
+            arm_namespace: Namespace for arm interface node (default: "fr3_arm")
+            gripper_namespace: Namespace for gripper interface node (default: "fr3_gripper")
         """
+        self._arm_namespace = arm_namespace
+        self._gripper_namespace = gripper_namespace
+        
         # Create or use provided node
         if node is None:
             if not rclpy.ok():
                 rclpy.init()
-            self._node = Node('franka_robot_interface')
+            self._node = Node('franka_robot_v2_interface')
             self._own_node = True
         else:
             self._node = node
@@ -59,531 +105,273 @@ class FrankaRobot(BaseRobot):
         self._ik_solver = RobotIKSolver()
         
         # Create ReentrantCallbackGroup for parallel callback execution
-        # This allows robot state and gripper state callbacks to run concurrently
-        # with camera callbacks, eliminating serial execution bottleneck
         self._cb_group = ReentrantCallbackGroup()
         
-        # State storage (updated from subscribers)
-        # Use atomic snapshots: (message, pub_timestamp_ns, received_time_ns)
-        # This ensures data consistency - all three values belong to the same message
-        self._robot_state_lock = threading.Lock()
-        self._robot_data_snapshot: Optional[Tuple[PolymetisRobotState, int, int]] = None
-        self._gripper_data_snapshot: Optional[Tuple[PolymetisGripperState, int]] = None
-        self._max_gripper_width = 0.08  # Default for Franka hand
+        # ==================== STATE STORAGE ====================
+        # Store the entire RobotState message (contains arm_states and gripper_states)
+        self._state_lock = threading.Lock()
+        self._robot_state_snapshot: Optional[Tuple[RobotState, int]] = None  # (msg, received_time_ns)
         
-        # Robot state cache for timestamp-based lookup
-        # Stores tuples of (pub_timestamp_ns, msg, received_time_ns)
-        # Lightweight storage - only raw snapshot, state_dict built on demand
-        # Max size = 100 (at 50Hz, this covers 2 seconds of history)
-        self._robot_state_cache: deque = deque(maxlen=100)
-        self._robot_state_cache_lock = threading.Lock()
-        # Pre-allocated numpy array for fast timestamp lookup (avoid for loop)
+        # State cache for timestamp-based lookup
+        self._state_cache: deque = deque(maxlen=100)
+        self._state_cache_lock = threading.Lock()
         self._cache_timestamps_ns: np.ndarray = np.zeros(100, dtype=np.int64)
         
-        # Latency logging counter (for lazy evaluation)
-        self._latency_log_counter = 0
+        self._max_gripper_width = 0.08  # Default for Franka hand
         
-        # Subscribers for robot state (default RELIABLE QoS)
-        # Queue size = 10 allows buffering multiple messages
-        # This helps if get_robot_state() is called less frequently than messages arrive
-        # However, we still only use the latest message, so this mainly helps with
-        # ensuring messages are not dropped if processing is slow
-        # Use ReentrantCallbackGroup for parallel execution
+        # ==================== STATE SUBSCRIBER ====================
+        # Subscribe to aggregated /robot_state (from robot_state_aggregator_node)
+        # This contains both arm and gripper states in a single message
         self._robot_state_sub = self._node.create_subscription(
-            PolymetisRobotState,
-            '/polymetis/robot_state',
+            RobotState,
+            '/robot_state',
             self._robot_state_callback,
-            10,  # Queue size: buffer up to 10 messages (but we only use latest)
+            10,
             callback_group=self._cb_group
         )
         
-        self._gripper_state_sub = self._node.create_subscription(
-            PolymetisGripperState,
-            '/polymetis/gripper_state',
-            self._gripper_state_callback,
-            1,
-            callback_group=self._cb_group
-        )
-        
-        # Publisher for robot commands (default RELIABLE QoS)
-        self._command_pub = self._node.create_publisher(
-            PolymetisRobotCommand,
-            '/polymetis/robot_command',
+        # ==================== ARM PUBLISHERS ====================
+        self._joint_pos_cmd_pub = self._node.create_publisher(
+            JointPositionCommand,
+            f'/{arm_namespace}/joint_position_controller/command',
             10
         )
         
-        # Service client for reset
-        self._reset_client = self._node.create_client(Reset, '/polymetis/reset')
-        
-        # Service clients for controller management
-        self._start_cartesian_impedance_client = self._node.create_client(
-            StartCartesianImpedance, '/polymetis/arm/start_cartesian_impedance'
-        )
-        self._start_joint_impedance_client = self._node.create_client(
-            StartJointImpedance, '/polymetis/arm/start_joint_impedance'
-        )
-        self._terminate_policy_client = self._node.create_client(
-            TerminatePolicy, '/polymetis/arm/terminate_policy'
+        self._joint_vel_cmd_pub = self._node.create_publisher(
+            JointVelocityCommand,
+            f'/{arm_namespace}/joint_velocity_controller/command',
+            10
         )
         
-        # Service clients for motion control
-        self._move_to_joint_positions_client = self._node.create_client(
-            MoveToJointPositions, '/polymetis/arm/move_to_joint_positions'
-        )
-        self._move_to_ee_pose_client = self._node.create_client(
-            MoveToEEPose, '/polymetis/arm/move_to_ee_pose'
+        self._cartesian_pos_cmd_pub = self._node.create_publisher(
+            CartesianPositionCommand,
+            f'/{arm_namespace}/cartesian_position_controller/command',
+            10
         )
         
-        # Service clients for computation
-        self._solve_ik_client = self._node.create_client(
-            SolveIK, '/polymetis/arm/solve_ik'
-        )
-        self._compute_fk_client = self._node.create_client(
-            ComputeFK, '/polymetis/arm/compute_fk'
-        )
-        self._compute_time_to_go_client = self._node.create_client(
-            ComputeTimeToGo, '/polymetis/arm/compute_time_to_go'
+        self._cartesian_vel_cmd_pub = self._node.create_publisher(
+            CartesianVelocityCommand,
+            f'/{arm_namespace}/cartesian_velocity_controller/command',
+            10
         )
         
-        # Publisher for gripper commands (default RELIABLE QoS)
+        # ==================== GRIPPER PUBLISHER ====================
         self._gripper_cmd_pub = self._node.create_publisher(
             GripperCommand,
-            '/polymetis/gripper/command',
+            f'/{gripper_namespace}/gripper/command',
             10
         )
         
-        # Wait for essential services to be available
-        self._node.get_logger().info("Waiting for polymetis services...")
-        if not self._reset_client.wait_for_service(timeout_sec=5.0):
-            self._node.get_logger().warn("Reset service not available")
+        # ==================== ARM SERVICE CLIENTS ====================
+        self._arm_reset_client = self._node.create_client(
+            Reset, f'/{arm_namespace}/reset'
+        )
         
-        # Spin thread management based on node ownership
+        self._start_cartesian_impedance_client = self._node.create_client(
+            StartCartesianImpedance, f'/{arm_namespace}/start_cartesian_impedance'
+        )
+        
+        self._start_joint_impedance_client = self._node.create_client(
+            StartJointImpedance, f'/{arm_namespace}/start_joint_impedance'
+        )
+        
+        self._start_joint_velocity_client = self._node.create_client(
+            StartJointVelocity, f'/{arm_namespace}/start_joint_velocity'
+        )
+        
+        self._terminate_policy_client = self._node.create_client(
+            TerminatePolicy, f'/{arm_namespace}/terminate_policy'
+        )
+        
+        self._move_to_joint_positions_client = self._node.create_client(
+            MoveToJointPositions, f'/{arm_namespace}/move_to_joint_positions'
+        )
+        
+        self._move_to_ee_pose_client = self._node.create_client(
+            MoveToEEPose, f'/{arm_namespace}/move_to_ee_pose'
+        )
+        
+        self._solve_ik_client = self._node.create_client(
+            SolveIK, f'/{arm_namespace}/solve_ik'
+        )
+        
+        self._compute_fk_client = self._node.create_client(
+            ComputeFK, f'/{arm_namespace}/compute_fk'
+        )
+        
+        self._compute_time_to_go_client = self._node.create_client(
+            ComputeTimeToGo, f'/{arm_namespace}/compute_time_to_go'
+        )
+        
+        # ==================== GRIPPER SERVICE CLIENTS ====================
+        self._gripper_goto_client = self._node.create_client(
+            GripperGoto, f'/{gripper_namespace}/gripper/goto'
+        )
+        
+        self._gripper_grasp_client = self._node.create_client(
+            GripperGrasp, f'/{gripper_namespace}/gripper/grasp'
+        )
+        
+        self._gripper_open_client = self._node.create_client(
+            Trigger, f'/{gripper_namespace}/gripper/open'
+        )
+        
+        self._gripper_close_client = self._node.create_client(
+            Trigger, f'/{gripper_namespace}/gripper/close'
+        )
+        
+        # Wait for essential services
+        self._node.get_logger().info(f"Waiting for V2 services (arm: /{arm_namespace}, gripper: /{gripper_namespace})...")
+        if not self._arm_reset_client.wait_for_service(timeout_sec=5.0):
+            self._node.get_logger().warn(f"Arm reset service not available at /{arm_namespace}/reset")
+        
+        # Spin thread management
         self._executor = None
         self._spin_thread = None
         
         if self._own_node:
-            # Own node: create executor and spin thread
             from rclpy.executors import MultiThreadedExecutor
             self._executor = MultiThreadedExecutor()
             self._executor.add_node(self._node)
             self._spin_thread = threading.Thread(target=self._spin_executor, daemon=True)
             self._spin_thread.start()
-            self._node.get_logger().info("FrankaRobot: Own node created with spin thread")
+            self._node.get_logger().info("FrankaRobotV2: Own node created with spin thread")
         else:
-            # Shared node: external executor handles spinning (e.g., RobotEnv's MultiThreadedExecutor)
-            self._node.get_logger().debug("FrankaRobot: Using shared node - external executor handles spinning")
+            self._node.get_logger().debug("FrankaRobotV2: Using shared node - external executor handles spinning")
         
         # Wait for initial state
         self._wait_for_state(timeout=5.0)
         
-        self._node.get_logger().info("FrankaRobot interface initialized")
+        self._node.get_logger().info(
+            f"FrankaRobotV2 interface initialized "
+            f"(arm: /{arm_namespace}, gripper: /{gripper_namespace})"
+        )
     
-    def _robot_state_callback(self, msg: PolymetisRobotState):
+    # ==================== CALLBACKS ====================
+    
+    def _robot_state_callback(self, msg: RobotState):
         """
-        Callback for robot state updates.
+        Callback for aggregated robot state from robot_state_aggregator_node.
         
-        Creates an atomic snapshot: (message, pub_timestamp_ns, received_time_ns)
-        This ensures all three values belong to the exact same message.
-        Also adds raw snapshot to cache for timestamp-based lookup (lightweight).
+        Simply stores the message - extraction is done lazily in getters.
         """
-        # Record ROS time when message is received
         received_time_ns = get_ros_time_ns(self._node)
-        
-        # Extract message header timestamp (pub_t) from the SAME message
         pub_stamp = msg.header.stamp
         pub_timestamp_ns = int(pub_stamp.sec * 1_000_000_000 + pub_stamp.nanosec)
         
-        # Create atomic snapshot: (message, pub_t, sub_t)
-        # All three values are from the same message, ensuring data consistency
-        snapshot = (msg, pub_timestamp_ns, received_time_ns)
+        # Store snapshot
+        with self._state_lock:
+            self._robot_state_snapshot = (msg, received_time_ns)
         
-        with self._robot_state_lock:
-            self._robot_data_snapshot = snapshot
-        
-        # Add raw snapshot to cache (no state_dict processing - done lazily on read)
-        # Cache entry: (pub_timestamp_ns, msg, received_time_ns)
-        with self._robot_state_cache_lock:
-            self._robot_state_cache.append((pub_timestamp_ns, msg, received_time_ns))
-            # Update timestamp array for fast numpy lookup
-            cache_len = len(self._robot_state_cache)
+        # Add to cache for timestamp-based lookup
+        with self._state_cache_lock:
+            self._state_cache.append((pub_timestamp_ns, msg, received_time_ns))
+            cache_len = len(self._state_cache)
             if cache_len <= len(self._cache_timestamps_ns):
                 self._cache_timestamps_ns[cache_len - 1] = pub_timestamp_ns
     
-    def _gripper_state_callback(self, msg: PolymetisGripperState):
-        """
-        Callback for gripper state updates.
-        
-        Creates an atomic snapshot: (message, received_time_ns)
-        """
-        # Record ROS time when message is received
-        received_time_ns = get_ros_time_ns(self._node)
-        
-        # Create atomic snapshot: (message, received_time_ns)
-        snapshot = (msg, received_time_ns)
-        
-        with self._robot_state_lock:
-            self._gripper_data_snapshot = snapshot
-            if hasattr(msg, 'max_width') and msg.max_width > 0:
-                self._max_gripper_width = msg.max_width
-    
     def _wait_for_state(self, timeout: float = 5.0):
-        """
-        Wait for initial state to be received.
-        
-        Background spin thread handles callbacks, so we just need to wait.
-        """
+        """Wait for initial state to be received."""
         start_time = time.time()
         while time.time() - start_time < timeout:
-            with self._robot_state_lock:
-                if self._robot_data_snapshot is not None and self._gripper_data_snapshot is not None:
+            with self._state_lock:
+                if self._robot_state_snapshot is not None:
                     return
             time.sleep(0.1)
-        self._node.get_logger().warn("Timeout waiting for initial robot state")
+        self._node.get_logger().warn("Timeout waiting for initial V2 robot state")
     
-    def _get_current_state(self):
-        """
-        Get current robot state (thread-safe).
-        
-        Returns:
-            tuple: (robot_state_msg, gripper_state_msg) or (None, None)
-        """
-        with self._robot_state_lock:
-            robot_snapshot = self._robot_data_snapshot
-            gripper_snapshot = self._gripper_data_snapshot
-        
-        # Unpack snapshots (outside lock to minimize hold time)
-        robot_state = robot_snapshot[0] if robot_snapshot is not None else None
-        gripper_state = gripper_snapshot[0] if gripper_snapshot is not None else None
-        
-        return robot_state, gripper_state
+    # ==================== STATE GETTERS ====================
     
-    def reset(self, randomize=False, wait_for_completion=True, wait_time_sec=30.0):
-        """
-        Reset robot to home position.
-        
-        Args:
-            randomize: If True, add random cartesian noise to reset position (matching robot_env.py behavior)
-            wait_for_completion: If True, wait for reset to complete (default: True)
-            wait_time_sec: Time to wait for reset completion (default: 30.0s)
-                          Reset moves at 0.1 rad/s, typical displacement is 1-2 rad, so ~10-20s
-                          Adding buffer for gripper close time.
-        
-        Note: The reset service in polymetis_bridge_node executes asynchronously.
-              The service call returns immediately with "accepted", then executes in background.
-              If wait_for_completion=True, this method will wait for the robot to reach home position.
-        """
-        import inspect
-        caller_info = inspect.stack()[1]
-        caller_name = caller_info.filename.split('/')[-1] + ':' + str(caller_info.lineno)
-        
-        self._node.get_logger().info("=" * 70)
-        self._node.get_logger().info(f"🔄 FrankaRobot.reset() called from: {caller_name}")
-        self._node.get_logger().info(f"   Parameters: randomize={randomize}, wait_for_completion={wait_for_completion}, wait_time_sec={wait_time_sec}")
-        
-        request = Reset.Request()
-        request.randomize = randomize
-        future = self._reset_client.call_async(request)
-        
-        self._node.get_logger().info("   Waiting for reset service to accept request (timeout: 5.0s)...")
-        
-        # Wait for service to accept the request (non-blocking - let background executor handle it)
-        # Cannot use rclpy.spin_until_future_complete() because node is already being spun by background thread
-        timeout_sec = 5.0
-        start_time = time.time()
-        while not future.done() and (time.time() - start_time) < timeout_sec:
-            time.sleep(0.001)  # Yield to background executor thread
-        
-        if future.done():
-            response = future.result()
-            if response.success:
-                self._node.get_logger().info(f"✅ Robot reset command accepted: {response.message}")
-                
-                # Wait for reset to complete (reset executes in background thread)
-                if wait_for_completion:
-                    self._node.get_logger().info(f"⏳ Waiting {wait_time_sec}s for reset to complete...")
-                    self._node.get_logger().info(f"   (Reset executes in background thread in polymetis_bridge_node)")
-                    time.sleep(wait_time_sec)
-                    self._node.get_logger().info("✅ Reset wait complete")
-                else:
-                    self._node.get_logger().info("ℹ️  Reset command sent (not waiting for completion)")
-            else:
-                self._node.get_logger().error(f"❌ Robot reset failed: {response.message}")
-        else:
-            self._node.get_logger().error("❌ Reset service call timed out (5.0s)")
-        
-        self._node.get_logger().info("=" * 70)
+    def _get_robot_state_msg(self) -> Optional[RobotState]:
+        """Get current RobotState message (thread-safe)."""
+        with self._state_lock:
+            snapshot = self._robot_state_snapshot
+        return snapshot[0] if snapshot is not None else None
     
-    def home(self):
-        """Move robot to home position (alias for reset)."""
-        # Home is the same as reset, so just call reset
-        self.reset()
+    def _get_arm_state(self) -> Optional[ArmState]:
+        """Get current arm state from RobotState (thread-safe)."""
+        msg = self._get_robot_state_msg()
+        if msg is None or not msg.arm_states:
+            return None
+        # Return first arm state (single robot case)
+        return msg.arm_states[0]
     
-    def update_command(self, command, action_space="cartesian_velocity", gripper_action_space=None, blocking=False):
-        """
-        Update robot command (arm + gripper).
-        
-        Convert all control modes (cartesian/joint position/velocity) to joint position control.
-        This matches the behavior of droid/droid/franka/robot.py.
-        
-        Args:
-            command: Command array (7 for arm + 1 for gripper, or 6 for cartesian + 1 gripper)
-            action_space: "cartesian_position", "joint_position", "cartesian_velocity", "joint_velocity"
-            gripper_action_space: "position" or "velocity" (optional)
-            blocking: Whether to wait for command completion
-        """
-        action_dict = self.create_action_dict(command, action_space=action_space, gripper_action_space=gripper_action_space)
-
-        # Always convert to joint position control (matching droid implementation)
-        self.update_joints(action_dict["joint_position"], velocity=False, blocking=blocking)
-        self.update_gripper(action_dict["gripper_position"], velocity=False, blocking=blocking)
-
-        return action_dict
+    def _get_gripper_state(self) -> Optional[GripperState]:
+        """Get current gripper state from RobotState (thread-safe)."""
+        msg = self._get_robot_state_msg()
+        if msg is None or not msg.gripper_states:
+            return None
+        # Return first gripper state (single robot case)
+        return msg.gripper_states[0]
     
-    def update_pose(self, command, velocity=False, blocking=False):
-        """
-        Update end-effector pose.
-        
-        Args:
-            command: Cartesian command [x, y, z, roll, pitch, yaw]
-            velocity: If True, command is velocity; if False, command is position
-            blocking: Whether to wait for completion
-        
-        Design:
-            - Non-blocking: Uses Topic (/polymetis/robot_command) for low-latency control
-            - Blocking: Uses Service (/polymetis/arm/move_to_ee_pose) to ensure completion
-        """
-        if blocking and not velocity:
-            # BLOCKING MODE: Use Service (ensures completion)
-            return self._update_pose_blocking(command)
-        else:
-            # NON-BLOCKING MODE: Use Topic (low latency)
-            return self._update_pose_non_blocking(command, velocity)
-    
-    def _update_pose_blocking(self, command):
-        """
-        Blocking pose update using Service.
-        
-        Args:
-            command: Cartesian command [x, y, z, roll, pitch, yaw]
-        
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        if not self._move_to_ee_pose_client.wait_for_service(timeout_sec=1.0):
-            self._node.get_logger().error("MoveToEEPose service not available")
-            return False
-        
-        pos = np.array(command[:3])
-        quat = euler_to_quat(command[3:6])
-        
-        request = MoveToEEPose.Request()
-        request.position = pos.tolist()
-        request.orientation = quat.tolist()
-        request.time_to_go = 0.0  # Auto-calculate
-        
-        # Get current joints for IK initial guess
-        robot_state, _ = self._get_current_state()
-        if robot_state is not None:
-            request.q0 = list(robot_state.joint_positions)
-        else:
-            request.q0 = [0.0] * 7
-        
-        future = self._move_to_ee_pose_client.call_async(request)
-        # Wait for service response (non-blocking - let background executor handle it)
-        timeout_sec = 10.0
-        start_time = time.time()
-        while not future.done() and (time.time() - start_time) < timeout_sec:
-            time.sleep(0.001)  # Yield to background executor thread
-        
-        if future.done():
-            response = future.result()
-            if response.success:
-                self._node.get_logger().debug("Blocking move to EE pose completed")
-                return True
-            else:
-                self._node.get_logger().error(f"Move to EE pose failed: {response.message}")
-                return False
-        else:
-            self._node.get_logger().error("Move to EE pose service call timed out")
-            return False
-    
-    def _update_pose_non_blocking(self, command, velocity):
-        """
-        Non-blocking pose update using Topic.
-        
-        Args:
-            command: Cartesian command [x, y, z, roll, pitch, yaw]
-            velocity: If True, command is velocity; if False, command is position
-        """
-        if not velocity:
-            # Convert position to velocity for smooth non-blocking control
-            curr_pose = self.get_ee_pose()
-            cartesian_delta = pose_diff(command, curr_pose)
-            command = self._ik_solver.cartesian_delta_to_velocity(cartesian_delta)
-            velocity = True  # After conversion, we're sending velocity
-        
-        # Publish non-blocking command via Topic
-        msg = PolymetisRobotCommand()
-        msg.action_space = "cartesian_velocity" if velocity else "cartesian_position"
-        msg.command = list(command) + [0.0]  # Add gripper (no change)
-        msg.blocking = False  # Topic commands are always non-blocking
-        
-        self._command_pub.publish(msg)
-    
-    def update_joints(self, command, velocity=False, blocking=False, cartesian_noise=None):
-        """
-        Update joint positions/velocities.
-        
-        Args:
-            command: Joint command (7 DOF)
-            velocity: If True, command is velocity; if False, command is position
-            blocking: Whether to wait for completion
-            cartesian_noise: Optional cartesian noise for randomization (not supported via ROS2)
-        
-        Design:
-            - Non-blocking: Uses Topic (/polymetis/robot_command) for low-latency control
-            - Blocking: Uses Service (/polymetis/arm/move_to_joint_positions) to ensure completion
-        """
-        if cartesian_noise is not None:
-            self._node.get_logger().warn("cartesian_noise not supported via ROS2 interface")
-        
-        if blocking and not velocity:
-            # BLOCKING MODE: Use Service (ensures completion)
-            return self._update_joints_blocking(command)
-        else:
-            # NON-BLOCKING MODE: Use Topic (low latency)
-            return self._update_joints_non_blocking(command, velocity, cartesian_noise)
-    
-    def _update_joints_blocking(self, command):
-        """
-        Blocking joint update using Service.
-        
-        Args:
-            command: Joint command (7 DOF)
-        
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        if not self._move_to_joint_positions_client.wait_for_service(timeout_sec=1.0):
-            self._node.get_logger().error("MoveToJointPositions service not available")
-            return False
-        
-        request = MoveToJointPositions.Request()
-        request.joint_positions = list(command)
-        request.time_to_go = 0.0  # Auto-calculate
-        
-        future = self._move_to_joint_positions_client.call_async(request)
-        # Wait for service response (non-blocking - let background executor handle it)
-        timeout_sec = 10.0
-        start_time = time.time()
-        while not future.done() and (time.time() - start_time) < timeout_sec:
-            time.sleep(0.001)  # Yield to background executor thread
-        
-        if future.done():
-            response = future.result()
-            if response.success:
-                self._node.get_logger().debug("Blocking move to joint positions completed")
-                return True
-            else:
-                self._node.get_logger().error(f"Move to joint positions failed: {response.message}")
-                return False
-        else:
-            self._node.get_logger().error("Move to joint positions service call timed out")
-            return False
-    
-    def _update_joints_non_blocking(self, command, velocity, cartesian_noise=None):
-        """
-        Non-blocking joint update using Topic.
-        
-        Args:
-            command: Joint command (7 DOF)
-            velocity: If True, command is velocity; if False, command is position
-            cartesian_noise: Optional cartesian noise (not supported)
-        """
-        # Publish non-blocking command via Topic
-        msg = PolymetisRobotCommand()
-        msg.action_space = "joint_velocity" if velocity else "joint_position"
-        msg.command = list(command) + [self.get_gripper_position()]  # Add gripper (no change)
-        msg.blocking = False  # Topic commands are always non-blocking
-        
-        if cartesian_noise is not None:
-            msg.cartesian_noise = list(cartesian_noise)
-        
-        self._command_pub.publish(msg)
-    
-    def update_gripper(self, command, velocity=True, blocking=False):
-        """
-        Update gripper position.
-        
-        Args:
-            command: Gripper command (0=open, 1=closed for position; -1 to 1 for velocity)
-                     Matches droid convention: position=0 means open, position=1 means closed
-            velocity: If True, command is velocity; if False, command is position
-            blocking: Whether to wait for completion
-        
-        Design:
-            - Non-blocking: Uses Topic (/polymetis/gripper/command) for low-latency control
-            - Blocking: Currently uses Topic with blocking flag (bridge handles in thread)
-            Note: For true blocking, consider adding a Service in the future
-        """
-        if velocity:
-            current_pos = self.get_gripper_position()
-            gripper_delta = self._ik_solver.gripper_velocity_to_delta(command)
-            command = gripper_delta + current_pos
-        
-        command = float(np.clip(command, 0, 1))
-        
-        # Convert normalized position to width (matches droid convention)
-        # command=0 -> width=max (open), command=1 -> width=0 (closed)
-        width = self._max_gripper_width * (1 - command)
-        
-        # Publish gripper command using GripperCommand topic
-        # Note: Bridge node handles blocking in a separate thread
-        msg = GripperCommand()
-        msg.header.stamp = self._node.get_clock().now().to_msg()
-        msg.width = width
-        msg.blocking = blocking  # Bridge will handle blocking in thread if needed
-        
-        self._gripper_cmd_pub.publish(msg)
-    
-    def get_joint_positions(self):
+    def get_joint_positions(self) -> List[float]:
         """Get current joint positions."""
-        robot_state, _ = self._get_current_state()
-        if robot_state is not None:
-            return list(robot_state.joint_positions)
+        arm_state = self._get_arm_state()
+        if arm_state is not None:
+            return list(arm_state.joint_positions)
         return [0.0] * 7
     
-    def get_joint_velocities(self):
+    def get_joint_velocities(self) -> List[float]:
         """Get current joint velocities."""
-        robot_state, _ = self._get_current_state()
-        if robot_state is not None:
-            return list(robot_state.joint_velocities)
+        arm_state = self._get_arm_state()
+        if arm_state is not None:
+            return list(arm_state.joint_velocities)
         return [0.0] * 7
     
-    def get_gripper_position(self):
+    def get_ee_pose(self) -> List[float]:
+        """Get current end-effector pose [x, y, z, roll, pitch, yaw]."""
+        arm_state = self._get_arm_state()
+        if arm_state is not None:
+            return list(arm_state.ee_position) + list(arm_state.ee_euler)
+        return [0.0] * 6
+    
+    def get_ee_position(self) -> List[float]:
+        """Get current end-effector position [x, y, z]."""
+        arm_state = self._get_arm_state()
+        if arm_state is not None:
+            return list(arm_state.ee_position)
+        return [0.0] * 3
+    
+    def get_ee_quaternion(self) -> List[float]:
+        """Get current end-effector quaternion [x, y, z, w]."""
+        arm_state = self._get_arm_state()
+        if arm_state is not None:
+            return list(arm_state.ee_quaternion)
+        return [0.0, 0.0, 0.0, 1.0]
+    
+    # ==================== GRIPPER STATE GETTERS ====================
+    
+    def get_gripper_position(self) -> float:
         """
         Get current gripper position (normalized: 0=open, 1=closed).
         
         Matches droid convention where position=0 means fully open and position=1 means closed.
         """
-        _, gripper_state = self._get_current_state()
+        gripper_state = self._get_gripper_state()
         if gripper_state is not None:
             return float(gripper_state.position)
         return 0.0
     
-    def get_gripper_state(self):
-        """Alias for get_gripper_position() for compatibility with ServerInterface."""
+    def get_gripper_width(self) -> float:
+        """Get current gripper width in meters."""
+        gripper_state = self._get_gripper_state()
+        if gripper_state is not None:
+            return float(gripper_state.width)
+        return 0.0
+    
+    def get_gripper_state(self) -> float:
+        """Alias for get_gripper_position() for compatibility."""
         return self.get_gripper_position()
     
-    def get_ee_pose(self):
-        """Get current end-effector pose [x, y, z, roll, pitch, yaw]."""
-        robot_state, _ = self._get_current_state()
-        if robot_state is not None:
-            # Return position + euler angles
-            return list(robot_state.ee_position) + list(robot_state.ee_euler)
-        return [0.0] * 6
+    def is_gripper_grasped(self) -> bool:
+        """Check if gripper has grasped an object."""
+        gripper_state = self._get_gripper_state()
+        if gripper_state is not None:
+            return bool(gripper_state.is_grasped)
+        return False
     
-    # Class-level constant for default state (avoid creating new objects on every call)
+    # ==================== ROBOT STATE (COMBINED) ====================
+    
     _DEFAULT_STATE = (
         {
             "cartesian_position": [0.0] * 6,
@@ -605,78 +393,38 @@ class FrankaRobot(BaseRobot):
         }
     )
     
-    def get_robot_state(self):
+    def get_robot_state(self) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
-        Get comprehensive robot state.
-        
-        Optimized for performance:
-        - Minimal lock hold time (only copies snapshot reference)
-        - Lazy latency calculation (only when logging)
-        - Uses atomic snapshots for data consistency
+        Get comprehensive robot state (arm + gripper).
         
         Returns:
             tuple: (state_dict, timestamp_dict)
-                timestamp_dict contains:
-                - robot_polymetis_t: Polymetis timestamp (nanoseconds)
-                - robot_pub_t: Message header timestamp (nanoseconds)
-                - robot_sub_t: Message received/subscription time (nanoseconds, ROS time)
-                - robot_end_t: Processing end time (nanoseconds, ROS time)
         """
-        # CRITICAL SECTION: Only copy snapshot references (minimal lock time)
-        with self._robot_state_lock:
-            robot_snapshot = self._robot_data_snapshot
-            gripper_snapshot = self._gripper_data_snapshot
+        with self._state_lock:
+            snapshot = self._robot_state_snapshot
         
-        # Fast path: return default if no data available
-        if robot_snapshot is None or gripper_snapshot is None:
+        if snapshot is None:
             return self._DEFAULT_STATE[0].copy(), self._DEFAULT_STATE[1].copy()
         
-        # Unpack atomic snapshot (all values from the same message)
-        robot_state, pub_timestamp_ns, received_timestamp_ns = robot_snapshot
-        gripper_state, _ = gripper_snapshot
+        msg, received_timestamp_ns = snapshot
         
-        # Record processing start time (for latency calculation, done lazily)
-        processing_start_timestamp_ns = get_ros_time_ns(self._node)
+        # Build state_dict using shared helper method
+        state_dict = self._build_state_dict_from_msg(msg)
         
-        # Build state dict from ROS2 messages (outside lock)
-        cartesian_position = list(robot_state.ee_position) + list(robot_state.ee_euler)
+        # Build timestamp_dict
+        pub_stamp = msg.header.stamp
+        pub_timestamp_ns = int(pub_stamp.sec * 1_000_000_000 + pub_stamp.nanosec)
         
-        state_dict = {
-            "cartesian_position": cartesian_position,
-            "gripper_position": float(gripper_state.position),
-            "joint_positions": list(robot_state.joint_positions),
-            "joint_velocities": list(robot_state.joint_velocities),
-            "joint_torques_computed": list(robot_state.joint_torques_computed),
-            "prev_joint_torques_computed": list(robot_state.prev_joint_torques_computed),
-            "prev_joint_torques_computed_safened": list(robot_state.prev_joint_torques_computed_safened),
-            "motor_torques_measured": list(robot_state.motor_torques_measured),
-            "prev_controller_latency_ms": robot_state.prev_controller_latency_ms,
-            "prev_command_successful": robot_state.prev_command_successful,
-        }
-        
-        # Extract timestamps from snapshot (guaranteed to match)
-        polymetis_timestamp_ns = robot_state.polymetis_timestamp_ns
-        
-        # robot_end_t: Processing end time
+        arm_state = msg.arm_states[0] if msg.arm_states else None
+        polymetis_timestamp_ns = arm_state.polymetis_timestamp_ns if arm_state else 0
         end_timestamp_ns = get_ros_time_ns(self._node)
         
-        # Build timestamp dict (all from the same atomic snapshot)
         timestamp_dict = {
             "robot_polymetis_t": int(polymetis_timestamp_ns),
-            "robot_pub_t": int(pub_timestamp_ns),  # From snapshot
-            "robot_sub_t": int(received_timestamp_ns),  # From snapshot (same message)
+            "robot_pub_t": int(pub_timestamp_ns),
+            "robot_sub_t": int(received_timestamp_ns),
             "robot_end_t": int(end_timestamp_ns),
         }
-        
-        # Lazy latency calculation (only when logging is needed)
-        self._latency_log_counter += 1
-        if self._latency_log_counter % 50 == 0:
-            self._check_and_log_latency(
-                pub_timestamp_ns,
-                received_timestamp_ns,
-                processing_start_timestamp_ns,
-                end_timestamp_ns
-            )
         
         return state_dict, timestamp_dict
     
@@ -708,8 +456,8 @@ class FrankaRobot(BaseRobot):
             - Falls back to get_robot_state() if cache is empty or no match within tolerance
             - The cache stores the last 100 states (~2 seconds at 50Hz)
         """
-        with self._robot_state_cache_lock:
-            cache_len = len(self._robot_state_cache)
+        with self._state_cache_lock:
+            cache_len = len(self._state_cache)
             
             if cache_len == 0:
                 # Fallback: return current state
@@ -725,7 +473,6 @@ class FrankaRobot(BaseRobot):
             if best_diff > max_time_diff_ns:
                 # Fallback: return current state if no match within tolerance
                 state_dict, timestamp_dict = self.get_robot_state()
-                # Log a warning if no cached state is close enough to the requested timestamp
                 self._node.get_logger().warn(
                     f"get_robot_state_for_timestamp: No cached state within {max_time_diff_ns / 1e6:.1f} ms "
                     f"of requested timestamp {timestamp_ns} ns (closest diff {best_diff / 1e6:.1f} ms). "
@@ -734,16 +481,17 @@ class FrankaRobot(BaseRobot):
                 return state_dict, timestamp_dict, int(best_diff)
             
             # Get the cached entry
-            pub_t, msg, received_time_ns = self._robot_state_cache[best_idx]
+            pub_t, msg, received_time_ns = self._state_cache[best_idx]
         
         # Build state_dict from cached message (outside lock)
         state_dict = self._build_state_dict_from_msg(msg)
-
-        self._node.get_logger().info(f"get_robot_state_for_timestamp: Using cached state {best_idx} with pub_t {pub_t} and received_time_ns {received_time_ns}")
         
         # Build timestamp_dict
+        arm_state = msg.arm_states[0] if msg.arm_states else None
+        polymetis_timestamp_ns = arm_state.polymetis_timestamp_ns if arm_state else 0
+        
         timestamp_dict = {
-            "robot_polymetis_t": int(msg.polymetis_timestamp_ns),
+            "robot_polymetis_t": int(polymetis_timestamp_ns),
             "robot_pub_t": int(pub_t),
             "robot_sub_t": int(received_time_ns),
             "robot_end_t": get_ros_time_ns(self._node),
@@ -754,143 +502,561 @@ class FrankaRobot(BaseRobot):
         
         return state_dict, timestamp_dict, int(signed_diff)
     
-    def _build_state_dict_from_msg(self, msg: PolymetisRobotState) -> Dict[str, Any]:
+    def _build_state_dict_from_msg(self, msg: RobotState) -> Dict[str, Any]:
         """
-        Build state_dict from a PolymetisRobotState message.
+        Build state_dict from a RobotState message.
         
         Args:
-            msg: PolymetisRobotState message
+            msg: RobotState message
         
         Returns:
             dict: State dictionary
         """
-        # Get gripper position from current snapshot
-        with self._robot_state_lock:
-            gripper_snapshot = self._gripper_data_snapshot
+        # Extract arm state (first one for single robot)
+        arm_state = msg.arm_states[0] if msg.arm_states else None
         
-        if gripper_snapshot is not None:
-            gripper_state, _ = gripper_snapshot
-            gripper_position = float(gripper_state.position)
-        else:
-            gripper_position = 0.0
+        # Extract gripper state (first one for single robot)
+        gripper_state = msg.gripper_states[0] if msg.gripper_states else None
+        gripper_position = float(gripper_state.position) if gripper_state else 0.0
         
-        cartesian_position = list(msg.ee_position) + list(msg.ee_euler)
+        if arm_state is None:
+            return self._DEFAULT_STATE[0].copy()
+        
+        cartesian_position = list(arm_state.ee_position) + list(arm_state.ee_euler)
         
         return {
             "cartesian_position": cartesian_position,
             "gripper_position": gripper_position,
-            "joint_positions": list(msg.joint_positions),
-            "joint_velocities": list(msg.joint_velocities),
-            "joint_torques_computed": list(msg.joint_torques_computed),
-            "prev_joint_torques_computed": list(msg.prev_joint_torques_computed),
-            "prev_joint_torques_computed_safened": list(msg.prev_joint_torques_computed_safened),
-            "motor_torques_measured": list(msg.motor_torques_measured),
-            "prev_controller_latency_ms": msg.prev_controller_latency_ms,
-            "prev_command_successful": msg.prev_command_successful,
+            "joint_positions": list(arm_state.joint_positions),
+            "joint_velocities": list(arm_state.joint_velocities),
+            "joint_torques_computed": list(arm_state.joint_torques_computed),
+            "prev_joint_torques_computed": list(arm_state.prev_joint_torques_computed),
+            "prev_joint_torques_computed_safened": list(arm_state.prev_joint_torques_computed_safened),
+            "motor_torques_measured": list(arm_state.motor_torques_measured),
+            "prev_controller_latency_ms": arm_state.prev_controller_latency_ms,
+            "prev_command_successful": arm_state.prev_command_successful,
         }
     
-    def get_robot_state_cache_info(self) -> Dict[str, Any]:
-        """
-        Get information about the robot state cache.
-        
-        Returns:
-            dict: Cache information including:
-                - size: Current number of entries in cache
-                - max_size: Maximum cache size
-                - oldest_timestamp_ns: Oldest timestamp in cache (or None)
-                - newest_timestamp_ns: Newest timestamp in cache (or None)
-                - time_span_ms: Time span covered by cache in milliseconds
-        """
-        with self._robot_state_cache_lock:
-            size = len(self._robot_state_cache)
-            if size == 0:
-                return {
-                    "size": 0,
-                    "max_size": self._robot_state_cache.maxlen,
-                    "oldest_timestamp_ns": None,
-                    "newest_timestamp_ns": None,
-                    "time_span_ms": 0.0
-                }
-            
-            oldest_ts = self._robot_state_cache[0][0]
-            newest_ts = self._robot_state_cache[-1][0]
-            time_span_ns = newest_ts - oldest_ts
-            
-            return {
-                "size": size,
-                "max_size": self._robot_state_cache.maxlen,
-                "oldest_timestamp_ns": oldest_ts,
-                "newest_timestamp_ns": newest_ts,
-                "time_span_ms": time_span_ns / 1e6
-            }
+    def get_arm_state_raw(self) -> Optional[ArmState]:
+        """Get raw ArmState message for direct access."""
+        return self._get_arm_state()
     
-    def _check_and_log_latency(
-        self,
-        pub_timestamp_ns: int,
-        received_timestamp_ns: int,
-        processing_start_timestamp_ns: int,
-        end_timestamp_ns: int
-    ) -> None:
+    def get_gripper_state_raw(self) -> Optional[GripperState]:
+        """Get raw GripperState message for direct access."""
+        return self._get_gripper_state()
+    
+    # ==================== ARM CONTROL ====================
+    
+    def reset(self, randomize=False, wait_for_completion=True, wait_time_sec=30.0, open_gripper=True):
         """
-        Check and log latency metrics (lazy evaluation).
+        Reset robot to home position.
         
-        This method is only called periodically (every 50 calls) to avoid
-        unnecessary CPU overhead from latency calculations.
+        Steps:
+        1. Open gripper (blocking) - optional
+        2. Move arm to home position
         
         Args:
-            pub_timestamp_ns: Message publication timestamp
-            received_timestamp_ns: Message reception timestamp
-            processing_start_timestamp_ns: Processing start timestamp
-            end_timestamp_ns: Processing end timestamp
+            randomize: If True, add random cartesian noise to reset position
+            wait_for_completion: If True, wait for reset to complete
+            wait_time_sec: Time to wait for reset completion
+            open_gripper: If True, open gripper before resetting arm (default: True)
         """
-        # Calculate processing time
-        processing_time_ns = end_timestamp_ns - processing_start_timestamp_ns
-        processing_time_ms = processing_time_ns / 1e6
+        import inspect
+        caller_info = inspect.stack()[1]
+        caller_name = caller_info.filename.split('/')[-1] + ':' + str(caller_info.lineno)
         
-        # Calculate pub_to_sub latency (network + ROS2 processing)
-        if pub_timestamp_ns > 0 and received_timestamp_ns > 0:
-            pub_to_sub_ns = received_timestamp_ns - pub_timestamp_ns
-            pub_to_sub_ms = pub_to_sub_ns / 1e6
+        self._node.get_logger().info("=" * 70)
+        self._node.get_logger().info(f"🔄 FrankaRobotV2.reset() called from: {caller_name}")
+        self._node.get_logger().info(f"   Parameters: randomize={randomize}, wait_for_completion={wait_for_completion}, open_gripper={open_gripper}")
+        
+        # Step 1: Open gripper first
+        if open_gripper:
+            self._node.get_logger().info("   Step 1: Opening gripper...")
+            gripper_success = self.gripper_open()
+            if gripper_success:
+                self._node.get_logger().info("   ✅ Gripper opened")
+            else:
+                self._node.get_logger().warn("   ⚠️ Gripper open failed or service unavailable")
+        
+        # Step 2: Reset arm to home position
+        self._node.get_logger().info("   Step 2: Resetting arm to home position...")
+        
+        request = Reset.Request()
+        request.randomize = randomize
+        future = self._arm_reset_client.call_async(request)
+        
+        self._node.get_logger().info("   Waiting for arm reset service...")
+        
+        timeout_sec = 5.0
+        start_time = time.time()
+        while not future.done() and (time.time() - start_time) < timeout_sec:
+            time.sleep(0.001)
+        
+        if future.done():
+            response = future.result()
+            if response.success:
+                self._node.get_logger().info(f"   ✅ Arm reset accepted: {response.message}")
+                if wait_for_completion:
+                    self._node.get_logger().info(f"   ⏳ Waiting {wait_time_sec}s for reset to complete...")
+                    time.sleep(wait_time_sec)
+                    self._node.get_logger().info("   ✅ Reset wait complete")
+            else:
+                self._node.get_logger().error(f"   ❌ Arm reset failed: {response.message}")
         else:
-            pub_to_sub_ms = 0.0
+            self._node.get_logger().error("   ❌ Reset service call timed out")
         
-        # Calculate sub_to_end latency (data staleness)
-        if received_timestamp_ns > 0:
-            sub_to_end_ns = end_timestamp_ns - received_timestamp_ns
-            sub_to_end_ms = sub_to_end_ns / 1e6
+        self._node.get_logger().info("=" * 70)
+    
+    def home(self):
+        """Move robot to home position (alias for reset)."""
+        self.reset()
+    
+    def update_command(self, command, action_space="cartesian_velocity", gripper_action_space=None, blocking=False):
+        """
+        Update robot command (arm + gripper).
+        
+        Args:
+            command: Command array (7 for arm + 1 for gripper, or 6 for cartesian + 1 gripper)
+            action_space: "cartesian_position", "joint_position", "cartesian_velocity", "joint_velocity"
+            gripper_action_space: "position" or "velocity" (optional)
+            blocking: Whether to wait for command completion
+        """
+        action_dict = self.create_action_dict(command, action_space=action_space, gripper_action_space=gripper_action_space)
+        
+        # Send arm command
+        self.update_joints(action_dict["joint_position"], velocity=False, blocking=blocking)
+        
+        # Send gripper command
+        self.update_gripper(action_dict["gripper_position"], velocity=False, blocking=blocking)
+        
+        return action_dict
+    
+    def update_joints(self, command, velocity=False, blocking=False, cartesian_noise=None):
+        """
+        Update joint positions/velocities via V2 topics.
+        
+        Args:
+            command: Joint command (7 DOF)
+            velocity: If True, command is velocity; if False, command is position
+            blocking: Whether to wait for completion
+            cartesian_noise: Optional cartesian noise (not supported)
+        """
+        if cartesian_noise is not None:
+            self._node.get_logger().warn("cartesian_noise not supported via V2 interface")
+        
+        if blocking and not velocity:
+            return self._update_joints_blocking(command)
         else:
-            sub_to_end_ms = 0.0
+            return self._update_joints_non_blocking(command, velocity)
+    
+    def _update_joints_blocking(self, command) -> bool:
+        """Blocking joint update using service."""
+        if not self._move_to_joint_positions_client.wait_for_service(timeout_sec=1.0):
+            self._node.get_logger().error("MoveToJointPositions service not available")
+            return False
         
-        # Calculate message age
-        if pub_timestamp_ns > 0:
-            message_age_ns = end_timestamp_ns - pub_timestamp_ns
-            message_age_ms = message_age_ns / 1e6
+        request = MoveToJointPositions.Request()
+        request.joint_positions = list(command)
+        request.time_to_go = 0.0  # Auto-calculate
+        
+        future = self._move_to_joint_positions_client.call_async(request)
+        timeout_sec = 10.0
+        start_time = time.time()
+        while not future.done() and (time.time() - start_time) < timeout_sec:
+            time.sleep(0.001)
+        
+        if future.done():
+            response = future.result()
+            if response.success:
+                self._node.get_logger().debug("Blocking move to joint positions completed")
+                return True
+            else:
+                self._node.get_logger().error(f"Move to joint positions failed: {response.message}")
+                return False
         else:
-            message_age_ms = 0.0
+            self._node.get_logger().error("Move to joint positions service call timed out")
+            return False
+    
+    def _update_joints_non_blocking(self, command, velocity):
+        """Non-blocking joint update using topic."""
+        if velocity:
+            msg = JointVelocityCommand()
+            msg.header.stamp = self._node.get_clock().now().to_msg()
+            msg.velocities = list(command)
+            self._joint_vel_cmd_pub.publish(msg)
+        else:
+            msg = JointPositionCommand()
+            msg.header.stamp = self._node.get_clock().now().to_msg()
+            msg.positions = list(command)
+            msg.blocking = False
+            self._joint_pos_cmd_pub.publish(msg)
+    
+    def update_pose(self, command, velocity=False, blocking=False):
+        """
+        Update end-effector pose.
         
-        # Log warnings for large latencies
-        if pub_to_sub_ms > 100.0:
-            self._node.get_logger().warn(
-                f"⚠️  Large pub_to_sub latency: {pub_to_sub_ms:.2f} ms. "
-                f"This may indicate network/ROS2 processing delay. "
-                f"Expected: < 50ms for local communication."
-            )
+        Args:
+            command: Cartesian command [x, y, z, roll, pitch, yaw]
+            velocity: If True, command is velocity; if False, command is position
+            blocking: Whether to wait for completion
+        """
+        if blocking and not velocity:
+            return self._update_pose_blocking(command)
+        else:
+            return self._update_pose_non_blocking(command, velocity)
+    
+    def _update_pose_blocking(self, command) -> bool:
+        """Blocking pose update using service."""
+        if not self._move_to_ee_pose_client.wait_for_service(timeout_sec=1.0):
+            self._node.get_logger().error("MoveToEEPose service not available")
+            return False
         
-        if sub_to_end_ms > 100.0:
-            self._node.get_logger().warn(
-                f"⚠️  Large sub_to_end latency: {sub_to_end_ms:.2f} ms. "
-                f"Message age: {message_age_ms:.2f} ms. "
-                f"This indicates get_robot_state() is called less frequently than messages arrive, "
-                f"or there's processing delay. "
-                f"Expected: < 50ms if called at >= 20Hz with 50Hz message rate."
-            )
+        pos = np.array(command[:3])
+        quat = euler_to_quat(command[3:6])
         
-        if processing_time_ms > 10.0:
-            self._node.get_logger().warn(
-                f"⚠️  Large processing time: {processing_time_ms:.3f} ms. "
-                f"This may indicate a performance issue in get_robot_state(). "
-                f"Expected: < 1ms."
-            )
+        request = MoveToEEPose.Request()
+        request.position = pos.tolist()
+        request.orientation = quat.tolist()
+        request.time_to_go = 0.0
+        
+        arm_state = self._get_arm_state()
+        if arm_state is not None:
+            request.q0 = list(arm_state.joint_positions)
+        else:
+            request.q0 = [0.0] * 7
+        
+        future = self._move_to_ee_pose_client.call_async(request)
+        timeout_sec = 10.0
+        start_time = time.time()
+        while not future.done() and (time.time() - start_time) < timeout_sec:
+            time.sleep(0.001)
+        
+        if future.done():
+            response = future.result()
+            if response.success:
+                self._node.get_logger().debug("Blocking move to EE pose completed")
+                return True
+            else:
+                self._node.get_logger().error(f"Move to EE pose failed: {response.message}")
+                return False
+        else:
+            self._node.get_logger().error("Move to EE pose service call timed out")
+            return False
+    
+    def _update_pose_non_blocking(self, command, velocity):
+        """Non-blocking pose update using topic."""
+        if not velocity:
+            # Convert position to velocity
+            curr_pose = self.get_ee_pose()
+            cartesian_delta = pose_diff(command, curr_pose)
+            command = self._ik_solver.cartesian_delta_to_velocity(cartesian_delta)
+            velocity = True
+        
+        if velocity:
+            msg = CartesianVelocityCommand()
+            msg.header.stamp = self._node.get_clock().now().to_msg()
+            msg.linear_velocity = list(command[:3])
+            msg.angular_velocity = list(command[3:6]) if len(command) >= 6 else [0.0, 0.0, 0.0]
+            self._cartesian_vel_cmd_pub.publish(msg)
+        else:
+            pos = command[:3]
+            quat = euler_to_quat(command[3:6])
+            
+            msg = CartesianPositionCommand()
+            msg.header.stamp = self._node.get_clock().now().to_msg()
+            msg.position = list(pos)
+            msg.orientation = list(quat)
+            msg.blocking = False
+            self._cartesian_pos_cmd_pub.publish(msg)
+    
+    # ==================== GRIPPER CONTROL ====================
+    
+    def update_gripper(self, command, velocity=True, blocking=False):
+        """
+        Update gripper position.
+        
+        Args:
+            command: Gripper command (0=open, 1=closed for position; -1 to 1 for velocity)
+                     Matches droid convention: position=0 means open, position=1 means closed
+            velocity: If True, command is velocity; if False, command is position
+            blocking: Whether to wait for completion
+        """
+        if velocity:
+            current_pos = self.get_gripper_position()
+            gripper_delta = self._ik_solver.gripper_velocity_to_delta(command)
+            command = gripper_delta + current_pos
+        
+        command = float(np.clip(command, 0, 1))
+        
+        # Convert normalized position to width (matches droid convention)
+        # command=0 -> width=max (open), command=1 -> width=0 (closed)
+        width = self._max_gripper_width * (1.0 - command)
+        
+        msg = GripperCommand()
+        msg.header.stamp = self._node.get_clock().now().to_msg()
+        msg.width = width
+        msg.blocking = blocking
+        
+        self._gripper_cmd_pub.publish(msg)
+    
+    def gripper_goto(self, width: float, speed: float = 0.15, force: float = 0.1, blocking: bool = True) -> bool:
+        """
+        Move gripper to specified width using service.
+        
+        Args:
+            width: Target width in meters
+            speed: Movement speed (m/s)
+            force: Grip force (normalized 0-1)
+            blocking: Whether to wait for completion
+        
+        Returns:
+            bool: True if successful
+        """
+        if not self._gripper_goto_client.wait_for_service(timeout_sec=1.0):
+            self._node.get_logger().error("Gripper goto service not available")
+            return False
+        
+        request = GripperGoto.Request()
+        request.width = float(width)
+        request.speed = float(speed)
+        request.force = float(force)
+        request.blocking = blocking
+        
+        future = self._gripper_goto_client.call_async(request)
+        timeout_sec = 10.0
+        start_time = time.time()
+        while not future.done() and (time.time() - start_time) < timeout_sec:
+            time.sleep(0.001)
+        
+        if future.done():
+            response = future.result()
+            return response.success
+        return False
+    
+    def gripper_grasp(self, speed: float = 0.15, force: float = 0.5, blocking: bool = True) -> Tuple[bool, bool]:
+        """
+        Close gripper to grasp an object.
+        
+        Args:
+            speed: Movement speed (m/s)
+            force: Grip force (normalized 0-1)
+            blocking: Whether to wait for completion
+        
+        Returns:
+            tuple: (success, is_grasped)
+        """
+        if not self._gripper_grasp_client.wait_for_service(timeout_sec=1.0):
+            self._node.get_logger().error("Gripper grasp service not available")
+            return False, False
+        
+        request = GripperGrasp.Request()
+        request.speed = float(speed)
+        request.force = float(force)
+        request.blocking = blocking
+        
+        future = self._gripper_grasp_client.call_async(request)
+        timeout_sec = 10.0
+        start_time = time.time()
+        while not future.done() and (time.time() - start_time) < timeout_sec:
+            time.sleep(0.001)
+        
+        if future.done():
+            response = future.result()
+            return response.success, response.is_grasped
+        return False, False
+    
+    def gripper_open(self) -> bool:
+        """Open gripper fully."""
+        if not self._gripper_open_client.wait_for_service(timeout_sec=1.0):
+            self._node.get_logger().error("Gripper open service not available")
+            return False
+        
+        request = Trigger.Request()
+        future = self._gripper_open_client.call_async(request)
+        timeout_sec = 10.0
+        start_time = time.time()
+        while not future.done() and (time.time() - start_time) < timeout_sec:
+            time.sleep(0.001)
+        
+        if future.done():
+            response = future.result()
+            return response.success
+        return False
+    
+    def gripper_close(self) -> bool:
+        """Close gripper fully."""
+        if not self._gripper_close_client.wait_for_service(timeout_sec=1.0):
+            self._node.get_logger().error("Gripper close service not available")
+            return False
+        
+        request = Trigger.Request()
+        future = self._gripper_close_client.call_async(request)
+        timeout_sec = 10.0
+        start_time = time.time()
+        while not future.done() and (time.time() - start_time) < timeout_sec:
+            time.sleep(0.001)
+        
+        if future.done():
+            response = future.result()
+            return response.success
+        return False
+    
+    
+    # ==================== CONTROLLER MANAGEMENT ====================
+    
+    def start_cartesian_impedance(self, kx=None, kxd=None) -> bool:
+        """Start cartesian impedance controller."""
+        if not self._start_cartesian_impedance_client.wait_for_service(timeout_sec=1.0):
+            self._node.get_logger().warn("StartCartesianImpedance service not available")
+            return False
+        
+        request = StartCartesianImpedance.Request()
+        request.kx = list(kx) if kx is not None else []
+        request.kxd = list(kxd) if kxd is not None else []
+        
+        future = self._start_cartesian_impedance_client.call_async(request)
+        timeout_sec = 5.0
+        start_time = time.time()
+        while not future.done() and (time.time() - start_time) < timeout_sec:
+            time.sleep(0.001)
+        
+        if future.done():
+            response = future.result()
+            if response.success:
+                self._node.get_logger().info("Cartesian impedance started")
+                return True
+            else:
+                self._node.get_logger().error(f"Failed to start cartesian impedance: {response.message}")
+                return False
+        else:
+            self._node.get_logger().error("Start cartesian impedance service call timed out")
+            return False
+    
+    def start_joint_impedance(self, kq=None, kqd=None) -> bool:
+        """Start joint impedance controller."""
+        if not self._start_joint_impedance_client.wait_for_service(timeout_sec=1.0):
+            self._node.get_logger().warn("StartJointImpedance service not available")
+            return False
+        
+        request = StartJointImpedance.Request()
+        request.kq = list(kq) if kq is not None else []
+        request.kqd = list(kqd) if kqd is not None else []
+        
+        future = self._start_joint_impedance_client.call_async(request)
+        timeout_sec = 5.0
+        start_time = time.time()
+        while not future.done() and (time.time() - start_time) < timeout_sec:
+            time.sleep(0.001)
+        
+        if future.done():
+            response = future.result()
+            if response.success:
+                self._node.get_logger().info("Joint impedance started")
+                return True
+            else:
+                self._node.get_logger().error(f"Failed to start joint impedance: {response.message}")
+                return False
+        else:
+            self._node.get_logger().error("Start joint impedance service call timed out")
+            return False
+    
+    def terminate_current_policy(self) -> bool:
+        """Terminate current policy."""
+        if not self._terminate_policy_client.wait_for_service(timeout_sec=1.0):
+            self._node.get_logger().warn("TerminatePolicy service not available")
+            return False
+        
+        request = TerminatePolicy.Request()
+        future = self._terminate_policy_client.call_async(request)
+        timeout_sec = 5.0
+        start_time = time.time()
+        while not future.done() and (time.time() - start_time) < timeout_sec:
+            time.sleep(0.001)
+        
+        if future.done():
+            response = future.result()
+            if response.success:
+                self._node.get_logger().info("Policy terminated")
+                return True
+            else:
+                self._node.get_logger().error(f"Failed to terminate policy: {response.message}")
+                return False
+        else:
+            self._node.get_logger().error("Terminate policy service call timed out")
+            return False
+    
+    # ==================== IK/FK COMPUTATION ====================
+    
+    def solve_inverse_kinematics(self, position, orientation, q0=None, tolerance=1e-3):
+        """Solve inverse kinematics."""
+        if not self._solve_ik_client.wait_for_service(timeout_sec=1.0):
+            self._node.get_logger().warn("SolveIK service not available")
+            return None, False
+        
+        request = SolveIK.Request()
+        request.position = list(position)[:3]
+        
+        if len(orientation) == 3:
+            quat = euler_to_quat(orientation)
+        else:
+            quat = orientation
+        request.orientation = list(quat)[:4]
+        
+        if q0 is None:
+            arm_state = self._get_arm_state()
+            if arm_state is not None:
+                request.q0 = list(arm_state.joint_positions)
+            else:
+                request.q0 = [0.0] * 7
+        else:
+            request.q0 = list(q0)
+        
+        request.tolerance = tolerance
+        
+        future = self._solve_ik_client.call_async(request)
+        timeout_sec = 5.0
+        start_time = time.time()
+        while not future.done() and (time.time() - start_time) < timeout_sec:
+            time.sleep(0.001)
+        
+        if future.done():
+            response = future.result()
+            if response.success:
+                return response.joint_positions, True
+            else:
+                self._node.get_logger().warn(f"IK solution not found: {response.message}")
+                return response.joint_positions, False
+        else:
+            self._node.get_logger().error("Solve IK service call timed out")
+            return None, False
+    
+    def compute_forward_kinematics(self, joint_positions):
+        """Compute forward kinematics."""
+        if not self._compute_fk_client.wait_for_service(timeout_sec=1.0):
+            self._node.get_logger().warn("ComputeFK service not available")
+            return None, None
+        
+        request = ComputeFK.Request()
+        request.joint_positions = list(joint_positions)
+        
+        future = self._compute_fk_client.call_async(request)
+        timeout_sec = 5.0
+        start_time = time.time()
+        while not future.done() and (time.time() - start_time) < timeout_sec:
+            time.sleep(0.001)
+        
+        if future.done():
+            response = future.result()
+            if response.success:
+                return response.position, response.orientation
+            else:
+                self._node.get_logger().error(f"FK computation failed: {response.message}")
+                return None, None
+        else:
+            self._node.get_logger().error("Compute FK service call timed out")
+            return None, None
+    
+    # ==================== ACTION DICT HELPER ====================
     
     def create_action_dict(self, action, action_space="cartesian_velocity", gripper_action_space=None, robot_state=None):
         """
@@ -959,280 +1125,56 @@ class FrankaRobot(BaseRobot):
         
         return action_dict
     
-    def start_cartesian_impedance(self, kx=None, kxd=None):
-        """
-        Start cartesian impedance controller.
-        
-        Args:
-            kx: Optional cartesian position gains [x, y, z, roll, pitch, yaw]
-            kxd: Optional cartesian velocity gains [x, y, z, roll, pitch, yaw]
-        """
-        if not self._start_cartesian_impedance_client.wait_for_service(timeout_sec=1.0):
-            self._node.get_logger().warn("StartCartesianImpedance service not available")
-            return False
-        
-        request = StartCartesianImpedance.Request()
-        request.kx = list(kx) if kx is not None else []
-        request.kxd = list(kxd) if kxd is not None else []
-        
-        future = self._start_cartesian_impedance_client.call_async(request)
-        # Wait for service response (non-blocking - let background executor handle it)
-        timeout_sec = 5.0
-        start_time = time.time()
-        while not future.done() and (time.time() - start_time) < timeout_sec:
-            time.sleep(0.001)  # Yield to background executor thread
-        
-        if future.done():
-            response = future.result()
-            if response.success:
-                self._node.get_logger().info("Cartesian impedance started")
-                return True
-            else:
-                self._node.get_logger().error(f"Failed to start cartesian impedance: {response.message}")
-                return False
-        else:
-            self._node.get_logger().error("Start cartesian impedance service call timed out")
-            return False
-    
-    def start_joint_impedance(self, kq=None, kqd=None):
-        """
-        Start joint impedance controller.
-        
-        Args:
-            kq: Optional joint position gains (7 DOF)
-            kqd: Optional joint velocity gains (7 DOF)
-        """
-        if not self._start_joint_impedance_client.wait_for_service(timeout_sec=1.0):
-            self._node.get_logger().warn("StartJointImpedance service not available")
-            return False
-        
-        request = StartJointImpedance.Request()
-        request.kq = list(kq) if kq is not None else []
-        request.kqd = list(kqd) if kqd is not None else []
-        
-        future = self._start_joint_impedance_client.call_async(request)
-        # Wait for service response (non-blocking - let background executor handle it)
-        timeout_sec = 5.0
-        start_time = time.time()
-        while not future.done() and (time.time() - start_time) < timeout_sec:
-            time.sleep(0.001)  # Yield to background executor thread
-        
-        if future.done():
-            response = future.result()
-            if response.success:
-                self._node.get_logger().info("Joint impedance started")
-                return True
-            else:
-                self._node.get_logger().error(f"Failed to start joint impedance: {response.message}")
-                return False
-        else:
-            self._node.get_logger().error("Start joint impedance service call timed out")
-            return False
-    
-    def terminate_current_policy(self):
-        """Terminate current policy."""
-        if not self._terminate_policy_client.wait_for_service(timeout_sec=1.0):
-            self._node.get_logger().warn("TerminatePolicy service not available")
-            return False
-        
-        request = TerminatePolicy.Request()
-        future = self._terminate_policy_client.call_async(request)
-        # Wait for service response (non-blocking - let background executor handle it)
-        timeout_sec = 5.0
-        start_time = time.time()
-        while not future.done() and (time.time() - start_time) < timeout_sec:
-            time.sleep(0.001)  # Yield to background executor thread
-        
-        if future.done():
-            response = future.result()
-            if response.success:
-                self._node.get_logger().info("Policy terminated")
-                return True
-            else:
-                self._node.get_logger().error(f"Failed to terminate policy: {response.message}")
-                return False
-        else:
-            self._node.get_logger().error("Terminate policy service call timed out")
-            return False
-    
-    def solve_inverse_kinematics(self, position, orientation, q0=None, tolerance=1e-3):
-        """
-        Solve inverse kinematics.
-        
-        Args:
-            position: Desired position [x, y, z]
-            orientation: Desired orientation as quaternion [x, y, z, w] or euler [roll, pitch, yaw]
-            q0: Initial joint guess (7 DOF), if None uses current joints
-            tolerance: IK solution tolerance
-        
-        Returns:
-            tuple: (joint_positions, success)
-        """
-        if not self._solve_ik_client.wait_for_service(timeout_sec=1.0):
-            self._node.get_logger().warn("SolveIK service not available")
-            return None, False
-        
-        request = SolveIK.Request()
-        request.position = list(position) if len(position) == 3 else position[:3]
-        
-        # Convert orientation to quaternion if needed
-        if len(orientation) == 3:
-            quat = euler_to_quat(orientation)
-        else:
-            quat = orientation
-        request.orientation = list(quat) if len(quat) == 4 else quat[:4]
-        
-        if q0 is None:
-            robot_state, _ = self._get_current_state()
-            if robot_state is not None:
-                request.q0 = list(robot_state.joint_positions)
-            else:
-                request.q0 = [0.0] * 7
-        else:
-            request.q0 = list(q0)
-        
-        request.tolerance = tolerance
-        
-        future = self._solve_ik_client.call_async(request)
-        # Wait for service response (non-blocking - let background executor handle it)
-        timeout_sec = 5.0
-        start_time = time.time()
-        while not future.done() and (time.time() - start_time) < timeout_sec:
-            time.sleep(0.001)  # Yield to background executor thread
-        
-        if future.done():
-            response = future.result()
-            if response.success:
-                return response.joint_positions, True
-            else:
-                self._node.get_logger().warn(f"IK solution not found: {response.message}")
-                return response.joint_positions, False
-        else:
-            self._node.get_logger().error("Solve IK service call timed out")
-            return None, False
-    
-    def compute_forward_kinematics(self, joint_positions):
-        """
-        Compute forward kinematics.
-        
-        Args:
-            joint_positions: Joint positions (7 DOF)
-        
-        Returns:
-            tuple: (position [x, y, z], orientation [x, y, z, w] quaternion)
-        """
-        if not self._compute_fk_client.wait_for_service(timeout_sec=1.0):
-            self._node.get_logger().warn("ComputeFK service not available")
-            return None, None
-        
-        request = ComputeFK.Request()
-        request.joint_positions = list(joint_positions)
-        
-        future = self._compute_fk_client.call_async(request)
-        # Wait for service response (non-blocking - let background executor handle it)
-        timeout_sec = 5.0
-        start_time = time.time()
-        while not future.done() and (time.time() - start_time) < timeout_sec:
-            time.sleep(0.001)  # Yield to background executor thread
-        
-        if future.done():
-            response = future.result()
-            if response.success:
-                return response.position, response.orientation
-            else:
-                self._node.get_logger().error(f"FK computation failed: {response.message}")
-                return None, None
-        else:
-            self._node.get_logger().error("Compute FK service call timed out")
-            return None, None
-    
-    def compute_time_to_go(self, desired_joint_positions):
-        """
-        Compute adaptive time to go.
-        
-        Args:
-            desired_joint_positions: Target joint positions (7 DOF)
-        
-        Returns:
-            float: Time to go in seconds
-        """
-        if not self._compute_time_to_go_client.wait_for_service(timeout_sec=1.0):
-            self._node.get_logger().warn("ComputeTimeToGo service not available")
-            return 2.0  # Default fallback
-        
-        request = ComputeTimeToGo.Request()
-        request.desired_joint_positions = list(desired_joint_positions)
-        
-        future = self._compute_time_to_go_client.call_async(request)
-        # Wait for service response (non-blocking - let background executor handle it)
-        timeout_sec = 5.0
-        start_time = time.time()
-        while not future.done() and (time.time() - start_time) < timeout_sec:
-            time.sleep(0.001)  # Yield to background executor thread
-        
-        if future.done():
-            response = future.result()
-            if response.success:
-                return response.time_to_go
-            else:
-                self._node.get_logger().error(f"Time to go computation failed: {response.message}")
-                return 2.0  # Default fallback
-        else:
-            self._node.get_logger().error("Compute time to go service call timed out")
-            return 2.0  # Default fallback
+    # ==================== UTILITY METHODS ====================
     
     def _spin_executor(self):
-        """
-        Background thread method that spins the executor.
-        Only used when own_node=True.
-        """
+        """Background thread method that spins the executor."""
         try:
             self._executor.spin()
         except Exception as e:
             if rclpy.ok():
-                self._node.get_logger().error(f"Error in FrankaRobot spin thread: {e}")
+                self._node.get_logger().error(f"Error in FrankaRobotV2 spin thread: {e}")
     
     def shutdown(self):
-        """
-        Clean up resources.
-        
-        If own_node=True: stops executor, spin thread, and destroys node.
-        If own_node=False: does nothing (node is managed by external executor).
-        """
+        """Clean up resources."""
         if not self._own_node:
-            # Shared node: external executor manages cleanup
-            self._node.get_logger().debug("FrankaRobot: Using shared node - skipping shutdown")
+            self._node.get_logger().debug("FrankaRobotV2: Using shared node - skipping shutdown")
             return
         
-        # Own node: full cleanup
-        self._node.get_logger().info("FrankaRobot: Shutting down...")
+        self._node.get_logger().info("FrankaRobotV2: Shutting down...")
         
-        # Step 1: Shutdown executor (stops spin thread)
         if self._executor is not None:
             try:
                 self._executor.shutdown(timeout_sec=2.0)
             except Exception as e:
                 self._node.get_logger().warn(f"Error shutting down executor: {e}")
         
-        # Step 2: Join spin thread
         if self._spin_thread is not None and self._spin_thread.is_alive():
             try:
                 self._spin_thread.join(timeout=3.0)
             except Exception as e:
                 self._node.get_logger().warn(f"Error joining spin thread: {e}")
         
-        # Step 3: Destroy node
         if self._node is not None:
             try:
                 self._node.destroy_node()
             except Exception as e:
                 self._node.get_logger().warn(f"Error destroying node: {e}")
         
-        # Step 4: Shutdown rclpy if we initialized it
         if rclpy.ok():
             try:
                 rclpy.shutdown()
-            except Exception as e:
-                pass  # May already be shutdown
+            except Exception:
+                pass
         
-        self._node.get_logger().info("FrankaRobot: Shutdown complete")
+        self._node.get_logger().info("FrankaRobotV2: Shutdown complete")
+    
+    @property
+    def arm_namespace(self) -> str:
+        """Get arm namespace."""
+        return self._arm_namespace
+    
+    @property
+    def gripper_namespace(self) -> str:
+        """Get gripper namespace."""
+        return self._gripper_namespace

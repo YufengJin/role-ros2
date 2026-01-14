@@ -91,11 +91,6 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
   RENAME oculus_reader_node
 )
-install(PROGRAMS
-  nodes/polymetis_bridge_node.py
-  DESTINATION lib/${PROJECT_NAME}
-  RENAME polymetis_bridge
-)
 # New refactored nodes
 install(PROGRAMS
   nodes/franka_robot_interface_node.py

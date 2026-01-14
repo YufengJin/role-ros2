@@ -1,0 +1,84 @@
+# RealSense Camera Configuration - Static Camera - HIGH RESOLUTION MODE (for Calibration)
+# This configuration is optimized for camera calibration tasks
+# - High resolution: HD (1280x720) at 30Hz
+# - Suitable for calibration tasks requiring high image quality
+# - Point cloud and depth alignment enabled
+#
+# Frame ID Prefix:
+#   The 'name' field is used as the camera_name parameter for RealSense nodes.
+#   Frame IDs will be: {name}_color_optical_frame, {name}_depth_optical_frame, etc.
+#
+# Usage: ros2 launch role_ros2 realsense_camera.launch.py config_file:=static_realsense_high_res.yaml
+
+# Static Camera (fixed position) - RealSense D435i
+# Camera Serial Number: 233522078330
+# Configuration: HIGH RESOLUTION (1280x720) at 30Hz for calibration
+name: 'static_camera'  # [REQUIRED] Camera name used for frame_id prefix
+serial_number: '233522078330'  # [REQUIRED] Camera serial number (string)
+namespace: 'realsense_node'  # [REQUIRED] ROS 2 topic namespace
+
+# Stream settings - HIGH RESOLUTION for calibration
+enable_color: true
+enable_depth: true
+enable_infra: false
+enable_infra1: false
+enable_infra2: false
+
+# RGB camera settings - HD resolution
+rgb_camera:
+  color_profile: '1280x720x30'  # HD resolution at 30Hz (use 'x' separator)
+  color_format: 'RGB8'
+  enable_auto_exposure: true
+
+# Depth module settings - HD resolution
+depth_module:
+  depth_profile: '1280x720x30'  # HD resolution at 30Hz (use 'x' separator)
+  depth_format: 'Z16'
+  enable_auto_exposure: true
+
+# Point cloud settings - ENABLED
+pointcloud:
+  enable: true
+  stream_filter: 2
+  stream_index_filter: 0
+  ordered_pc: false
+  allow_no_texture_points: false
+
+# Depth alignment - ENABLED
+align_depth:
+  enable: true
+
+# TF settings - ENABLED
+publish_tf: true  # [ENABLED] TF publishing enabled
+tf_publish_rate: 0.0  # [STATIC] 0.0 = static TF only (no dynamic TF)
+base_frame_id: 'link'  # [REQUIRED] Base frame ID suffix (results in: static_camera_link)
+tf_prefix: ''  # [OPTIONAL] TF prefix (empty = no prefix)
+
+# Sensor settings - ALL DISABLED
+enable_gyro: false
+enable_accel: false
+enable_motion: false
+gyro_fps: 0
+accel_fps: 0
+unite_imu_method: 0
+
+# Other settings
+enable_sync: false
+enable_rgbd: false
+clip_distance: -2.0
+diagnostics_period: 0.0
+
+# Filters - ALL DISABLED for performance
+decimation_filter:
+  enable: false
+  filter_magnitude: 2
+spatial_filter:
+  enable: false
+temporal_filter:
+  enable: false
+disparity_filter:
+  enable: false
+hole_filling_filter:
+  enable: false
+colorizer:
+  enable: false
