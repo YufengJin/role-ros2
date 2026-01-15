@@ -156,6 +156,7 @@ install(DIRECTORY config
   FILES_MATCHING
     PATTERN "*.yaml"
     PATTERN "*.yml"
+    PATTERN "*.rviz"
 )
 
 # ============================================================================
