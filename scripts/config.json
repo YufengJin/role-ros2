@@ -14,26 +14,26 @@
     {
         "name": "ZED Hand (Low Res)",
         "container": "ros2_cu118_container",
-        "command": "ros2 launch role_ros2 zed_camera.launch.py config:=hand_zed_low_res.yaml",
-        "kill_keyword": "config:=hand_zed_low_res.yaml"
+        "command": "ros2 launch role_ros2 zed_camera.launch.py config_file:=hand_zed_low_res.yaml",
+        "kill_keyword": "config_file:=hand_zed_low_res.yaml"
     },
     {
         "name": "ZED Static (Low Res)",
         "container": "ros2_cu118_container",
-        "command": "ros2 launch role_ros2 zed_camera.launch.py config:=static_zed_low_res.yaml",
-        "kill_keyword": "config:=static_zed_low_res.yaml"
+        "command": "ros2 launch role_ros2 zed_camera.launch.py config_file:=static_zed_low_res.yaml",
+        "kill_keyword": "config_file:=static_zed_low_res.yaml"
     },
     {
         "name": "ZED Hand (High Res)",
         "container": "ros2_cu118_container",
-        "command": "ros2 launch role_ros2 zed_camera.launch.py config:=hand_zed_high_res.yaml",
-        "kill_keyword": "config:=hand_zed_high_res.yaml"
+        "command": "ros2 launch role_ros2 zed_camera.launch.py config_file:=hand_zed_high_res.yaml",
+        "kill_keyword": "config_file:=hand_zed_high_res.yaml"
     },
     {
         "name": "ZED Static (High Res)",
         "container": "ros2_cu118_container",
-        "command": "ros2 launch role_ros2 zed_camera.launch.py config:=static_zed_high_res.yaml",
-        "kill_keyword": "config:=static_zed_high_res.yaml"
+        "command": "ros2 launch role_ros2 zed_camera.launch.py config_file:=static_zed_high_res.yaml",
+        "kill_keyword": "config_file:=static_zed_high_res.yaml"
     },
     {
         "name": "Rviz2",

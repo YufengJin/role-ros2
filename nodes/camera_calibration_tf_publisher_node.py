@@ -51,6 +51,7 @@ class CameraCalibrationTFPublisherNode(Node):
         
         self.serial_number = str(serial_number)
         self.tf_broadcaster = StaticTransformBroadcaster(self)
+        self.tf_published = False  # Flag to track if TF was successfully published
         
         # Load calibration results
         calibration_data = self._load_calibration_results()
@@ -67,12 +68,13 @@ class CameraCalibrationTFPublisherNode(Node):
                 f"   To calibrate this camera, run: "
                 f"python3 scripts/calibrate_camera.py --camera_id {self.serial_number} --mode <hand|third>"
             )
-            # Node exits gracefully (static TF publisher only needs to run once)
             # If camera is not calibrated, there's nothing to publish
+            # Node will exit in main() if tf_published is False
             return
         
         # Publish static TF
         self._publish_static_tf(camera_info)
+        self.tf_published = True
         
         self.get_logger().info(
             f"✅ Published static TF for camera {self.serial_number}: "
@@ -206,20 +208,27 @@ def main(args=None):
     try:
         node = CameraCalibrationTFPublisherNode(serial_number=serial_number)
         
-        # Keep node alive briefly to ensure TF is published
-        # Static TF publisher only needs to publish once
-        import time
-        time.sleep(0.2)
+        # If TF was not published (camera not calibrated), exit gracefully
+        if not node.tf_published:
+            node.get_logger().info("   Node exiting (camera not calibrated)")
+            node.destroy_node()
+            rclpy.shutdown()
+            return
         
-        rclpy.spin_once(node, timeout_sec=0.1)
-        
-        # Node can exit after publishing (static TF persists)
-        node.destroy_node()
+        # Keep node alive to continuously publish static TF
+        # Static TF broadcaster needs to stay alive to maintain the transform
+        # Use spin() to keep the node running indefinitely
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        if 'node' in locals():
+            node.get_logger().info("🛑 Shutting down camera calibration TF publisher...")
     except Exception as e:
         print(f"❌ Error in camera_calibration_tf_publisher_node: {e}")
         import traceback
         traceback.print_exc()
     finally:
+        if 'node' in locals():
+            node.destroy_node()
         rclpy.shutdown()
 
 
