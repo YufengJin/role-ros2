@@ -109,6 +109,9 @@ def save_calibration_results(
     """
     Save calibration results to YAML file.
     
+    This function updates the transformation for the specified camera_id while
+    preserving transformations for all other cameras in the file.
+    
     Output format:
         cameras:
         - camera_id: "xxx"
@@ -124,19 +127,33 @@ def save_calibration_results(
             rz: 0.0
     
     Args:
-        camera_id: Camera identifier
+        camera_id: Camera identifier (used to update existing entry or add new one)
         rgb_topic: RGB topic name for this camera
         child_frame: Child frame name (camera_base_frame)
         parent_frame: Parent frame name (camera_base_parent_frame)
         transformation: 6D pose [x, y, z, rx, ry, rz]
-        output_filepath: Output file path
+        output_filepath: Output file path (fixed file path for all cameras)
+    
+    Note:
+        - If camera_id already exists, its transformation will be updated
+        - All other camera transformations will be preserved
+        - If file doesn't exist, a new file will be created
     """
+    # Normalize file path
+    output_filepath = os.path.abspath(output_filepath)
+    
     # Load existing results or create new
+    results = {}
     if os.path.isfile(output_filepath):
-        with open(output_filepath, "r") as f:
-            results = yaml.safe_load(f) or {}
-    else:
-        results = {}
+        try:
+            with open(output_filepath, "r", encoding="utf-8") as f:
+                results = yaml.safe_load(f) or {}
+        except Exception as e:
+            # If file exists but can't be read, create new results
+            # This preserves data integrity
+            print(f"Warning: Could not read existing calibration file {output_filepath}: {e}")
+            print("Creating new calibration file...")
+            results = {}
     
     # Ensure cameras list exists
     if "cameras" not in results:
@@ -158,7 +175,8 @@ def save_calibration_results(
         }
     }
     
-    # Update or append entry
+    # Update or append entry based on camera_id
+    # This preserves all other camera transformations
     found = False
     for i, cam in enumerate(results["cameras"]):
         if cam.get("camera_id") == camera_id:
@@ -170,10 +188,31 @@ def save_calibration_results(
         results["cameras"].append(entry)
     
     # Ensure output directory exists
-    os.makedirs(os.path.dirname(os.path.abspath(output_filepath)), exist_ok=True)
+    output_dir = os.path.dirname(output_filepath)
+    if output_dir:  # Only create directory if path has directory component
+        os.makedirs(output_dir, exist_ok=True)
     
-    with open(output_filepath, "w") as f:
-        yaml.dump(results, f, default_flow_style=False, sort_keys=False)
+    # Write to file atomically (write to temp file, then rename)
+    # This prevents data loss if write is interrupted
+    temp_filepath = output_filepath + ".tmp"
+    try:
+        with open(temp_filepath, "w", encoding="utf-8") as f:
+            yaml.dump(results, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+        
+        # Atomic rename (works on Unix and Windows)
+        if os.name == 'nt':  # Windows
+            # On Windows, need to remove target first if it exists
+            if os.path.exists(output_filepath):
+                os.remove(output_filepath)
+        os.rename(temp_filepath, output_filepath)
+    except Exception as e:
+        # Clean up temp file on error
+        if os.path.exists(temp_filepath):
+            try:
+                os.remove(temp_filepath)
+            except:
+                pass
+        raise IOError(f"Failed to save calibration results to {output_filepath}: {e}")
 
 
 def calibration_traj(

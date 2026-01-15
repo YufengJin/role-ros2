@@ -107,6 +107,21 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
   RENAME robot_state_aggregator
 )
+install(PROGRAMS
+  nodes/camera_calibration_tf_publisher_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME camera_calibration_tf_publisher
+)
+install(PROGRAMS
+  nodes/franka_gripper_interface_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME franka_gripper_interface
+)
+install(PROGRAMS
+  nodes/robot_state_aggregator_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME robot_state_aggregator
+)
 
 # Note: scripts/ directory contains pure Python scripts (not ROS2 nodes)
 # They should be run directly with python3, e.g.:

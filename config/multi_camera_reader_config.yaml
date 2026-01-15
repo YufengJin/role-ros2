@@ -28,6 +28,7 @@ global_sync:
 cameras:
   # Hand Camera (mounted on gripper)
   - camera_id: "11022812"  # Serial number or identifier
+    calibration_mode: "hand" # "hand" or "third"
     rgb_topic: "/hand_camera/zed_node/rgb/image_rect_color"
     depth_topic: "/hand_camera/zed_node/depth/depth_registered"
     camera_info_topic: "/hand_camera/zed_node/rgb/camera_info"
@@ -39,6 +40,7 @@ cameras:
     
   # Static Camera (fixed position)
   - camera_id: "24285872"  # Serial number or identifier
+    calibration_mode: "third" # "hand" or "third"
     rgb_topic: "/static_camera/zed_node/rgb/image_rect_color"
     depth_topic: "/static_camera/zed_node/depth/depth_registered"
     camera_info_topic: "/static_camera/zed_node/rgb/camera_info"

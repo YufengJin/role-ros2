@@ -4,16 +4,17 @@ Camera Calibration Script for role-ros2.
 
 This script performs hand-eye calibration for cameras using a Charuco board.
 
-Modes:
+The calibration_mode (hand or third) is automatically read from multi_camera_reader_config.yaml
+based on the camera_id. Each camera in the config must have calibration_mode specified:
     - hand: Calibrate hand-mounted camera (camera_optical_frame -> gripper link)
     - third: Calibrate third-person static camera (camera_optical_frame -> base_link)
 
 Usage:
-    # Calibrate static camera
-    python3 calibrate_camera.py --camera_id 24285872 --mode third
+    # Calibrate camera (mode is read from config)
+    python3 calibrate_camera.py --camera_id 24285872
     
     # Calibrate hand camera
-    python3 calibrate_camera.py --camera_id 11022812 --mode hand
+    python3 calibrate_camera.py --camera_id 11022812
 
 Workflow:
     1. Reset robot to home position
@@ -22,6 +23,10 @@ Workflow:
     4. After calibration cycle completes, press:
        - A/X (long press): Accept calibration, publish static TF, save to config
        - B/Y (long press): Reject and recalibrate (reset robot, return to step 2)
+
+Note:
+    - Camera must exist in multi_camera_reader_config.yaml with calibration_mode specified
+    - All calibration results are saved to config/calibration_results.yaml
 
 Author: Role-ROS2 Team
 """
@@ -271,12 +276,12 @@ class CameraCalibrator:
             args: Parsed command line arguments
         """
         self.camera_id = args.camera_id
-        self.mode = args.mode
         self.step_size = args.step_size
         self.pause_time = args.pause_time
         self.image_freq = args.image_freq
         self.right_controller = args.right_controller
-        self.output_filepath = args.output
+        # Use fixed output file path (config/calibration_results.yaml)
+        self.output_filepath = str(get_package_config_path('calibration_results.yaml'))
         
         # State variables
         self._shutdown_requested = False
@@ -299,18 +304,35 @@ class CameraCalibrator:
         self._print("📷 Camera Calibration - Starting Initialization")
         self._print("=" * 70)
         self._print(f"   • Camera ID: {self.camera_id}")
-        self._print(f"   • Mode: {self.mode}")
         self._print(f"   • Step size: {self.step_size}")
         self._print(f"   • Pause time: {self.pause_time}")
         self._print(f"   • Image frequency: {self.image_freq}")
-        self._print(f"   • Output file: {self.output_filepath}")
+        self._print(f"   • Output file: {self.output_filepath} (fixed)")
         self._print("-" * 70)
         
         # Load camera config
         self._print("🔧 [1/5] Loading camera configuration...")
         self.camera_config = load_camera_config(self.camera_id)
         if self.camera_config is None:
-            raise ValueError(f"Camera {self.camera_id} not found in config")
+            raise ValueError(
+                f"Camera {self.camera_id} not found in multi_camera_reader_config.yaml. "
+                f"Please add this camera to the config file first."
+            )
+        
+        # Get calibration_mode from config
+        self.mode = self.camera_config.get("calibration_mode", None)
+        if self.mode is None:
+            raise ValueError(
+                f"calibration_mode not specified for camera {self.camera_id} in config. "
+                f"Please add 'calibration_mode: hand' or 'calibration_mode: third' to the camera configuration."
+            )
+        if self.mode not in ["hand", "third"]:
+            raise ValueError(
+                f"Invalid calibration_mode '{self.mode}' for camera {self.camera_id}. "
+                f"Must be 'hand' or 'third'."
+            )
+        
+        self._print(f"   ✅ Calibration mode: {self.mode} (from config)")
         
         self.camera_frame = self.camera_config.get("camera_frame", None)
         self.camera_base_frame = self.camera_config.get("camera_base_frame", None)
@@ -841,6 +863,30 @@ class CameraCalibrator:
         # Save calibration results
         self._print("-" * 70)
         self._print(f"💾 Saving calibration results to: {self.output_filepath}")
+        self._print(f"   Camera ID: {self.camera_id}")
+        self._print(f"   Note: All camera calibrations are saved to this fixed file.")
+        self._print(f"   Existing camera transformations will be preserved.")
+        
+        # Check if camera already exists in file
+        import os
+        import yaml
+        camera_exists = False
+        if os.path.isfile(self.output_filepath):
+            try:
+                with open(self.output_filepath, "r", encoding="utf-8") as f:
+                    existing_data = yaml.safe_load(f) or {}
+                    cameras = existing_data.get("cameras", [])
+                    for cam in cameras:
+                        if cam.get("camera_id") == self.camera_id:
+                            camera_exists = True
+                            break
+            except:
+                pass
+        
+        if camera_exists:
+            self._print(f"   Updating existing transformation for camera {self.camera_id}")
+        else:
+            self._print(f"   Adding new transformation for camera {self.camera_id}")
         
         save_calibration_results(
             camera_id=self.camera_id,
@@ -954,26 +1000,24 @@ class CameraCalibrator:
 
 def parse_args():
     """Parse command line arguments."""
-    # Get default output path relative to script location
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    default_output = os.path.join(script_dir, "..", "config", "calibration_results.yaml")
-    
     parser = argparse.ArgumentParser(
         description='Camera calibration for role-ros2',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Calibrate static camera
-  python3 calibrate_camera.py --camera_id 24285872 --mode third
+  # Calibrate camera (mode is read from multi_camera_reader_config.yaml)
+  python3 calibrate_camera.py --camera_id 24285872
   
   # Calibrate hand camera
-  python3 calibrate_camera.py --camera_id 11022812 --mode hand
+  python3 calibrate_camera.py --camera_id 11022812
   
   # Custom parameters
-  python3 calibrate_camera.py --camera_id 24285872 --mode third --step_size 0.005 --image_freq 5
-  
-  # Custom output path
-  python3 calibrate_camera.py --camera_id 24285872 --mode third --output /path/to/output.yaml
+  python3 calibrate_camera.py --camera_id 24285872 --step_size 0.005 --image_freq 5
+
+Note:
+  - calibration_mode is automatically read from multi_camera_reader_config.yaml
+  - All calibration results are saved to the fixed file: config/calibration_results.yaml
+  - Transformations are updated by camera_id, preserving other cameras' calibrations
         """
     )
     
@@ -981,20 +1025,7 @@ Examples:
         '--camera_id',
         type=str,
         required=True,
-        help='Camera identifier (serial number)'
-    )
-    parser.add_argument(
-        '--mode',
-        type=str,
-        required=True,
-        choices=['hand', 'third'],
-        help='Calibration mode: "hand" for hand-mounted camera, "third" for static camera'
-    )
-    parser.add_argument(
-        '--output',
-        type=str,
-        default=default_output,
-        help='Output file path for calibration results (default: ../config/calibration_results.yaml)'
+        help='Camera identifier (serial number). Must exist in multi_camera_reader_config.yaml with calibration_mode specified.'
     )
     parser.add_argument(
         '--step_size',

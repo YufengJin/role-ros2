@@ -17,9 +17,10 @@ import tempfile
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument, OpaqueFunction
+from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument, OpaqueFunction, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, TextSubstitution
+from launch_ros.actions import Node
 
 # Enable colored output
 os.environ["RCUTILS_COLORIZED_OUTPUT"] = "1"
@@ -153,7 +154,23 @@ def generate_camera_launch(context):
         }.items()
     )
     
-    return [camera_launch]
+    # Create calibration TF publisher node
+    # This node checks if the camera is calibrated and publishes static TF if found
+    # Delay by 2 seconds to allow camera to start first
+    calibration_tf_node = TimerAction(
+        period=2.0,
+        actions=[
+            Node(
+                package='role_ros2',
+                executable='camera_calibration_tf_publisher',
+                name=f'camera_calibration_tf_publisher_{camera_config["name"]}',
+                output='screen',
+                arguments=[str(camera_config['serial_number'])],
+            )
+        ]
+    )
+    
+    return [camera_launch, calibration_tf_node]
 
 
 def generate_launch_description():
