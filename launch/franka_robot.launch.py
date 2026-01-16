@@ -67,6 +67,8 @@ def load_config_yaml(package_name, config_file):
             with open(config_path, 'r') as f:
                 config = yaml.safe_load(f)
                 return config if config else {}
+        else:
+            print(f"Warning: Config file not found: {config_path}")
     except Exception as e:
         print(f"Warning: Could not load config file {config_file}: {e}")
     
@@ -233,9 +235,7 @@ def create_robot_nodes(context: LaunchContext, arm_id, urdf_file, use_mock,
     auto_reset_delay_float = float(auto_reset_delay_str)
     
     # Load URDF from install directory
-    config = load_config_yaml('role_ros2', 'franka_robot_config_v2.yaml')
-    if not config:
-        config = load_config_yaml('role_ros2', 'franka_robot_config.yaml')
+    config = load_config_yaml('role_ros2', 'franka_robot_config.yaml')
     
     if not urdf_file_str:
         urdf_file_str = config.get('urdf_file', f'{arm_id_str}.urdf')
@@ -377,12 +377,8 @@ def create_robot_nodes(context: LaunchContext, arm_id, urdf_file, use_mock,
 
 
 def generate_launch_description():
-    # Load default values from V2 YAML config file
-    config = load_config_yaml('role_ros2', 'franka_robot_config_v2.yaml')
-    
-    # Fallback to original config if v2 not found
-    if not config:
-        config = load_config_yaml('role_ros2', 'franka_robot_config.yaml')
+    # Load default values from YAML config file
+    config = load_config_yaml('role_ros2', 'franka_robot_config.yaml')
     
     def get_default(key, default_value):
         value = config.get(key, default_value)

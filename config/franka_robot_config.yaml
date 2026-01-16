@@ -1,30 +1,28 @@
-# Franka Robot Configuration File
-# This file contains default parameters for franka_robot.launch.py
-# You can override these values via launch arguments when starting the robot
+# Franka Robot Configuration File (V2)
+# This file contains parameters for franka_robot_v2.launch.py
+# Uses the refactored franka_robot_interface_node and franka_gripper_interface_node
 
-# Robot connection settings
-robot_ip: "172.17.0.2"   # REQUIRED: Robot IP address or hostname
-                         # Example: "172.17.0.2" or "robot-hostname.local"
+# ============================================================================
+# Robot Connection Settings
+# ============================================================================
+robot_ip: "172.17.0.2"   # Robot IP address or hostname
 
 # Robot identification
 arm_id: "fr3"  # Robot arm ID. Supported values: fer, fr3, fp3
 
-# URDF file configuration
+# ============================================================================
+# URDF Configuration
+# ============================================================================
 # Available URDF files in role_ros2/robot_ik/franka/:
 #   - fr3.urdf: Base version (no fingers)
 #   - fr3_w_fin.urdf: With fingers
 #   - fr3_w_soft_fin.urdf: With soft fingers
-urdf_file: "fr3_w_soft_fin.urdf"  # URDF filename (relative to robot_ik/franka/ directory)
-                       # Options: "fr3.urdf", "fr3_w_fin.urdf", "fr3_w_soft_fin.urdf"
-                       # NOTE: URDF file must be installed to workspace install directory
-                       # The URDF file is loaded from: install/role_ros2/share/role_ros2/robot_ik/franka/{urdf_file}
-                       # Make sure to build the workspace: colcon build --packages-select role_ros2
-                       # To generate URDF from MuJoCo XML, run:
-                       #   python3 scripts/mujoco_to_urdf.py role_ros2/robot_ik/franka/{arm_id}.xml role_ros2/robot_ik/franka/{urdf_file} {arm_id}
+urdf_file: "fr3_w_soft_fin.urdf"
 
-# Joint names configuration
+# ============================================================================
+# Joint Names Configuration
+# ============================================================================
 # IMPORTANT: Joint names must match URDF joint names exactly (with arm_id prefix)
-# Format: {arm_id}_panda_jointX for arm joints, {arm_id}_panda_finger_jointX for gripper joints
 arm_joints:
   - fr3_panda_joint1
   - fr3_panda_joint2
@@ -38,114 +36,191 @@ gripper_joints:
   - fr3_panda_finger_joint1
   - fr3_panda_finger_joint2
 
-# Hardware settings
-use_fake_hardware: false  # Use fake/simulated hardware (true/false)
-fake_sensor_commands: false  # Enable fake sensor commands (only valid when use_fake_hardware is true)
+# ============================================================================
+# V2 Namespace Configuration
+# ============================================================================
+# Each node runs in its own namespace for multi-robot support
 
-# Mock mode settings
-use_mock: false  # Use mock mode (no real robot). If true, uses MockRobotInterface and MockGripperInterface
-                 # NOTE: Even in mock mode, URDF file is REQUIRED for robot_state_publisher
-                 # The URDF file must exist and conform to ROS standards with proper mesh links
+# Arm interface node namespace
+arm_namespace: "fr3_arm"
+# Topics: /{arm_namespace}/joint_states, /{arm_namespace}/arm_state, /{arm_namespace}/ee_pose
+# Subscribers: /{arm_namespace}/joint_position_controller/command, etc.
+# Services: /{arm_namespace}/reset, /{arm_namespace}/move_to_joint_positions, etc.
 
-# Gripper settings
-load_gripper: true  # Load Franka Gripper as end-effector (true/false)
-
-# Controller settings
-controller_name: "fr3_arm_controller"  # Name of the arm controller to use
-                                       # Common options:
-                                       #   - "fr3_arm_controller" (joint trajectory controller)
-                                       #   - "joint_position_example_controller"
-                                       #   - "joint_velocity_example_controller"
-                                       #   - "joint_impedance_example_controller"
-                                       #   - "cartesian_pose_example_controller"
-                                       #   - "cartesian_velocity_example_controller"
-                                       #   - "gravity_compensation_example_controller"
-
-# Auto-launch settings
-auto_launch_controller: true  # Auto-launch robot and gripper servers before polymetis_bridge
-                              # Only applies in real robot mode (use_mock: false)
-                              # If true: launch_robot.py and launch_gripper.py are started automatically
-                              # If false: user must start robot/gripper servers manually
-
-# Auto-reset settings (for polymetis_bridge_node)
-auto_reset_on_startup: true   # Auto-reset robot to home position on startup
-                              # If true: robot will automatically reset after auto_reset_delay seconds
-                              # If false: use /polymetis/reset service to reset manually
-                              # NOTE: Delayed reset avoids SIGSEGV issues during initialization
-auto_reset_delay: 5.0         # Delay before auto-reset (seconds)
-                              # Recommended: 5.0 seconds to wait for robot/gripper servers to initialize
-                              # Can also call manually: ros2 service call /polymetis/reset role_ros2/srv/Reset "{randomize: false}"
+# Gripper interface node namespace
+gripper_namespace: "fr3_gripper"
+# Topics: /{gripper_namespace}/joint_states, /{gripper_namespace}/gripper_state
+# Subscribers: /{gripper_namespace}/gripper/command
+# Services: /{gripper_namespace}/gripper/goto, /{gripper_namespace}/gripper/grasp, etc.
 
 # ============================================================================
-# URDF File Requirements
+# Mode Settings
 # ============================================================================
-# IMPORTANT: The URDF file must exist before launching!
+# Mock mode (no real robot, for testing)
+use_mock: false
+
+# Load gripper interface
+load_gripper: true
+
+# ============================================================================
+# Polymetis Server Settings (NEW in V2)
+# ============================================================================
+# Auto-launch robot and gripper servers before starting ROS2 nodes
+# Only effective in real robot mode (use_mock: false)
+auto_launch_controller: true
+
+# Robot server port (default: 50051)
+robot_port: "50051"
+
+# Gripper server port (default: 50052)
+gripper_port: "50052"
+
+# Enable real-time control for Polymetis server
+# Requires PREEMPT_RT kernel and proper permissions
+use_real_time: true
+
+# Gripper type: franka_hand or robotiq_2f
+gripper_type: "franka_hand"
+
+# For Robotiq 2F gripper (USB connection)
+# robotiq_comport: "/dev/ttyUSB0"
+
+# ============================================================================
+# Publishing Settings
+# ============================================================================
+# State publishing rate (Hz)
+publish_rate: 50.0
+
+# Timeout threshold for state aggregator (seconds)
+# If no state is received within this time, the state is considered stale
+timeout_threshold: 1.0
+
+# ============================================================================
+# Controller Settings
+# ============================================================================
+# Default controller mode on startup
+# Options: "joint_impedance", "cartesian_impedance", "joint_velocity", "none"
+default_controller_mode: "joint_impedance"
+
+# Default joint impedance gains (optional, uses Polymetis defaults if not specified)
+# default_kq: [600.0, 600.0, 600.0, 600.0, 250.0, 150.0, 50.0]
+# default_kqd: [50.0, 50.0, 50.0, 50.0, 30.0, 25.0, 15.0]
+
+# Default cartesian impedance gains (optional, uses Polymetis defaults if not specified)
+# default_kx: [750.0, 750.0, 750.0, 30.0, 30.0, 30.0]
+# default_kxd: [75.0, 75.0, 75.0, 7.5, 7.5, 7.5]
+
+# ============================================================================
+# Reset/Home Position Settings
+# ============================================================================
+# Home joint positions (radians)
+# Default: [0.0, -0.628, 0.0, -2.513, 0.0, 1.885, 0.0]
+# This corresponds to [0, -1/5*pi, 0, -4/5*pi, 0, 3/5*pi, 0]
+home_joints: [0.0, -0.628, 0.0, -2.513, 0.0, 1.885, 0.0]
+
+# Auto-reset on startup (default: false for V2 to avoid unexpected movement)
+auto_reset_on_startup: false
+
+# Delay before auto-reset (seconds)
+# Allows time for servers to fully initialize
+auto_reset_delay: 5.0
+
+# Reset movement speed (slow for safety, rad/s)
+reset_velocity: 0.1
+
+# ============================================================================
+# Gripper Settings
+# ============================================================================
+# Default gripper speed (m/s)
+default_gripper_speed: 0.05
+
+# Default gripper force (normalized 0-1)
+default_gripper_force: 0.1
+
+# Maximum gripper width (meters, from Franka Hand spec)
+max_gripper_width: 0.08
+
+# ============================================================================
+# Multi-Robot Setup Example
+# ============================================================================
+# For multiple robots, launch with different namespaces and ports:
 #
-# Available URDF files in role_ros2/robot_ik/franka/:
-#   1. fr3.urdf - Base version (no fingers)
-#   2. fr3_w_fin.urdf - With fingers
-#   3. fr3_w_soft_fin.urdf - With soft fingers
+# Robot 1:
+#   ros2 launch role_ros2 franka_robot_v2.launch.py \
+#       robot_ip:=192.168.1.101 \
+#       arm_namespace:=robot1_arm gripper_namespace:=robot1_gripper \
+#       robot_port:=50051 gripper_port:=50052
 #
-# The URDF file is expected at:
-#   role_ros2/robot_ik/franka/{urdf_file}
+# Robot 2:
+#   ros2 launch role_ros2 franka_robot_v2.launch.py \
+#       robot_ip:=192.168.1.102 \
+#       arm_namespace:=robot2_arm gripper_namespace:=robot2_gripper \
+#       robot_port:=50053 gripper_port:=50054
 #
-# The URDF file will be loaded from install directory:
-#   install/role_ros2/share/role_ros2/robot_ik/franka/{urdf_file}
+# Using launch scripts directly:
+#   ROBOT_IP=192.168.1.101 ROBOT_PORT=50051 ./launch_robot.sh
+#   ROBOT_IP=192.168.1.101 GRIPPER_PORT=50052 ./launch_gripper.sh
+
+# ============================================================================
+# Example Usage
+# ============================================================================
 #
-# To generate the URDF file from MuJoCo XML, run:
-#   python3 scripts/mujoco_to_urdf.py \\
-#       role_ros2/robot_ik/franka/{arm_id}.xml \\
-#       role_ros2/robot_ik/franka/{urdf_file} \\
-#       {arm_id}
+# Launch V2 nodes (with auto server launch):
+#   ros2 launch role_ros2 franka_robot_v2.launch.py
 #
-# The URDF file must conform to ROS standards:
-#   - Proper link and joint definitions
-#   - Mesh files referenced correctly (mesh directory must exist)
-#   - Valid inertial properties
-#   - Joint limits and dynamics
+# Launch in mock mode:
+#   ros2 launch role_ros2 franka_robot_v2.launch.py use_mock:=true
 #
-# Mesh directory structure:
-#   role_ros2/robot_ik/franka/mesh/
-#     - Contains .obj mesh files referenced in URDF
+# Launch without auto server launch (start servers manually first):
+#   ros2 launch role_ros2 franka_robot_v2.launch.py auto_launch_controller:=false
 #
-# You can override the URDF file via launch argument:
-#   ros2 launch role_ros2 franka_robot.launch.py urdf_file:=fr3_w_fin.urdf
+# Custom namespaces (for multi-robot):
+#   ros2 launch role_ros2 franka_robot_v2.launch.py \
+#       arm_namespace:=robot1_arm gripper_namespace:=robot1_gripper
+#
+# Disable real-time control:
+#   ros2 launch role_ros2 franka_robot_v2.launch.py use_real_time:=false
+#
+# Use Robotiq gripper:
+#   ros2 launch role_ros2 franka_robot_v2.launch.py gripper_type:=robotiq_2f
+#
+# Send joint position command:
+#   ros2 topic pub --once /fr3_arm/joint_position_controller/command \
+#       role_ros2/msg/JointPositionCommand \
+#       "{positions: [0, -0.628, 0, -2.513, 0, 1.885, 0], blocking: false}"
+#
+# Move to joint positions (blocking service):
+#   ros2 service call /fr3_arm/move_to_joint_positions \
+#       role_ros2/srv/MoveToJointPositions \
+#       "{joint_positions: [0, -0.628, 0, -2.513, 0, 1.885, 0], time_to_go: 2.0}"
+#
+# Open gripper:
+#   ros2 service call /fr3_gripper/gripper/open std_srvs/srv/Trigger
+#
+# Close gripper:
+#   ros2 service call /fr3_gripper/gripper/close std_srvs/srv/Trigger
+#
+# Grasp:
+#   ros2 service call /fr3_gripper/gripper/grasp \
+#       role_ros2/srv/GripperGrasp "{speed: 0.1, force: 0.5, blocking: true}"
 #
 # ============================================================================
-# Example configurations for different use cases:
+# V2 vs V1 Comparison
 # ============================================================================
-
-# Configuration 1: Real robot with gripper (default)
-# robot_ip: "172.16.0.2"
-# arm_id: "fr3"
-# use_fake_hardware: false
-# use_mock: false
-# load_gripper: true
-# controller_name: "fr3_arm_controller"
-
-# Configuration 2: Real robot without gripper
-# robot_ip: "172.16.0.2"
-# arm_id: "fr3"
-# use_fake_hardware: false
-# use_mock: false
-# load_gripper: false
-# controller_name: "fr3_arm_controller"
-
-# Configuration 3: Mock mode (no real robot, for testing)
-# robot_ip: "172.17.0.2"  # Not used in mock mode, but required
-# arm_id: "fr3"
-# use_fake_hardware: false
-# use_mock: true  # Enable mock mode
-# load_gripper: true
-# controller_name: "fr3_arm_controller"
-# NOTE: URDF file is still REQUIRED even in mock mode for robot_state_publisher
-
-# Configuration 4: Simulated robot (Gazebo)
-# robot_ip: "172.16.0.2"  # Not used in simulation, but required
-# arm_id: "fr3"
-# use_fake_hardware: true
-# use_mock: false
-# fake_sensor_commands: false
-# load_gripper: true
-# controller_name: "joint_position_example_controller"
-
+#
+# V1 (polymetis_bridge_node.py):
+#   - Single node handling both arm and gripper
+#   - Topics: /joint_states, /polymetis/robot_state, /polymetis/gripper_state
+#   - Subscriber: /polymetis/robot_command (combined arm+gripper)
+#
+# V2 (franka_robot_interface_node.py + franka_gripper_interface_node.py):
+#   - Separate nodes for arm and gripper
+#   - Namespace-based topics: /{namespace}/joint_states, etc.
+#   - Separate command subscribers for different control modes
+#   - robot_state_aggregator_node merges states for robot_state_publisher
+#   - Legacy topics published for backward compatibility
+#   - Auto server launch and cleanup (like V1)
+#   - Real-time control support
+#   - Multi-robot support via namespaces and custom ports
+#
+# ============================================================================
