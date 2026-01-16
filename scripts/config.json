@@ -40,5 +40,11 @@
         "container": "ros2_cu118_container",
         "command": "cd /app/ros2_ws/src/role-ros2 && ros2 run rviz2 rviz2 -d config/rviz/collect_traj.rviz",
         "kill_keyword": "rviz2 -d config/rviz/collect_traj.rviz"
+    },
+    {
+        "name": "Collect Trajectory",
+        "container": "ros2_cu118_container",
+        "command": "cd /app/ros2_ws/src/role-ros2 && python3 scripts/collect_trajectory.py",
+        "kill_keyword": "python3 scripts/collect_trajectory.py"
     }
 ]
