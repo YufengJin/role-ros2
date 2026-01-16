@@ -1,61 +1,61 @@
-# role-ros2: Robot Learning 统一平台
+# role-ros2: Unified Robot Learning Platform
 
-`role-ros2`（Robot Learning ROS2）是机器人学习（Robot Learning）的 ROS2 统一平台，为机器人学习任务提供完整的 ROS2 接口和工具。
+`role-ros2` (Robot Learning ROS2) is a unified ROS2 platform for robot learning tasks, providing complete ROS2 interfaces and tools.
 
-## 概述
+## Overview
 
-`role-ros2` 是一个独立的 ROS2 包，专门为机器人学习任务设计，提供：
+`role-ros2` is an independent ROS2 package specifically designed for robot learning tasks, providing:
 
-- 🤖 **机器人控制接口**：基于 `franka_ros2` 的 Franka 机械臂控制
-- 🎮 **Gym-compatible 环境**：兼容 OpenAI Gym 的机器人环境接口
-- 📷 **相机数据同步**：使用 ROS2 时间同步的多相机数据订阅
-- 🎯 **Oculus Quest 支持**：VR 控制器数据发布和订阅
-- 🔧 **机器人学习工具**：逆运动学求解器、标定工具等
+- 🤖 **Robot Control Interface**: Franka robot arm control based on `franka_ros2`
+- 🎮 **Gym-compatible Environment**: OpenAI Gym-compatible robot environment interface
+- 📷 **Camera Data Synchronization**: Multi-camera data subscription with ROS2 time synchronization
+- 🎯 **Oculus Quest Support**: VR controller data publishing and subscription
+- 🔧 **Robot Learning Tools**: Inverse kinematics solver, calibration tools, etc.
 
-## 版本信息
+## Version Information
 
-- **ROS2 发行版**: Humble Hawksbill
-- **role_ros2 版本**: 1.0.0
-- **依赖包**:
+- **ROS2 Distribution**: Humble Hawksbill
+- **role_ros2 Version**: 1.0.0
+- **Dependencies**:
   - `franka_ros2`: b79ce40
   - `franka_description`: 0.5.1
   - `zed_wrapper`: humble-v5.1.0
 
-## 功能特性
+## Features
 
-### 1. 机器人控制 (`role_ros2.robot`)
+### 1. Robot Control (`role_ros2.robot`)
 
-提供 `FrankaRobot` 类，封装 Franka 机械臂的控制接口：
+Provides `FrankaRobot` class that encapsulates Franka robot arm control interface:
 
-- 关节空间控制（位置、速度、力矩）
-- 笛卡尔空间控制（位置、速度）
-- 夹爪控制
-- 机器人状态订阅（关节状态、末端位姿、机器人状态）
+- Joint space control (position, velocity, torque)
+- Cartesian space control (position, velocity)
+- Gripper control
+- Robot state subscription (joint states, end-effector pose, robot state)
 
 ```python
-from role_ros2.robot import FrankaRobot
+from role_ros2.robot.franka.robot import FrankaRobot
 import rclpy
 
 rclpy.init()
-robot = FrankaRobot(arm_id="fr3", controller_name="fr3_arm_controller")
+robot = FrankaRobot()
 
-# 移动到关节位置
-robot.update_joint_positions([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785])
+# Move to joint position
+robot.update_joints([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785], velocity=False)
 
-# 移动到笛卡尔位置
-robot.update_ee_pose([0.5, 0.0, 0.5], [0.0, 0.0, 0.0, 1.0])
+# Move to Cartesian position
+robot.update_pose([0.5, 0.0, 0.5, 0.0, 0.0, 0.0], velocity=False)
 
-# 控制夹爪
-robot.update_gripper(0.04)  # 打开到 4cm
+# Control gripper
+robot.update_gripper(0.04)  # Open to 4cm
 ```
 
-### 2. 机器人环境 (`role_ros2.robot_env`)
+### 2. Robot Environment (`role_ros2.robot_env`)
 
-提供 Gym-compatible 的机器人环境，支持强化学习和模仿学习：
+Provides Gym-compatible robot environment supporting reinforcement learning and imitation learning:
 
-- 观察空间：机器人状态 + 相机图像
-- 动作空间：关节位置/速度或笛卡尔位置
-- 时间同步：使用 ROS2 `ApproximateTimeSynchronizer` 同步多传感器数据
+- Observation space: Robot state + camera images
+- Action space: Joint position/velocity or Cartesian position
+- Time synchronization: Multi-sensor data synchronization using ROS2 `ApproximateTimeSynchronizer`
 
 ```python
 from role_ros2.robot_env import RobotEnv
@@ -64,214 +64,215 @@ import rclpy
 rclpy.init()
 env = RobotEnv()
 
-# 获取观察
+# Get observation
 obs = env.get_observation()
-# obs 包含：
-# - 'robot_state': 机器人状态（关节位置、速度、末端位姿等）
-# - 'images': 相机图像字典
+# obs contains:
+# - 'robot_state': Robot state (joint positions, velocities, end-effector pose, etc.)
+# - 'images': Camera image dictionary
 
-# 执行动作
+# Execute action
 action = env.action_space.sample()
 obs, reward, done, info = env.step(action)
 ```
 
-### 3. 相机数据订阅
+### 3. Camera Data Subscription
 
-支持多相机数据的时间同步订阅：
+Supports time-synchronized multi-camera data subscription:
 
-- RGB 图像
-- 深度图像
-- 相机内参（CameraInfo）
-- 自动时间同步（使用 `ApproximateTimeSynchronizer`）
+- RGB images
+- Depth images
+- Camera intrinsics (CameraInfo)
+- Automatic time synchronization (using `ApproximateTimeSynchronizer`)
 
-### 4. Oculus Quest 控制器
+### 4. Oculus Quest Controller
 
-发布 Oculus Quest 控制器的姿态和按钮状态：
+Publishes Oculus Quest controller pose and button states:
 
-- 左右手控制器姿态（`geometry_msgs/PoseStamped`）
-- 按钮和摇杆状态（自定义消息 `role_ros2/OculusButtons`）
-- TF 变换发布（可选）
-- RViz 可视化标记（可选）
+- Left/right hand controller poses (`geometry_msgs/PoseStamped`)
+- Button and joystick states (custom message `role_ros2/OculusButtons`)
+- TF transform publishing (optional)
+- RViz visualization markers (optional)
 
-### 5. 工具模块
+### 5. Utility Modules
 
-- **逆运动学求解器** (`role_ros2.robot_ik`): 基于 `RobotIKSolver` 的逆运动学计算
-- **标定工具** (`role_ros2.calibration`): 相机和机器人标定工具
-- **变换工具** (`role_ros2.misc.transformations`): 位姿变换和坐标系转换
+- **Inverse Kinematics Solver** (`role_ros2.robot_ik`): Inverse kinematics computation based on `RobotIKSolver`
+- **Calibration Tools** (`role_ros2.calibration`): Camera and robot calibration tools
+- **Transformation Tools** (`role_ros2.misc.transformations`): Pose transformation and coordinate frame conversion
 
-## 安装
+## Installation
 
-### 前置要求
+### Method 1: Docker Installation (Recommended)
 
-1. **ROS2 Humble**：已安装并配置
-2. **Python 3.10**：ROS2 Humble 需要 Python 3.10（详见下面的"Python 环境设置"部分）
-3. **依赖包**：
+Docker installation provides a complete isolated environment with all dependencies, making it the simplest and most reliable installation method.
+
+#### Prerequisites
+
+- **Docker** and **Docker Compose** installed
+- **NVIDIA GPU** (optional, for ZED cameras): Requires `nvidia-container-toolkit`
+- **X11 Forwarding** (optional, for GUI applications like rviz2)
+
+#### Choose Docker Environment
+
+Select the appropriate Docker environment based on your needs:
+
+| Docker Environment | ROS2 Version | Purpose | Description |
+|-------------------|--------------|---------|-------------|
+| `docker/ros2_cu118/` | Humble | ZED cameras, CUDA acceleration | For scenarios requiring GPU and ZED cameras |
+| `docker/ros2_franka_libfranka_0.18.x/` | Foxy | Franka robot control | For robot system 5.9.0+ |
+| `docker/ros2_franka_libfranka_0.14.x/` | Foxy | Franka robot control | For robot system 5.7.1 |
+
+#### Quick Start (ROS2 Humble + CUDA)
+
+```bash
+# 1. Navigate to Docker config directory
+cd docker/ros2_cu118
+
+# 2. Build image
+docker compose build
+
+# 3. Start container
+docker compose up -d
+
+# 4. Enter container
+docker exec -it ros2_cu118_container bash
+
+# 5. Build workspace inside container
+cd /app/ros2_ws
+colcon build --packages-select role_ros2 --symlink-install
+source install/setup.bash
+```
+
+#### Quick Start (ROS2 Foxy + Polymetis)
+
+```bash
+# 1. Navigate to Docker config directory (select based on robot system version)
+cd docker/ros2_franka_libfranka_0.18.x  # or 0.14.x
+
+# 2. Build image
+docker compose build
+
+# 3. Start container
+docker compose up -d
+
+# 4. Enter container
+docker exec -it ros2_polymetis_container bash
+
+# 5. Build workspace inside container
+cd /app/ros2_ws
+colcon build --packages-select role_ros2 --symlink-install
+source install/setup.bash
+```
+
+#### Docker Environment Configuration
+
+**GPU Support (Required for ZED cameras)**:
+```bash
+cd docker/ros2_cu118
+sudo ./install_nvidia_toolkit.sh
+```
+
+**X11 Forwarding (GUI applications)**:
+```bash
+cd docker/ros2_cu118
+source setup_x11.sh
+```
+
+**Development Mode**:
+- Docker Compose is configured with source code mounting, allowing code editing outside the container and compilation inside
+- Changes are immediately reflected in the container, supporting hot reload
+
+For detailed documentation, refer to:
+- `docker/ros2_cu118/README.md` - ROS2 Humble + CUDA environment
+- `docker/ros2_franka_libfranka_0.18.x/README.md` - ROS2 Foxy + Polymetis environment
+
+### Method 2: Local Installation
+
+#### Prerequisites
+
+1. **ROS2 Humble**: Installed and configured
+2. **Python 3.10**: ROS2 Humble requires Python 3.10
+3. **Dependencies**:
    - `franka_ros2`
    - `franka_description`
-   - `zed_wrapper`（如果使用相机）
-4. **Python 依赖**：
+   - `zed_wrapper` (if using cameras)
+4. **Python Dependencies**:
    - `rclpy`
    - `numpy`
    - `gym`
    - `cv_bridge`
    - `message_filters`
 
-### Python 环境设置
-
-#### 为什么需要 Python 3.10？
-
-ROS2 Humble 需要 Python 3.10。如果使用 Python 3.8 或 3.9，会出现以下错误：
-
-```
-ModuleNotFoundError: No module named 'rclpy._rclpy_pybind11'
-The C extension '/opt/ros/humble/lib/python3.10/site-packages/_rclpy_pybind11.cpython-38-x86_64-linux-gnu.so' isn't present on the system.
-```
-
-这是因为 ROS2 系统安装的 C 扩展模块是为 Python 3.10 编译的，与 Python 3.8 不兼容。
-
-#### 迁移到 Python 3.10
-
-**1. 备份当前环境（可选但推荐）**
+#### Build
 
 ```bash
-# 导出当前环境的包列表
-conda activate robot
-conda env export -n robot > robot_env_py38_backup.yml
-pip freeze > robot_pip_py38_backup.txt
-```
-
-**2. 创建新的 Python 3.10 环境**
-
-```bash
-# 创建新环境
-conda create -n robot python=3.10
-
-# 激活新环境
-conda activate robot
-```
-
-**3. 重新安装项目依赖**
-
-```bash
-# 确保在项目根目录
-cd ~/repos/droid
-
-# 安装 Oculus Reader
-pip install -e ./droid/oculus_reader
-
-# 安装主项目
-pip install -e .
-
-# 安装其他依赖（如果需要）
-pip install dm-robotics-moma==0.5.0 --no-deps
-pip install dm-robotics-transformations==0.5.0 --no-deps
-pip install dm-robotics-agentflow==0.5.0 --no-deps
-pip install dm-robotics-geometry==0.5.0 --no-deps
-pip install dm-robotics-manipulation==0.5.0 --no-deps
-pip install dm-robotics-controllers==0.5.0 --no-deps
-```
-
-**4. 验证安装**
-
-```bash
-# 激活 ROS2 环境
-source ros2_ws/start_env.sh
-
-# 验证 Python 版本
-python --version  # 应该显示 Python 3.10.x
-
-# 验证 rclpy
-python -c "import rclpy; print('rclpy version:', rclpy.__version__)"
-
-# 验证其他关键包
-python -c "import pyzed; print('pyzed available')"
-
-# 测试 ROS2 节点
-ros2 launch role_ros2 zed_cameras.launch.py
-ros2 launch role_ros2 oculus_controller.launch.py
-```
-
-**常见问题**
-
-- **Q: 如何同时保留两个环境？**
-  - 可以重命名旧环境：`conda create -n robot_py38 --clone robot`，然后创建新的 Python 3.10 环境
-
-- **Q: 某些包在 Python 3.10 下不兼容怎么办？**
-  - 大多数现代 Python 包都支持 Python 3.10。如果遇到兼容性问题，检查包的最新版本是否支持 Python 3.10
-
-- **Q: 如何回滚到旧环境？**
-  - 如果备份了环境文件：`conda env create -n robot_py38 --file robot_env_py38_backup.yml`
-
-### 构建
-
-```bash
-cd ~/repos/droid/ros2_ws
+cd ~/repos/role-ros2
 source /opt/ros/humble/setup.bash
 colcon build --packages-select role_ros2 --symlink-install
 source install/setup.bash
 ```
 
-## 使用方法
+## Usage
 
-### 启动环境
+### Start Environment
 
-**推荐方式：使用工作空间的 `start_env.sh` 脚本**
+**Recommended: Use workspace `start_env.sh` script**
 
 ```bash
-# 从项目根目录
+# From project root directory
 source ros2_ws/start_env.sh
 ```
 
-### 启动机器人
+### Start Robot
 
-启动 Franka 机械臂和夹爪控制器：
+Start Franka robot arm and gripper controller:
 
 ```bash
 ros2 launch role_ros2 franka_robot.launch.py
 ```
 
-### 启动相机
+### Start Cameras
 
-启动两个 ZED 相机（hand_camera 和 static_camera）：
+Start two ZED cameras (hand_camera and static_camera):
 
 ```bash
-ros2 launch role_ros2 zed_cameras.launch.py
+ros2 launch role_ros2 zed_camera.launch.py config_file:=hand_zed_low_res.yaml
+ros2 launch role_ros2 zed_camera.launch.py config_file:=static_zed_low_res.yaml
 ```
 
-### 启动 Oculus Quest 控制器节点
+### Start Oculus Quest Controller Node
 
 ```bash
-# USB 连接（默认）
+# USB connection (default)
 ros2 launch role_ros2 oculus_controller.launch.py
 
-# 网络连接
+# Network connection
 ros2 launch role_ros2 oculus_controller.launch.py oculus_ip_address:=192.168.1.100
 ```
 
-### 使用 Python API
+### Using Python API
 
-#### 基本机器人控制
+#### Basic Robot Control
 
 ```python
 import rclpy
-from role_ros2.robot import FrankaRobot
+from role_ros2.robot.franka.robot import FrankaRobot
 
 rclpy.init()
-robot = FrankaRobot(arm_id="fr3", controller_name="fr3_arm_controller")
+robot = FrankaRobot()
 
-# 获取机器人状态
-state = robot.get_robot_state()
-print(f"关节位置: {state['joint_positions']}")
-print(f"末端位姿: {state['ee_pose']}")
+# Get robot state
+state, timestamps = robot.get_robot_state()
+print(f"Joint positions: {state['joint_positions']}")
+print(f"End-effector pose: {state['cartesian_position']}")
 
-# 移动到目标位置
+# Move to target position
 target_joints = [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
-robot.update_joint_positions(target_joints)
+robot.update_joints(target_joints, velocity=False, blocking=True)
 
 rclpy.shutdown()
 ```
 
-#### 使用机器人环境
+#### Using Robot Environment
 
 ```python
 import rclpy
@@ -280,18 +281,18 @@ from role_ros2.robot_env import RobotEnv
 rclpy.init()
 env = RobotEnv()
 
-# 重置环境
+# Reset environment
 obs = env.reset()
 
-# 执行动作循环
+# Execute action loop
 for _ in range(100):
-    # 获取观察
+    # Get observation
     obs = env.get_observation()
     
-    # 选择动作（示例：随机动作）
+    # Select action (example: random action)
     action = env.action_space.sample()
     
-    # 执行动作
+    # Execute action
     obs, reward, done, info = env.step(action)
     
     if done:
@@ -300,166 +301,336 @@ for _ in range(100):
 rclpy.shutdown()
 ```
 
-## 包结构
+## Utility Scripts
+
+### Scripts Directory
+
+The `scripts/` directory contains Python script tools for robot learning and data collection:
+
+#### 1. `bringup.py` - Docker-ROS Control Center
+
+Graphical interface tool for managing ROS2 node startup in Docker containers.
+
+**Features**:
+- Reads configuration from `config.json`, dynamically generates control interface
+- One-click start/stop for multiple ROS2 nodes
+- Real-time log display
+- Supports multiple Docker containers (ros2_cu118_container, ros2_polymetis_container)
+
+**Usage**:
+```bash
+python3 scripts/bringup.py
+```
+
+**Configuration**: Edit `scripts/config.json` to add or modify task configurations.
+
+#### 2. `collect_trajectory.py` - Trajectory Collection Tool
+
+Collect robot trajectory data using VR controller (Oculus Quest).
+
+**Features**:
+- Real-time robot control via VR controller
+- Automatic trajectory saving to HDF5 files
+- Support for multiple action spaces (cartesian_velocity, joint_velocity, etc.)
+- Long-press button to mark SUCCESS/FAILURE
+
+**Usage**:
+```bash
+# Basic usage (teleoperation only, no saving)
+python3 scripts/collect_trajectory.py
+
+# Collect trajectory data
+python3 scripts/collect_trajectory.py --task pick_and_place --save-images
+```
+
+Detailed documentation: `scripts/README.md`
+
+#### 3. `replay_trajectory.py` - Trajectory Replay Tool
+
+Replay saved robot trajectories.
+
+**Features**:
+- Load trajectories from HDF5 files
+- Automatic initial position alignment
+- Adjustable replay speed
+- Support for multiple action spaces
+
+**Usage**:
+```bash
+python3 scripts/replay_trajectory.py --filepath /path/to/trajectory.h5
+```
+
+#### 4. `calibrate_camera.py` - Camera Calibration Tool
+
+Perform hand-eye calibration using Charuco board.
+
+**Features**:
+- Automatic calibration trajectory execution
+- Real-time Charuco board detection visualization
+- Calibration accuracy evaluation
+- Automatic static TF transform publishing
+- Save calibration results to fixed file
+
+**Usage**:
+```bash
+# Calibrate camera (calibration_mode automatically read from config file)
+python3 scripts/calibrate_camera.py --camera_id 24285872
+```
+
+Detailed documentation: `scripts/README.md`
+
+### Misc Directory
+
+The `misc/` directory contains auxiliary utility scripts:
+
+#### 1. `hdf5_reader.py` - HDF5 File Viewer
+
+View and analyze structure and data of HDF5 trajectory files.
+
+**Features**:
+- Display basic file information (size, creation time, etc.)
+- Display data structure hierarchy
+- Display array shapes and data types
+- Optional data content display
+
+**Usage**:
+```bash
+python3 misc/hdf5_reader.py /path/to/trajectory.h5
+python3 misc/hdf5_reader.py /path/to/trajectory.h5 --show-data 0  # Show data at index 0
+```
+
+#### 2. `control_analysis.py` - Control System Performance Analysis
+
+Analyze robot control system performance metrics.
+
+**Features**:
+- Calculate rise time (Rise Time)
+- Calculate percentage overshoot (Percentage Overshoot)
+- Calculate steady-state error (Steady-State Error)
+- Control effort and smoothness metrics
+- Generate professional visualization charts
+
+**Usage**:
+```bash
+python3 misc/control_analysis.py /path/to/trajectory.h5
+python3 misc/control_analysis.py /path/to/trajectory.h5 --dim 0  # Analyze specific dimension
+```
+
+#### 3. `trajectory_visualizer.py` - Trajectory Visualization Tool
+
+Interactive GUI tool for visualizing robot learning trajectory data.
+
+**Features**:
+- Interactive time slider navigation
+- 4x4 subplot layout:
+  - Camera RGB/depth images + timestamp panel
+  - Robot state time series + Gantt chart
+  - Action time series + latency statistics box plot
+- Support for multi-camera data visualization
+
+**Usage**:
+```bash
+python3 misc/trajectory_visualizer.py /path/to/trajectory.h5
+```
+
+#### 4. `mujoco_to_urdf.py` - MuJoCo to URDF Converter
+
+Convert MuJoCo XML models to URDF format for ROS2 visualization.
+
+**Features**:
+- Convert MuJoCo XML to URDF
+- Handle joints, links, inertial parameters
+- Generate ROS2-compatible URDF files
+
+**Usage**:
+```bash
+python3 misc/mujoco_to_urdf.py input.xml output.urdf arm_id
+```
+
+## Package Structure
 
 ```
 role-ros2/
-├── scripts/                    # ROS2 节点脚本
-│   └── oculus_reader_node.py   # Oculus Quest 控制器节点
-├── launch/                     # Launch 文件
-│   ├── franka_robot.launch.py  # 启动机器人控制器
-│   ├── zed_cameras.launch.py # 启动相机
-│   └── oculus_controller.launch.py # 启动 Oculus 节点
-├── config/                     # 配置文件
-│   ├── hand_camera_params.yaml
-│   └── static_camera_params.yaml
-├── msg/                        # 自定义消息
-│   └── OculusButtons.msg
-└── role-ros2/                  # Python 模块
-    ├── robot/                  # 机器人控制
-    │   └── robot.py
-    ├── robot_env.py            # Gym 环境
-    ├── robot_ik/               # 逆运动学
-    ├── calibration/            # 标定工具
-    ├── camera/                 # 相机工具
-    └── misc/                   # 工具函数
+├── scripts/                    # Python script tools
+│   ├── bringup.py             # Docker-ROS control center (GUI)
+│   ├── collect_trajectory.py  # Trajectory collection tool
+│   ├── replay_trajectory.py   # Trajectory replay tool
+│   ├── calibrate_camera.py    # Camera calibration tool
+│   └── config.json            # bringup.py configuration file
+├── misc/                       # Utility scripts
+│   ├── hdf5_reader.py         # HDF5 trajectory file viewer
+│   ├── control_analysis.py    # Control system performance analysis
+│   ├── trajectory_visualizer.py # Trajectory visualization tool (GUI)
+│   └── mujoco_to_urdf.py      # MuJoCo XML to URDF converter
+├── launch/                     # Launch files
+│   ├── franka_robot.launch.py  # Start robot controller
+│   ├── zed_camera.launch.py    # Start ZED camera
+│   ├── realsense_camera.launch.py # Start RealSense camera
+│   └── oculus_controller.launch.py # Start Oculus node
+├── config/                     # Configuration files
+│   ├── franka_robot_config.yaml # Robot configuration
+│   ├── multi_camera_reader_config.yaml # Multi-camera configuration
+│   ├── calibration_results.yaml # Camera calibration results
+│   └── cameras/               # Camera configuration files
+├── docker/                     # Docker environment configuration
+│   ├── ros2_cu118/            # ROS2 Humble + CUDA environment
+│   ├── ros2_franka_libfranka_0.18.x/ # ROS2 Foxy + Polymetis (0.18.x)
+│   └── ros2_franka_libfranka_0.14.x/ # ROS2 Foxy + Polymetis (0.14.x)
+├── nodes/                      # ROS2 nodes
+│   ├── franka_robot_interface_node.py
+│   ├── franka_gripper_interface_node.py
+│   ├── robot_state_aggregator_node.py
+│   └── camera_calibration_tf_publisher_node.py
+├── msg/                        # Custom messages
+├── srv/                        # Custom services
+└── role_ros2/                  # Python modules
+    ├── robot/                  # Robot control
+    │   ├── base_robot.py      # Robot base class
+    │   └── franka/robot.py     # Franka robot implementation
+    ├── robot_env.py            # Gym environment
+    ├── robot_ik/               # Inverse kinematics
+    ├── calibration/            # Calibration tools
+    ├── camera/                 # Camera tools
+    └── misc/                   # Utility functions
 ```
 
-## 话题
+## Topics
 
-### 机器人状态话题
+### Robot State Topics
 
-- `/joint_states` (sensor_msgs/JointState) - 关节状态
-- `/fr3/robot_state` (franka_msgs/FrankaRobotState) - 机器人状态
-- `/fr3/current_pose` (geometry_msgs/PoseStamped) - 末端位姿
+- `/joint_states` (sensor_msgs/JointState) - Joint states
+- `/robot_state` (role_ros2/RobotState) - Robot state (aggregated)
+- `/fr3_arm/arm_state` (role_ros2/ArmState) - Arm state
+- `/fr3_gripper/gripper_state` (role_ros2/GripperState) - Gripper state
 
-### 相机话题
+### Camera Topics
 
 - `/hand_camera/zed_node/rgb/image_rect_color` (sensor_msgs/Image) - Hand camera RGB
-- `/hand_camera/zed_node/depth/depth_registered` (sensor_msgs/Image) - Hand camera 深度
+- `/hand_camera/zed_node/depth/depth_registered` (sensor_msgs/Image) - Hand camera depth
 - `/static_camera/zed_node/rgb/image_rect_color` (sensor_msgs/Image) - Static camera RGB
-- `/static_camera/zed_node/depth/depth_registered` (sensor_msgs/Image) - Static camera 深度
+- `/static_camera/zed_node/depth/depth_registered` (sensor_msgs/Image) - Static camera depth
 
-### Oculus Quest 控制器话题
+### Oculus Quest Controller Topics
 
-- `/oculus/right_controller/pose` (geometry_msgs/PoseStamped) - 右手控制器姿态
-- `/oculus/left_controller/pose` (geometry_msgs/PoseStamped) - 左手控制器姿态
-- `/oculus/buttons` (role_ros2/OculusButtons) - 按钮和摇杆状态
-- `/oculus/controllers/markers` (visualization_msgs/MarkerArray) - RViz 可视化标记（可选）
+- `/oculus/right_controller/pose` (geometry_msgs/PoseStamped) - Right hand controller pose
+- `/oculus/left_controller/pose` (geometry_msgs/PoseStamped) - Left hand controller pose
+- `/oculus/buttons` (role_ros2/OculusButtons) - Button and joystick states
+- `/oculus/controllers/markers` (visualization_msgs/MarkerArray) - RViz visualization markers (optional)
 
-## 配置
+## Configuration
 
-### 机器人配置
+### Robot Configuration
 
-机器人配置通过 launch 文件参数控制：
+Robot configuration is controlled via launch file parameters:
 
-- `arm_id` (默认: "fr3") - 机械臂 ID
-- `controller_name` (默认: "fr3_arm_controller") - 控制器名称
-- `robot_ip` - 机器人 IP 地址（必需）
-- `use_fake_hardware` (默认: false) - 是否使用仿真硬件
+- `arm_id` (default: "fr3") - Robot arm ID
+- `arm_namespace` (default: "fr3_arm") - Arm namespace
+- `gripper_namespace` (default: "fr3_gripper") - Gripper namespace
+- `robot_ip` - Robot IP address (required)
+- `use_mock` (default: false) - Use mock interfaces (no real robot)
 
-### 相机配置
+### Camera Configuration
 
-相机参数通过 YAML 配置文件设置：
+Camera parameters are set via YAML configuration files:
 
-- `config/hand_camera_params.yaml` - Hand camera 参数
-- `config/static_camera_params.yaml` - Static camera 参数
+- `config/multi_camera_reader_config.yaml` - Multi-camera configuration
+- `config/cameras/` - Individual camera configuration files
 
-### Oculus Reader 节点参数
+### Oculus Reader Node Parameters
 
-- `publish_rate` (默认: 50.0) - 发布频率（Hz）
-- `publish_tf` (默认: true) - 是否发布 TF 变换
-- `publish_markers` (默认: false) - 是否发布 RViz 可视化标记
-- `oculus_ip_address` (默认: '') - Oculus Quest IP 地址（空字符串表示 USB 连接）
-- `oculus_port` (默认: 5555) - ADB 网络连接端口
-- `frame_id` (默认: 'oculus_base') - 坐标系 ID
+- `publish_rate` (default: 50.0) - Publishing frequency (Hz)
+- `publish_tf` (default: true) - Whether to publish TF transforms
+- `publish_markers` (default: false) - Whether to publish RViz visualization markers
+- `oculus_ip_address` (default: '') - Oculus Quest IP address (empty string means USB connection)
+- `oculus_port` (default: 5555) - ADB network connection port
+- `frame_id` (default: 'oculus_base') - Coordinate frame ID
 
-## 开发指南
+## Development Guide
 
-### 添加新的机器人接口
+### Adding New Robot Interface
 
-1. 在 `role-ros2/robot/` 中添加新的机器人类
-2. 实现标准的机器人接口方法
-3. 更新 `__init__.py` 导出新类
+1. Add new robot class in `role_ros2/robot/`
+2. Implement standard robot interface methods
+3. Update `__init__.py` to export new class
 
-### 扩展机器人环境
+### Extending Robot Environment
 
-1. 继承 `RobotEnv` 类
-2. 重写 `get_observation()` 和 `step()` 方法
-3. 定义自定义的观察空间和动作空间
+1. Inherit from `RobotEnv` class
+2. Override `get_observation()` and `step()` methods
+3. Define custom observation and action spaces
 
-### 添加新的传感器
+### Adding New Sensors
 
-1. 创建传感器订阅节点
-2. 在 `robot_env.py` 中集成传感器数据
-3. 使用 `ApproximateTimeSynchronizer` 同步多传感器数据
+1. Create sensor subscription node
+2. Integrate sensor data in `robot_env.py`
+3. Use `ApproximateTimeSynchronizer` to synchronize multi-sensor data
 
-## 故障排除
+## Troubleshooting
 
-### 机器人连接问题
+### Robot Connection Issues
 
-**问题：无法连接到机器人**
-- 检查机器人 IP 地址是否正确
-- 确保机器人和计算机在同一网络
-- 检查防火墙设置
+**Issue: Cannot connect to robot**
+- Check if robot IP address is correct
+- Ensure robot and computer are on the same network
+- Check firewall settings
 
-### 相机同步问题
+### Camera Synchronization Issues
 
-**问题：相机数据不同步**
-- 调整 `ApproximateTimeSynchronizer` 的 `slop` 参数
-- 检查相机时间戳是否同步
-- 确保相机发布频率一致
+**Issue: Camera data not synchronized**
+- Adjust `slop` parameter of `ApproximateTimeSynchronizer`
+- Check if camera timestamps are synchronized
+- Ensure cameras publish at consistent rates
 
-### ZED 相机启动问题
+### ZED Camera Startup Issues
 
-**问题：`CAMERA NOT DETECTED` 或 `MOTION SENSORS REQUIRED`**
-- **检查 USB 连接**：确保相机连接在 USB 3.0 接口（`lsusb -t` 显示 `5000M`）
-- **检查权限**：确保 udev 规则已配置并生效
+**Issue: `CAMERA NOT DETECTED` or `MOTION SENSORS REQUIRED`**
+- **Check USB connection**: Ensure camera is connected to USB 3.0 port (`lsusb -t` shows `5000M`)
+- **Check permissions**: Ensure udev rules are configured and active
   ```bash
-  # 检查权限
+  # Check permissions
   ls -l /dev/bus/usb/$(lsusb -d 2b03: | awk '{print $2}')/$(lsusb -d 2b03: | awk '{print $4}' | tr -d ':')
-  # 应该显示 rw-rw-rw- (0666)
+  # Should show rw-rw-rw- (0666)
   ```
-- **重新加载 udev 规则**：`sudo udevadm control --reload-rules && sudo udevadm trigger`
-- **物理重连**：拔掉相机 USB 线，等待 5 秒后重新插入
+- **Reload udev rules**: `sudo udevadm control --reload-rules && sudo udevadm trigger`
+- **Physical reconnection**: Unplug camera USB cable, wait 5 seconds, then reconnect
 
-**问题：`LOW USB BANDWIDTH` 或 `Unable to capture images`**
-- **降低分辨率或帧率**：在配置文件中将 `grab_resolution` 设为 `VGA` 或 `grab_frame_rate` 降到 10Hz
-- **检查 USB 总线分配**：确保两台相机连接在不同的 USB 总线（`lsusb -t` 显示不同的 Bus）
-- **降低深度模式**：将 `depth_mode` 从 `ULTRA` 改为 `PERFORMANCE`
-- **增加启动延迟**：在 launch 文件中增加相机启动间隔时间
+**Issue: `LOW USB BANDWIDTH` or `Unable to capture images`**
+- **Reduce resolution or frame rate**: Set `grab_resolution` to `VGA` or reduce `grab_frame_rate` to 10Hz in config file
+- **Check USB bus allocation**: Ensure two cameras are connected to different USB buses (`lsusb -t` shows different Bus)
+- **Reduce depth mode**: Change `depth_mode` from `ULTRA` to `PERFORMANCE`
+- **Increase startup delay**: Add camera startup interval time in launch file
 
-**问题：`libhid error: -6` 或 `can't claim interface`**
-- **检查 USB HID 权限**：确保 udev 规则包含 HID 设备权限
-- **检查设备占用**：确保没有其他进程占用相机设备
-- **重启容器**：`docker restart <container_name>`
+**Issue: `libhid error: -6` or `can't claim interface`**
+- **Check USB HID permissions**: Ensure udev rules include HID device permissions
+- **Check device occupancy**: Ensure no other process is using the camera device
+- **Restart container**: `docker restart <container_name>`
 
-**问题：Docker 容器中无法访问相机**
-- **检查 Docker 配置**：确保 `docker-compose.yaml` 包含 `privileged: true` 和 `devices: - "/dev:/dev"`
-- **检查设备映射**：在容器内执行 `lsusb -d 2b03:` 确认能看到相机设备
-- **检查 NVIDIA 运行时**：确保使用 `nvidia` 运行时（GPU 支持）
+**Issue: Cannot access camera in Docker container**
+- **Check Docker configuration**: Ensure `docker-compose.yaml` includes `privileged: true` and `devices: - "/dev:/dev"`
+- **Check device mapping**: Execute `lsusb -d 2b03:` inside container to confirm camera devices are visible
+- **Check NVIDIA runtime**: Ensure using `nvidia` runtime (GPU support)
 
-### Python 导入错误
+### Python Import Errors
 
-**问题：`ModuleNotFoundError: No module named 'role_ros2'`**
-- 确保已构建并 source 工作空间：`source ros2_ws/install/setup.bash`
-- 检查 Python 路径：`python -c "import sys; print(sys.path)"`
-- 验证包是否正确安装：`ros2 pkg list | grep role_ros2`
+**Issue: `ModuleNotFoundError: No module named 'role_ros2'`**
+- Ensure workspace is built and sourced: `source ros2_ws/install/setup.bash`
+- Check Python path: `python -c "import sys; print(sys.path)"`
+- Verify package is correctly installed: `ros2 pkg list | grep role_ros2`
 
-## 贡献
+## Contributing
 
-欢迎贡献代码和提出建议！请确保：
+Contributions and suggestions are welcome! Please ensure:
 
-1. 代码遵循 ROS2 和 Python 最佳实践
-2. 添加适当的文档和注释
-3. 更新相关的 README 和文档
+1. Code follows ROS2 and Python best practices
+2. Appropriate documentation and comments are added
+3. Related README and documentation are updated
 
-## 许可证
+## License
 
 Apache-2.0
 
-## 相关文档
+## Related Documentation
 
-- [ROS2 工作空间 README](../../README.md)
-- [Franka ROS2 文档](https://github.com/souljaboy764/franka_ros2)
-- [ZED ROS2 Wrapper 文档](https://github.com/stereolabs/zed-ros2-wrapper)
+- [ROS2 Workspace README](../../README.md)
+- [Franka ROS2 Documentation](https://github.com/souljaboy764/franka_ros2)
+- [ZED ROS2 Wrapper Documentation](https://github.com/stereolabs/zed-ros2-wrapper)
