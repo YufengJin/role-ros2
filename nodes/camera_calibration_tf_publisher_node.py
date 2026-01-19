@@ -29,7 +29,7 @@ from tf2_ros import StaticTransformBroadcaster
 from scipy.spatial.transform import Rotation as R
 import yaml
 
-from role_ros2.misc.config_loader import get_package_config_path
+from role_ros2.misc.config_loader import get_source_config_path
 
 
 class CameraCalibrationTFPublisherNode(Node):
@@ -88,8 +88,8 @@ class CameraCalibrationTFPublisherNode(Node):
         Returns:
             Dictionary with calibration data (empty dict if file not found or error)
         """
-        # Get calibration results file path
-        config_path = get_package_config_path('calibration_results.yaml')
+        # Get calibration results file path (use source directory, not install directory)
+        config_path = get_source_config_path('calibration_results.yaml')
         
         if not os.path.isfile(config_path):
             self.get_logger().warn(

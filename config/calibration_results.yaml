@@ -10,3 +10,15 @@ cameras:
     rx: 0.055731442151349286
     ry: 0.39377088243406266
     rz: 2.390552088833406
+- camera_id: '11022812'
+  rgb_topic: /hand_camera/zed_node/rgb/image_rect_color
+  child_frame: hand_camera_camera_link
+  parent_frame: fr3_panda_link8
+  transform:
+    x: -0.059619559683483196
+    y: 0.06490836216797571
+    z: -0.010115966769033832
+    rx: 0.0353042628294834
+    ry: -1.2126754598135536
+    rz: -0.8698635754955566
+                                                                                    23,1          Bot

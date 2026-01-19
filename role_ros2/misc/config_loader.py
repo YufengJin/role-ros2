@@ -91,6 +91,27 @@ def load_yaml_config(config_file: str, package_name: str = "role_ros2") -> Dict[
     return config if config else {}
 
 
+def get_source_config_path(config_file: str) -> Path:
+    """
+    Get path to configuration file in source directory config/ folder.
+    
+    This function always returns the path relative to the workspace source root,
+    regardless of ROS2 installation. Use this for writing files that should
+    be saved in the source directory (e.g., calibration results).
+    
+    Args:
+        config_file: Configuration file name (e.g., 'calibration_results.yaml')
+    
+    Returns:
+        Path to configuration file in source directory
+    """
+    current_file = Path(__file__)
+    # role_ros2/config_loader.py -> role_ros2/ -> workspace root
+    workspace_root = current_file.parent.parent
+    config_path = workspace_root / "config" / config_file
+    return config_path
+
+
 def load_yaml_config_safe(config_file: str, package_name: str = "role_ros2", default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Load YAML configuration file safely (returns default if file not found).

@@ -29,6 +29,7 @@ from role_ros2.calibration.config import (
     DEFAULT_TRAIN_PERCENTAGE,
 )
 from role_ros2.misc.transformations import pose_diff
+from role_ros2.misc.config_loader import get_source_config_path
 
 # Create Board
 try:
@@ -53,26 +54,20 @@ calib_flags = (
     cv2.CALIB_FIX_FOCAL_LENGTH
 )
 
-# Default config directory for calibration_results.yaml
-dir_path = os.path.dirname(os.path.realpath(__file__))
-default_config_dir = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(dir_path))), "config"
-)
-
-
 def load_calibration_info(filepath: Optional[str] = None) -> Dict:
     """
     Load calibration information from YAML file.
     
     Args:
         filepath: Path to calibration results YAML file.
-                  If None, uses default config/calibration_results.yaml
+                  If None, uses source directory config/calibration_results.yaml
     
     Returns:
         Dictionary with calibration information
     """
     if filepath is None:
-        filepath = os.path.join(default_config_dir, "calibration_results.yaml")
+        # Use source directory path, not install directory
+        filepath = str(get_source_config_path('calibration_results.yaml'))
     
     if not os.path.isfile(filepath):
         return {}

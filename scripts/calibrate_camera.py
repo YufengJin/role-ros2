@@ -55,7 +55,7 @@ from role_ros2.calibration.calibration_utils import (
     save_calibration_results,
 )
 from role_ros2.controllers.oculus_controller import VRPolicy
-from role_ros2.misc.config_loader import get_package_config_path
+from role_ros2.misc.config_loader import get_package_config_path, get_source_config_path
 from role_ros2.misc.ros2_utils import get_ros_time_ns
 from role_ros2.misc.transformations import change_pose_frame
 from role_ros2.robot_env import RobotEnv
@@ -280,8 +280,8 @@ class CameraCalibrator:
         self.pause_time = args.pause_time
         self.image_freq = args.image_freq
         self.right_controller = args.right_controller
-        # Use fixed output file path (config/calibration_results.yaml)
-        self.output_filepath = str(get_package_config_path('calibration_results.yaml'))
+        # Use fixed output file path (config/calibration_results.yaml in source directory)
+        self.output_filepath = str(get_source_config_path('calibration_results.yaml'))
         
         # State variables
         self._shutdown_requested = False
