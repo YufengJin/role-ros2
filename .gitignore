@@ -39,3 +39,6 @@ bags/
 data/
 
 outputs/
+
+# Hardware logs
+hardware/franka/launch/outputs/
