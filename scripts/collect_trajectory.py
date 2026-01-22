@@ -60,15 +60,21 @@ class TrajectoryGUI:
     GUI for trajectory collection with input dialog, introduction, and camera display.
     
     Uses thread-safe image dictionary for communication with main control loop.
+    Real-time camera reading in separate thread to avoid white flash.
     """
     
-    def __init__(self, image_dict: Dict, image_lock: threading.Lock):
+    def __init__(self, image_dict: Dict, image_lock: threading.Lock, flip_cameras: Optional[Dict[str, bool]] = None, 
+                 camera_reader=None, read_cameras_func=None, shutdown_callback=None):
         """
         Initialize GUI.
         
         Args:
             image_dict: Thread-safe dictionary to store camera images
             image_lock: Lock for thread-safe access to image_dict
+            flip_cameras: Optional dict mapping camera_id to bool for horizontal flip
+            camera_reader: Optional camera reader object (MultiCameraWrapper or RobotEnv)
+            read_cameras_func: Optional function to read cameras (env.read_cameras)
+            shutdown_callback: Optional callback function to call when window is closed (equivalent to Ctrl+C)
         """
         self.image_dict = image_dict
         self.image_lock = image_lock
@@ -79,6 +85,22 @@ class TrajectoryGUI:
         self.save_depths = False
         self.gui_ready = False
         self.recording_active = False
+        
+        # Camera reading
+        self.camera_reader = camera_reader
+        self.read_cameras_func = read_cameras_func
+        self._camera_read_thread = None
+        self._camera_read_active = False
+        
+        # Shutdown callback (called when window is closed)
+        self.shutdown_callback = shutdown_callback
+        
+        # Camera flip configuration
+        self.flip_cameras = flip_cameras or {}
+        
+        # Status tracking
+        self.status_message = "Waiting for recording to start..."
+        self.status_lock = threading.Lock()
         
         # GUI state
         self.root = None
@@ -102,6 +124,18 @@ class TrajectoryGUI:
             self.root = tk.Tk()
             self.root.title("Trajectory Collection")
             self.root.geometry("800x600")
+            
+            # Bind window close event to shutdown callback (equivalent to Ctrl+C)
+            def on_closing():
+                """Handle window close event."""
+                if self.shutdown_callback is not None:
+                    # Call shutdown callback (will trigger KeyboardInterrupt)
+                    self.shutdown_callback()
+                else:
+                    # Fallback: just close the window
+                    self.root.destroy()
+            
+            self.root.protocol("WM_DELETE_WINDOW", on_closing)
             
             # Hide main window initially (will show after input dialog)
             self.root.withdraw()
@@ -277,17 +311,21 @@ Click 'Start Recording' when ready to begin.
         main_frame = self.tk.Frame(self.root)
         main_frame.pack(fill=self.tk.BOTH, expand=True, padx=10, pady=10)
         
-        # Status bar
-        status_frame = self.tk.Frame(main_frame)
+        # Status bar (at top)
+        status_frame = self.tk.Frame(main_frame, bg="#2C3E50")
         status_frame.pack(fill=self.tk.X, pady=5)
         
         self.status_label = self.tk.Label(
             status_frame,
             text="Status: Waiting for recording to start...",
-            font=("Arial", 12),
-            anchor="w"
+            font=("Arial", 12, "bold"),
+            anchor="w",
+            bg="#2C3E50",
+            fg="white",
+            padx=10,
+            pady=5
         )
-        self.status_label.pack(side=self.tk.LEFT)
+        self.status_label.pack(side=self.tk.LEFT, fill=self.tk.X, expand=True)
         
         # Camera display frame
         self.camera_frame = self.tk.Frame(main_frame, bg="black")
@@ -297,24 +335,106 @@ Click 'Start Recording' when ready to begin.
         self.camera_labels = {}
         self.current_frame = None
         
+        # Start camera reading thread if available
+        if self.read_cameras_func is not None:
+            self._start_camera_reading_thread()
+        
         # Start update loop
         self._update_camera_display()
     
+    def _start_camera_reading_thread(self):
+        """Start thread to continuously read cameras for real-time display."""
+        if self._camera_read_thread is not None and self._camera_read_thread.is_alive():
+            return
+        
+        self._camera_read_active = True
+        self._camera_read_thread = threading.Thread(target=self._camera_read_loop, daemon=True)
+        self._camera_read_thread.start()
+    
+    def _camera_read_loop(self):
+        """Continuously read cameras in separate thread for real-time display."""
+        while self._camera_read_active and self.recording_active:
+            try:
+                if self.read_cameras_func is not None:
+                    # Read cameras without sync for faster updates
+                    camera_obs, _ = self.read_cameras_func(use_sync=False)
+                    
+                    # Update image dict with lock
+                    if "image" in camera_obs:
+                        with self.image_lock:
+                            # Only update if we have new images (avoid clearing)
+                            new_images = {}
+                            for camera_id, img in camera_obs["image"].items():
+                                if img is not None:
+                                    new_images[camera_id] = img.copy()
+                            
+                            # Update dict (preserve existing if no new data)
+                            if new_images:
+                                self.image_dict.update(new_images)
+                    
+                    # Small sleep to avoid excessive CPU usage
+                    time.sleep(0.016)  # ~60 FPS
+                else:
+                    time.sleep(0.1)
+            except Exception as e:
+                print(f"Camera read thread error: {e}")
+                time.sleep(0.1)
+    
+    def set_status(self, message: str):
+        """Set status message (thread-safe)."""
+        with self.status_lock:
+            self.status_message = message
+    
+    def get_status(self) -> str:
+        """Get current status message (thread-safe)."""
+        with self.status_lock:
+            return self.status_message
+    
+    def _get_camera_display_name(self, camera_id: str) -> str:
+        """
+        Get display name for camera ID.
+        
+        Maps camera serial numbers to friendly names based on config.
+        """
+        # Map known camera IDs to friendly names
+        camera_name_map = {
+            "11022812": "Hand Camera (ZED-M)",
+            "24285872": "Static Camera (ZED 2)",
+            "24285877": "Static Camera 2 (ZED 2)",
+            "336222076118": "Hand Camera (RealSense)",
+            "233522078330": "Static Camera (RealSense)",
+        }
+        
+        # Check if we have a friendly name
+        if camera_id in camera_name_map:
+            return f"{camera_name_map[camera_id]}\nID: {camera_id}"
+        else:
+            return f"Camera ID: {camera_id}"
+    
+    def _should_flip_camera(self, camera_id: str) -> bool:
+        """
+        Determine if camera image should be flipped horizontally.
+        
+        Some cameras may need horizontal flip for correct display.
+        Uses self.flip_cameras dict if provided, otherwise defaults to False.
+        """
+        return self.flip_cameras.get(camera_id, False)
+    
     def _update_camera_display(self):
         """Update camera display with latest images."""
-        if not self.root or not self.recording_active:
+        if not self.root:
             return
         
         try:
-            # Get latest images with lock
+            # Get latest images with lock (don't clear, just read)
             with self.image_lock:
                 images = self.image_dict.copy()
             
-            # Update status
+            # Get status message
+            status_text = f"Status: {self.get_status()}"
             if images:
-                status_text = f"Status: Recording - {len(images)} camera(s) active"
-            else:
-                status_text = "Status: Waiting for camera data..."
+                camera_ids_str = ", ".join(sorted(images.keys()))
+                status_text += f" - {len(images)} camera(s) active [{camera_ids_str}]"
             
             if hasattr(self, 'status_label'):
                 self.status_label.config(text=status_text)
@@ -326,21 +446,57 @@ Click 'Start Recording' when ready to begin.
                     self.current_frame = self.tk.Frame(self.camera_frame)
                     self.current_frame.pack(fill=self.tk.BOTH, expand=True)
                 else:
-                    # Clear existing labels
-                    for widget in self.current_frame.winfo_children():
-                        widget.destroy()
+                    # Check if current_frame still exists (might have been destroyed)
+                    try:
+                        self.current_frame.winfo_exists()
+                    except:
+                        # Frame was destroyed, recreate it
+                        self.current_frame = self.tk.Frame(self.camera_frame)
+                        self.current_frame.pack(fill=self.tk.BOTH, expand=True)
+                        self.camera_labels = {}  # Clear labels dict when frame is recreated
+                
+                # Sort camera IDs for consistent display order
+                sorted_camera_ids = sorted(images.keys())
                 
                 # Create grid layout for cameras
-                num_cameras = len(images)
+                num_cameras = len(sorted_camera_ids)
                 cols = 2 if num_cameras > 1 else 1
                 rows = (num_cameras + cols - 1) // cols
                 
-                for idx, (camera_id, img) in enumerate(images.items()):
+                # Remove labels for cameras that no longer exist or have invalid widgets
+                existing_camera_ids = set(sorted_camera_ids)
+                labels_to_remove = []
+                for cid in list(self.camera_labels.keys()):
+                    if cid not in existing_camera_ids:
+                        labels_to_remove.append(cid)
+                    else:
+                        # Also check if widget still exists and is valid
+                        try:
+                            img_label = self.camera_labels[cid]['img_label']
+                            img_label.winfo_exists()
+                            # Try to access widget property to ensure it's still valid
+                            _ = img_label.cget('bg')
+                        except:
+                            # Widget was destroyed, mark for removal
+                            labels_to_remove.append(cid)
+                
+                for cid in labels_to_remove:
+                    if cid in self.camera_labels:
+                        del self.camera_labels[cid]
+                
+                # Update existing labels or create new ones
+                for idx, camera_id in enumerate(sorted_camera_ids):
+                    img = images[camera_id]
                     if img is None:
                         continue
                     
                     # Resize image for display (max 400x300)
                     display_img = img.copy()
+                    
+                    # Apply horizontal flip if needed
+                    if self._should_flip_camera(camera_id):
+                        display_img = cv2.flip(display_img, 1)  # 1 = horizontal flip
+                    
                     h, w = display_img.shape[:2]
                     max_w, max_h = 400, 300
                     
@@ -361,35 +517,95 @@ Click 'Start Recording' when ready to begin.
                         # Fallback if PIL not available
                         continue
                     
-                    # Create label frame
-                    label_frame = self.tk.Frame(self.current_frame)
-                    label_frame.grid(row=idx // cols, column=idx % cols, padx=5, pady=5)
+                    # Check if label exists and is still valid
+                    label_exists = camera_id in self.camera_labels
+                    label_valid = False
                     
-                    camera_name_label = self.tk.Label(
-                        label_frame,
-                        text=f"Camera: {camera_id}",
-                        font=("Arial", 10, "bold"),
-                        bg="black",
-                        fg="white"
-                    )
-                    camera_name_label.pack()
+                    if label_exists:
+                        try:
+                            # Check if widget still exists and is valid
+                            img_label = self.camera_labels[camera_id]['img_label']
+                            img_label.winfo_exists()
+                            # Try to access widget property to ensure it's still valid
+                            _ = img_label.cget('bg')
+                            label_valid = True
+                        except:
+                            # Widget was destroyed, need to recreate
+                            label_valid = False
+                            # Remove invalid entry
+                            if camera_id in self.camera_labels:
+                                del self.camera_labels[camera_id]
                     
-                    img_label = self.tk.Label(label_frame, image=photo, bg="black")
-                    img_label.pack()
-                    img_label.image = photo  # Keep a reference
+                    # Update existing label or create new one
+                    if label_exists and label_valid:
+                        try:
+                            # Double-check widget is still valid before updating
+                            img_label = self.camera_labels[camera_id]['img_label']
+                            if not img_label.winfo_exists():
+                                raise Exception("Widget no longer exists")
+                            
+                            # Update existing label (avoid white flash)
+                            img_label.config(image=photo)
+                            img_label.image = photo  # Keep reference
+                        except Exception as e:
+                            # Widget was destroyed during update, recreate it
+                            if camera_id in self.camera_labels:
+                                del self.camera_labels[camera_id]
+                            label_exists = False
+                            label_valid = False
                     
-                    self.camera_labels[camera_id] = {
-                        'frame': label_frame,
-                        'name_label': camera_name_label,
-                        'img_label': img_label
-                    }
+                    if not label_exists or not label_valid:
+                        # Create new label frame
+                        try:
+                            label_frame = self.tk.Frame(self.current_frame, bg="black")
+                            label_frame.grid(row=idx // cols, column=idx % cols, padx=5, pady=5, sticky="nsew")
+                            
+                            # Get display name for camera
+                            display_name = self._get_camera_display_name(camera_id)
+                            
+                            camera_name_label = self.tk.Label(
+                                label_frame,
+                                text=display_name,
+                                font=("Arial", 10, "bold"),
+                                bg="black",
+                                fg="white",
+                                justify=self.tk.LEFT
+                            )
+                            camera_name_label.pack(pady=2)
+                            
+                            # Add flip indicator if camera is flipped
+                            if self._should_flip_camera(camera_id):
+                                flip_indicator = self.tk.Label(
+                                    label_frame,
+                                    text="[Flipped]",
+                                    font=("Arial", 8),
+                                    bg="black",
+                                    fg="yellow"
+                                )
+                                flip_indicator.pack()
+                            
+                            img_label = self.tk.Label(label_frame, image=photo, bg="black")
+                            img_label.pack()
+                            img_label.image = photo  # Keep a reference
+                            
+                            self.camera_labels[camera_id] = {
+                                'frame': label_frame,
+                                'name_label': camera_name_label,
+                                'img_label': img_label
+                            }
+                        except Exception as e:
+                            # Frame might have been destroyed, skip this update
+                            print(f"Failed to create camera label for {camera_id}: {e}")
+                            continue
             
         except Exception as e:
             print(f"GUI update error: {e}")
+            import traceback
+            traceback.print_exc()
         
-        # Schedule next update (30 FPS)
+        # Schedule next update (60 FPS for smoother display)
         if self.root:
-            self.root.after(33, self._update_camera_display)
+            self.root.after(16, self._update_camera_display)  # ~60 FPS
     
     def wait_for_ready(self):
         """Wait for GUI to be ready (user confirmed input)."""
@@ -408,6 +624,11 @@ Click 'Start Recording' when ready to begin.
     
     def shutdown(self):
         """Shutdown GUI."""
+        # Stop camera reading thread
+        self._camera_read_active = False
+        if self._camera_read_thread is not None:
+            self._camera_read_thread.join(timeout=1.0)
+        
         if self.root:
             try:
                 self.root.quit()
@@ -453,13 +674,40 @@ class CollectTrajectory:
         self.horizon = None if args.horizon <= 0 else args.horizon
         self.enable_viz = args.viz
         
-        # GUI setup (if enabled)
+        # GUI setup (if enabled) - initialize before env so GUI can start early
         self.gui = None
         self.image_dict = {}
         self.image_lock = threading.Lock()
         
+        # Camera flip configuration (can be set via args)
+        # Format: {camera_id: should_flip}
+        # Example: {"11022812": True, "24285872": False}
+        flip_camera_list = getattr(args, 'flip_camera', [])
+        self.flip_cameras = {camera_id: True for camera_id in flip_camera_list}
+        
         if self.enable_viz:
-            self.gui = TrajectoryGUI(self.image_dict, self.image_lock)
+            # Create shutdown callback for window close event
+            # Note: We need to capture self in a way that works in the callback
+            collector_ref = self
+            
+            def gui_shutdown_callback():
+                """Callback for GUI window close - triggers shutdown like Ctrl+C."""
+                print("\n⚠️ GUI window closed - shutting down...")
+                # Set shutdown flag and call shutdown
+                collector_ref._shutdown_requested = True
+                collector_ref.shutdown()
+                # Send SIGINT to trigger KeyboardInterrupt in main loop
+                import os
+                os.kill(os.getpid(), signal.SIGINT)
+            
+            # Create GUI first (without read_cameras_func, will be set after env init)
+            self.gui = TrajectoryGUI(
+                self.image_dict, 
+                self.image_lock, 
+                flip_cameras=self.flip_cameras,
+                read_cameras_func=None,  # Will be set after env initialization
+                shutdown_callback=gui_shutdown_callback
+            )
             # Wait for GUI input
             self.gui.wait_for_ready()
             # Get task config from GUI
@@ -538,6 +786,9 @@ class CollectTrajectory:
                 node=self._node,
             )
             self.env.control_hz = self.control_hz
+            # Set read_cameras function for GUI real-time display
+            if self.enable_viz and self.gui:
+                self.gui.read_cameras_func = self.env.read_cameras
             self._print("   ✅ RobotEnv initialized successfully")
         except Exception as e:
             self._print(f"   ❌ Failed to initialize RobotEnv: {e}")
@@ -701,6 +952,13 @@ class CollectTrajectory:
                     # Reset long press detection to avoid immediate trigger
                     self._success_button_press_start = None
                     self._failure_button_press_start = None
+                    # Update GUI status
+                    if self.enable_viz and self.gui:
+                        self.gui.recording_active = True
+                        self.gui.set_status("Recording started")
+                        # Start camera reading thread if not already started
+                        if self.gui.read_cameras_func is not None:
+                            self.gui._start_camera_reading_thread()
                     self._print("")
                     self._print("=" * 70)
                     self._print("✅ Recording started! Long press A/X to mark SUCCESS, B/Y to mark FAILURE")
@@ -708,6 +966,8 @@ class CollectTrajectory:
                     self._print("")
                 else:
                     # Not started yet, just wait
+                    if self.enable_viz and self.gui:
+                        self.gui.set_status("Waiting for GRIP button...")
                     time.sleep(0.05)
                     return
             
@@ -726,21 +986,15 @@ class CollectTrajectory:
             control_timestamps = {"step_start": get_ros_time_ns(self._node)}
             
             # Get Observation
-            obs = self.env.get_observation(use_sync=False)
+            obs = self.env.get_observation(use_sync=True)
             obs["controller_info"] = controller_info
             if "timestamp" not in obs:
                 obs["timestamp"] = {}
             obs["timestamp"]["skip_action"] = skip_action
             
-            # Update GUI images (if enabled)
-            if self.enable_viz and self.gui and self.gui.recording_active:
-                with self.image_lock:
-                    # Copy camera images for GUI
-                    if "image" in obs:
-                        self.image_dict.clear()
-                        for camera_id, img in obs["image"].items():
-                            if img is not None:
-                                self.image_dict[camera_id] = img.copy()
+            # Update GUI status (images are updated by camera reading thread)
+            if self.enable_viz and self.gui:
+                self.gui.set_status("Recording")
             
             # Get Action
             control_timestamps["policy_start"] = get_ros_time_ns(self._node)
@@ -811,6 +1065,8 @@ class CollectTrajectory:
         self._print("=" * 70)
         
         # Reset robot after success
+        if self.enable_viz and self.gui:
+            self.gui.set_status("Resetting robot...")
         self._print("🤖 Resetting robot to home position...")
         try:
             self.env.reset(randomize=self.randomize_reset)
@@ -820,8 +1076,12 @@ class CollectTrajectory:
         
         # Wait a moment then start new trajectory
         time.sleep(0.5)
+        if self.enable_viz and self.gui:
+            self.gui.set_status("Starting new trajectory...")
         self._print("🔄 Starting new trajectory...")
         self._start_new_trajectory()
+        if self.enable_viz and self.gui:
+            self.gui.set_status("Hold GRIP button to start recording...")
         self._print("⏸️  Hold GRIP button to start recording...")
     
     def _handle_trajectory_failure(self):
@@ -843,6 +1103,8 @@ class CollectTrajectory:
         self._print("=" * 70)
         
         # Reset robot
+        if self.enable_viz and self.gui:
+            self.gui.set_status("Resetting robot...")
         self._print("🤖 Resetting robot...")
         try:
             self.env.reset(randomize=self.randomize_reset)
@@ -852,8 +1114,12 @@ class CollectTrajectory:
         
         # Wait a moment then start new trajectory
         time.sleep(0.5)
+        if self.enable_viz and self.gui:
+            self.gui.set_status("Starting new trajectory...")
         self._print("🔄 Starting new trajectory...")
         self._start_new_trajectory()
+        if self.enable_viz and self.gui:
+            self.gui.set_status("Hold GRIP button to start recording...")
         self._print("⏸️  Hold GRIP button to start recording...")
     
     def shutdown(self):
@@ -1013,6 +1279,15 @@ Examples:
         '--viz',
         action='store_true',
         help='Enable GUI visualization with camera display'
+    )
+    
+    # Camera flip settings (for GUI display)
+    parser.add_argument(
+        '--flip-camera',
+        type=str,
+        nargs='+',
+        default=[],
+        help='Camera IDs to flip horizontally in GUI display. Example: --flip-camera 11022812 24285872'
     )
     
     return parser.parse_args()
