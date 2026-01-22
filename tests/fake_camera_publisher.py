@@ -45,7 +45,7 @@ class FakeCameraPublisher(Node):
         depth_topic: str,
         camera_info_topic: str,
         publish_rate: float = 30.0,
-        delay_ms: float = 0.0,
+        start_delay_ms: float = 0.0,
         image_width: int = 640,
         image_height: int = 480,
         use_sim_time: bool = False,
@@ -66,7 +66,9 @@ class FakeCameraPublisher(Node):
             depth_topic: Depth image topic name
             camera_info_topic: Camera info topic name
             publish_rate: Publishing rate in Hz (default: 30.0)
-            delay_ms: Simulated delay in milliseconds (default: 0.0)
+            start_delay_ms: Start delay in milliseconds before first publish (default: 0.0).
+                          This allows camera B to start publishing after camera A with a delay,
+                          while both maintain fixed FPS.
             image_width: Image width in pixels (default: 640)
             image_height: Image height in pixels (default: 480)
             use_sim_time: Whether to use ROS simulation time (default: False)
@@ -82,7 +84,7 @@ class FakeCameraPublisher(Node):
         
         self.camera_id = camera_id
         self.publish_rate = publish_rate
-        self.delay_ms = delay_ms
+        self.start_delay_ms = start_delay_ms
         self.image_width = image_width
         self.image_height = image_height
         self.use_sim_time = use_sim_time
@@ -155,6 +157,15 @@ class FakeCameraPublisher(Node):
         self.depth_pub = self.create_publisher(Image, depth_topic, 10)
         self.camera_info_pub = self.create_publisher(CameraInfo, camera_info_topic, 10)
         
+        # Apply start delay if specified (before creating timer)
+        # This allows camera B to start publishing after camera A with a delay,
+        # while both maintain fixed FPS
+        if self.start_delay_ms > 0:
+            self.get_logger().info(
+                f"Applying start delay of {self.start_delay_ms} ms for camera {camera_id}"
+            )
+            time.sleep(self.start_delay_ms / 1000.0)
+        
         # Create timer with ReentrantCallbackGroup for concurrent execution
         period = 1.0 / publish_rate if publish_rate > 0 else 1.0
         self.timer = self.create_timer(period, self.publish_images, callback_group=self._cb_group)
@@ -177,7 +188,7 @@ class FakeCameraPublisher(Node):
             f"  Depth topic: {depth_topic}\n"
             f"  Camera info topic: {camera_info_topic}\n"
             f"  Publish rate: {publish_rate} Hz\n"
-            f"  Delay: {delay_ms} ms\n"
+            f"  Start delay: {start_delay_ms} ms (offset delay before first publish)\n"
             f"  Image size: {self.image_width}x{self.image_height}\n"
             f"  Use sim time: {use_sim_time}\n"
             f"  Base frame: {base_frame}\n"
@@ -376,10 +387,6 @@ class FakeCameraPublisher(Node):
                 frame_counter = self.frame_counter
                 self.frame_counter += 1
             
-            # Apply delay if specified
-            if self.delay_ms > 0:
-                time.sleep(self.delay_ms / 1000.0)
-            
             # Get current ROS time and update timestamps only
             timestamp = self.get_clock().now()
             timestamp_msg = timestamp.to_msg()
@@ -435,19 +442,36 @@ def load_camera_config(config_file: Optional[str] = None):
     """
     Load camera configurations from YAML file.
     
+    Loads directly from source directory (config/multi_camera_reader_config.yaml),
+    not from installed/shared ROS2 package configs.
+    
     Args:
-        config_file: Path to YAML configuration file (if None, uses config/multi_camera_config.yaml)
+        config_file: Path to YAML configuration file (if None, uses config/multi_camera_reader_config.yaml
+                     relative to workspace root)
         
     Returns:
         tuple: (config_data dict, cameras list)
     """
-    from role_ros2.misc.config_loader import load_yaml_config, get_package_config_path
+    import yaml
     
     if config_file is None:
-        # Use unified config loader to find config file in config/ directory
-        config_data = load_yaml_config('multi_camera_reader_config.yaml')
+        # Load directly from source config/ directory (not from installed/shared configs)
+        # fake_camera_publisher.py is in tests/ directory
+        # tests/ -> workspace root -> config/multi_camera_reader_config.yaml
+        current_file = Path(__file__)
+        workspace_root = current_file.parent.parent  # tests/ -> workspace root
+        config_path = workspace_root / "config" / "multi_camera_reader_config.yaml"
+        
+        if not config_path.exists():
+            raise FileNotFoundError(
+                f"Config file not found: {config_path}\n"
+                f"Expected location: {config_path.absolute()}"
+            )
+        
+        with open(config_path, 'r') as f:
+            config_data = yaml.safe_load(f)
     else:
-        import yaml
+        # Use provided config file path
         config_file = Path(config_file)
         if not config_file.exists():
             raise FileNotFoundError(f"Config file not found: {config_file}")
@@ -469,8 +493,10 @@ def main():
                        help='Specific camera ID to publish (optional, if None publishes all cameras)')
     parser.add_argument('--publish-rate', type=float, default=30.0,
                        help='Publishing rate in Hz (default: 30.0)')
-    parser.add_argument('--delay-ms', type=float, default=0.0,
-                       help='Simulated delay in milliseconds (default: 0.0)')
+    parser.add_argument('--start-delay-ms', type=float, default=0.0,
+                       help='Start delay in milliseconds before first publish (default: 0.0). '
+                            'This allows camera B to start publishing after camera A with a delay, '
+                            'while both maintain fixed FPS.')
     parser.add_argument('--image-width', type=int, default=640,
                        help='Image width in pixels (default: 640)')
     parser.add_argument('--image-height', type=int, default=480,
@@ -542,6 +568,8 @@ def main():
             image_height = camera_config.get("image_height", args.image_height)
             # Allow per-camera publish_rate override from config, fallback to command line arg
             camera_publish_rate = camera_config.get("publish_rate", args.publish_rate)
+            # Allow per-camera start_delay_ms override from config, fallback to command line arg
+            camera_start_delay_ms = camera_config.get("start_delay_ms", args.start_delay_ms)
             
             # Get base_frame and camera_frame from config
             base_frame = camera_config.get("base_frame", config_data.get("base_frame", "base_link"))
@@ -557,7 +585,7 @@ def main():
                 depth_topic=depth_topic,
                 camera_info_topic=camera_info_topic,
                 publish_rate=camera_publish_rate,
-                delay_ms=args.delay_ms,
+                start_delay_ms=camera_start_delay_ms,
                 image_width=image_width,
                 image_height=image_height,
                 use_sim_time=args.use_sim_time,
@@ -577,7 +605,7 @@ def main():
         
         print(f"\n✅ Started {len(publishers)} fake camera publisher(s)")
         print(f"   Default publishing rate: {args.publish_rate} Hz (can be overridden per camera in config)")
-        print(f"   Delay: {args.delay_ms} ms")
+        print(f"   Default start delay: {args.start_delay_ms} ms (can be overridden per camera in config)")
         print(f"   Default image size: {args.image_width}x{args.image_height}")
         print(f"   Use sim time: {args.use_sim_time}")
         print(f"   Empty image mode: {args.empty_image}")
@@ -587,7 +615,8 @@ def main():
         print(f"   Strategy: Static images (pre-loaded and pre-serialized)")
         print("\nCamera configurations:")
         for publisher in publishers:
-            print(f"   - {publisher.camera_id}: {publisher.publish_rate} Hz")
+            delay_info = f" (delay: {publisher.start_delay_ms} ms)" if publisher.start_delay_ms > 0 else ""
+            print(f"   - {publisher.camera_id}: {publisher.publish_rate} Hz{delay_info}")
         print("\nPress Ctrl+C to stop...\n")
         
         # Spin all publishers

@@ -113,6 +113,13 @@ class FrankaRobot(BaseRobot):
         self._robot_state_snapshot: Optional[Tuple[RobotState, int]] = None  # (msg, received_time_ns)
         
         # State cache for timestamp-based lookup
+        # Cache size: 100 states = ~2 seconds at 50Hz
+        # Rationale:
+        # - Robot state publishes at 50Hz (every 20ms)
+        # - Tolerance is 200ms, max observed diff is ~250ms
+        # - With 100ms safety buffer: need ~350ms = ~18 states
+        # - 100 states provides ~2 seconds coverage, which is more than sufficient
+        #   (camera timestamps should be within milliseconds of robot state, not seconds)
         self._state_cache: deque = deque(maxlen=100)
         self._state_cache_lock = threading.Lock()
         self._cache_timestamps_ns: np.ndarray = np.zeros(100, dtype=np.int64)
@@ -266,9 +273,12 @@ class FrankaRobot(BaseRobot):
         # Add to cache for timestamp-based lookup
         with self._state_cache_lock:
             self._state_cache.append((pub_timestamp_ns, msg, received_time_ns))
+            # Update timestamps array: always rebuild from current cache state
+            # This ensures array stays in sync with deque (handles automatic eviction)
             cache_len = len(self._state_cache)
-            if cache_len <= len(self._cache_timestamps_ns):
-                self._cache_timestamps_ns[cache_len - 1] = pub_timestamp_ns
+            for i, (ts, _, _) in enumerate(self._state_cache):
+                if i < len(self._cache_timestamps_ns):
+                    self._cache_timestamps_ns[i] = ts
     
     def _wait_for_state(self, timeout: float = 5.0):
         """Wait for initial state to be received."""
@@ -431,7 +441,7 @@ class FrankaRobot(BaseRobot):
     def get_robot_state_for_timestamp(
         self, 
         timestamp_ns: int,
-        max_time_diff_ns: int = 100_000_000  # 100ms default tolerance
+        max_time_diff_ns: int = 200_000_000  # 200ms default tolerance (increased from 100ms)
     ) -> Tuple[Dict[str, Any], Dict[str, Any], int]:
         """
         Get the robot state closest to a given timestamp from the cache.
@@ -442,7 +452,7 @@ class FrankaRobot(BaseRobot):
         
         Args:
             timestamp_ns: Target timestamp in nanoseconds
-            max_time_diff_ns: Maximum allowed time difference in nanoseconds (default: 100ms)
+            max_time_diff_ns: Maximum allowed time difference in nanoseconds (default: 200ms)
                              If no state is within this range, returns current state.
         
         Returns:
@@ -455,6 +465,8 @@ class FrankaRobot(BaseRobot):
             - Uses numpy argmin for O(1) lookup (no for loop)
             - Falls back to get_robot_state() if cache is empty or no match within tolerance
             - The cache stores the last 100 states (~2 seconds at 50Hz)
+            - This is sufficient since camera timestamps should be within milliseconds of robot state,
+              not seconds apart
         """
         with self._state_cache_lock:
             cache_len = len(self._state_cache)
@@ -463,6 +475,12 @@ class FrankaRobot(BaseRobot):
                 # Fallback: return current state
                 state_dict, timestamp_dict = self.get_robot_state()
                 return state_dict, timestamp_dict, 0
+            
+            # Rebuild timestamps array from current cache state (ensures sync with deque)
+            # This handles the case where deque has evicted old entries
+            for i, (ts, _, _) in enumerate(self._state_cache):
+                if i < len(self._cache_timestamps_ns):
+                    self._cache_timestamps_ns[i] = ts
             
             # Use numpy for O(1) argmin lookup (avoid for loop)
             timestamps = self._cache_timestamps_ns[:cache_len]
@@ -476,7 +494,7 @@ class FrankaRobot(BaseRobot):
                 self._node.get_logger().warn(
                     f"get_robot_state_for_timestamp: No cached state within {max_time_diff_ns / 1e6:.1f} ms "
                     f"of requested timestamp {timestamp_ns} ns (closest diff {best_diff / 1e6:.1f} ms). "
-                    "Returning current state instead."
+                    f"Cache size: {cache_len}, returning current state instead."
                 )
                 return state_dict, timestamp_dict, int(best_diff)
             
