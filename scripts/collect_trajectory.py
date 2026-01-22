@@ -33,10 +33,12 @@ import os
 import signal
 import time
 import traceback
+import threading
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict
 
 import numpy as np
+import cv2
 import rclpy
 from rclpy.node import Node
 
@@ -46,8 +48,372 @@ from role_ros2.trajectory_utils.trajectory_writer import TrajectoryWriter
 from role_ros2.misc.ros2_utils import get_ros_time_ns
 
 
+# Version number (fixed, cannot be adjusted)
+VERSION = "1.0"
+
 # Long press duration threshold (seconds)
 LONG_PRESS_THRESHOLD = 0.5
+
+
+class TrajectoryGUI:
+    """
+    GUI for trajectory collection with input dialog, introduction, and camera display.
+    
+    Uses thread-safe image dictionary for communication with main control loop.
+    """
+    
+    def __init__(self, image_dict: Dict, image_lock: threading.Lock):
+        """
+        Initialize GUI.
+        
+        Args:
+            image_dict: Thread-safe dictionary to store camera images
+            image_lock: Lock for thread-safe access to image_dict
+        """
+        self.image_dict = image_dict
+        self.image_lock = image_lock
+        self.task_name = None
+        self.user = None
+        self.scene = None
+        self.save_images = True
+        self.save_depths = False
+        self.gui_ready = False
+        self.recording_active = False
+        
+        # GUI state
+        self.root = None
+        self.current_frame = None
+        self.camera_labels = {}
+        
+        # Start GUI thread
+        self.gui_thread = threading.Thread(target=self._run_gui, daemon=True)
+        self.gui_thread.start()
+    
+    def _run_gui(self):
+        """Run GUI in separate thread."""
+        try:
+            import tkinter as tk
+            from tkinter import ttk, messagebox
+            
+            self.tk = tk
+            self.ttk = ttk
+            self.messagebox = messagebox
+            
+            self.root = tk.Tk()
+            self.root.title("Trajectory Collection")
+            self.root.geometry("800x600")
+            
+            # Hide main window initially (will show after input dialog)
+            self.root.withdraw()
+            
+            # Show input dialog first (modal)
+            self._show_input_dialog()
+            
+            # Show main window after dialog is confirmed
+            self.root.deiconify()
+            
+            # Start GUI main loop
+            self.root.mainloop()
+        except Exception as e:
+            print(f"GUI Error: {e}\n{traceback.format_exc()}")
+    
+    def _show_input_dialog(self):
+        """Show input dialog for task name, user, scene and save options."""
+        # Create dialog as top-level window (not child of root since root is hidden)
+        dialog = self.tk.Toplevel(self.root)
+        dialog.title("Trajectory Collection Setup")
+        dialog.geometry("500x450")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.focus_set()
+        
+        # Center the dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (500 // 2)
+        y = (dialog.winfo_screenheight() // 2) - (450 // 2)
+        dialog.geometry(f"500x450+{x}+{y}")
+        
+        # User input
+        self.tk.Label(dialog, text="User:", font=("Arial", 12)).pack(pady=5)
+        user_entry = self.tk.Entry(dialog, font=("Arial", 12), width=30)
+        user_entry.insert(0, "superman")  # Default value
+        user_entry.pack(pady=5)
+        
+        # Scene input
+        self.tk.Label(dialog, text="Scene:", font=("Arial", 12)).pack(pady=5)
+        scene_entry = self.tk.Entry(dialog, font=("Arial", 12), width=30)
+        scene_entry.insert(0, "franka_irobman")  # Default value
+        scene_entry.pack(pady=5)
+        
+        # Task name input
+        self.tk.Label(dialog, text="Task Name:", font=("Arial", 12)).pack(pady=5)
+        task_entry = self.tk.Entry(dialog, font=("Arial", 12), width=30)
+        task_entry.pack(pady=5)
+        task_entry.focus()
+        
+        # Save images checkbox
+        save_images_var = self.tk.BooleanVar(value=True)
+        save_images_check = self.tk.Checkbutton(
+            dialog, 
+            text="Save Images (RGB)", 
+            variable=save_images_var,
+            font=("Arial", 11)
+        )
+        save_images_check.pack(pady=5)
+        
+        # Save depths checkbox
+        save_depths_var = self.tk.BooleanVar(value=False)
+        save_depths_check = self.tk.Checkbutton(
+            dialog, 
+            text="Save Depths", 
+            variable=save_depths_var,
+            font=("Arial", 11)
+        )
+        save_depths_check.pack(pady=5)
+        
+        def confirm():
+            task_name = task_entry.get().strip()
+            if not task_name:
+                self.messagebox.showwarning("Warning", "Please enter a task name")
+                return
+            
+            self.task_name = task_name
+            self.user = user_entry.get().strip() or "superman"
+            self.scene = scene_entry.get().strip() or "franka_irobman"
+            self.save_images = save_images_var.get()
+            self.save_depths = save_depths_var.get()
+            dialog.destroy()
+            self._show_introduction()
+        
+        # Confirm button
+        confirm_btn = self.tk.Button(
+            dialog, 
+            text="Confirm", 
+            command=confirm,
+            font=("Arial", 12),
+            bg="#4CAF50",
+            fg="white",
+            padx=20,
+            pady=5
+        )
+        confirm_btn.pack(pady=20)
+        
+        # Bind Enter key
+        task_entry.bind('<Return>', lambda e: confirm())
+    
+    def _show_introduction(self):
+        """Show introduction screen."""
+        # Clear root window
+        for widget in self.root.winfo_children():
+            widget.destroy()
+        
+        # Introduction text
+        intro_frame = self.tk.Frame(self.root, padx=20, pady=20)
+        intro_frame.pack(fill=self.tk.BOTH, expand=True)
+        
+        title = self.tk.Label(
+            intro_frame,
+            text="Trajectory Collection",
+            font=("Arial", 24, "bold"),
+            fg="#2196F3"
+        )
+        title.pack(pady=20)
+        
+        instructions = """
+CONTROL INSTRUCTIONS:
+
+🎮 Hold GRIP button      → Start recording & move robot
+✅ Long press A/X (0.5s)  → SUCCESS: Save & Reset
+❌ Long press B/Y (0.5s)  → FAILURE: Discard & Reset
+🛑 Ctrl+C                → Exit program
+
+User: {user}
+Scene: {scene}
+Task: {task_name}
+Save Images: {save_images}
+Save Depths: {save_depths}
+
+Click 'Start Recording' when ready to begin.
+        """.format(
+            user=self.user or "superman",
+            scene=self.scene or "franka_irobman",
+            task_name=self.task_name,
+            save_images="Yes" if self.save_images else "No",
+            save_depths="Yes" if self.save_depths else "No"
+        )
+        
+        text_label = self.tk.Label(
+            intro_frame,
+            text=instructions,
+            font=("Arial", 12),
+            justify=self.tk.LEFT
+        )
+        text_label.pack(pady=20)
+        
+        def start_recording():
+            self.recording_active = True
+            self.gui_ready = True
+            self._show_camera_display()
+        
+        start_btn = self.tk.Button(
+            intro_frame,
+            text="Start Recording",
+            command=start_recording,
+            font=("Arial", 14, "bold"),
+            bg="#4CAF50",
+            fg="white",
+            padx=30,
+            pady=10
+        )
+        start_btn.pack(pady=20)
+    
+    def _show_camera_display(self):
+        """Show camera display screen."""
+        # Clear root window
+        for widget in self.root.winfo_children():
+            widget.destroy()
+        
+        # Main frame
+        main_frame = self.tk.Frame(self.root)
+        main_frame.pack(fill=self.tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Status bar
+        status_frame = self.tk.Frame(main_frame)
+        status_frame.pack(fill=self.tk.X, pady=5)
+        
+        self.status_label = self.tk.Label(
+            status_frame,
+            text="Status: Waiting for recording to start...",
+            font=("Arial", 12),
+            anchor="w"
+        )
+        self.status_label.pack(side=self.tk.LEFT)
+        
+        # Camera display frame
+        self.camera_frame = self.tk.Frame(main_frame, bg="black")
+        self.camera_frame.pack(fill=self.tk.BOTH, expand=True)
+        
+        # Initialize camera labels (will be created dynamically)
+        self.camera_labels = {}
+        self.current_frame = None
+        
+        # Start update loop
+        self._update_camera_display()
+    
+    def _update_camera_display(self):
+        """Update camera display with latest images."""
+        if not self.root or not self.recording_active:
+            return
+        
+        try:
+            # Get latest images with lock
+            with self.image_lock:
+                images = self.image_dict.copy()
+            
+            # Update status
+            if images:
+                status_text = f"Status: Recording - {len(images)} camera(s) active"
+            else:
+                status_text = "Status: Waiting for camera data..."
+            
+            if hasattr(self, 'status_label'):
+                self.status_label.config(text=status_text)
+            
+            # Update camera displays
+            if images:
+                # Create or clear current frame
+                if self.current_frame is None:
+                    self.current_frame = self.tk.Frame(self.camera_frame)
+                    self.current_frame.pack(fill=self.tk.BOTH, expand=True)
+                else:
+                    # Clear existing labels
+                    for widget in self.current_frame.winfo_children():
+                        widget.destroy()
+                
+                # Create grid layout for cameras
+                num_cameras = len(images)
+                cols = 2 if num_cameras > 1 else 1
+                rows = (num_cameras + cols - 1) // cols
+                
+                for idx, (camera_id, img) in enumerate(images.items()):
+                    if img is None:
+                        continue
+                    
+                    # Resize image for display (max 400x300)
+                    display_img = img.copy()
+                    h, w = display_img.shape[:2]
+                    max_w, max_h = 400, 300
+                    
+                    if w > max_w or h > max_h:
+                        scale = min(max_w / w, max_h / h)
+                        new_w, new_h = int(w * scale), int(h * scale)
+                        display_img = cv2.resize(display_img, (new_w, new_h))
+                    
+                    # Convert BGR to RGB for tkinter
+                    display_img_rgb = cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB)
+                    
+                    # Convert to PhotoImage
+                    try:
+                        from PIL import Image, ImageTk
+                        pil_img = Image.fromarray(display_img_rgb)
+                        photo = ImageTk.PhotoImage(image=pil_img)
+                    except ImportError:
+                        # Fallback if PIL not available
+                        continue
+                    
+                    # Create label frame
+                    label_frame = self.tk.Frame(self.current_frame)
+                    label_frame.grid(row=idx // cols, column=idx % cols, padx=5, pady=5)
+                    
+                    camera_name_label = self.tk.Label(
+                        label_frame,
+                        text=f"Camera: {camera_id}",
+                        font=("Arial", 10, "bold"),
+                        bg="black",
+                        fg="white"
+                    )
+                    camera_name_label.pack()
+                    
+                    img_label = self.tk.Label(label_frame, image=photo, bg="black")
+                    img_label.pack()
+                    img_label.image = photo  # Keep a reference
+                    
+                    self.camera_labels[camera_id] = {
+                        'frame': label_frame,
+                        'name_label': camera_name_label,
+                        'img_label': img_label
+                    }
+            
+        except Exception as e:
+            print(f"GUI update error: {e}")
+        
+        # Schedule next update (30 FPS)
+        if self.root:
+            self.root.after(33, self._update_camera_display)
+    
+    def wait_for_ready(self):
+        """Wait for GUI to be ready (user confirmed input)."""
+        while not self.gui_ready:
+            time.sleep(0.1)
+    
+    def get_task_config(self):
+        """Get task configuration from GUI."""
+        return {
+            'task_name': self.task_name,
+            'user': self.user,
+            'scene': self.scene,
+            'save_images': self.save_images,
+            'save_depths': self.save_depths
+        }
+    
+    def shutdown(self):
+        """Shutdown GUI."""
+        if self.root:
+            try:
+                self.root.quit()
+                self.root.destroy()
+            except Exception:
+                pass
 
 
 class CollectTrajectory:
@@ -74,6 +440,8 @@ class CollectTrajectory:
         # Parse arguments
         self.save_folder = args.save_folder
         self.task_name = args.task
+        self.user = args.user
+        self.scene = args.scene
         self.action_space = args.action_space
         self.control_hz = args.control_hz
         self.reset_robot_on_start = args.reset_robot
@@ -83,19 +451,55 @@ class CollectTrajectory:
         self.save_depths = args.save_depths
         self.right_controller = args.right_controller
         self.horizon = None if args.horizon <= 0 else args.horizon
+        self.enable_viz = args.viz
+        
+        # GUI setup (if enabled)
+        self.gui = None
+        self.image_dict = {}
+        self.image_lock = threading.Lock()
+        
+        if self.enable_viz:
+            self.gui = TrajectoryGUI(self.image_dict, self.image_lock)
+            # Wait for GUI input
+            self.gui.wait_for_ready()
+            # Get task config from GUI
+            gui_config = self.gui.get_task_config()
+            if not self.task_name:
+                self.task_name = gui_config['task_name']
+            if not self.user:
+                self.user = gui_config.get('user', 'superman')
+            if not self.scene:
+                self.scene = gui_config.get('scene', 'franka_irobman')
+            if not args.save_images:  # Only override if not explicitly set
+                self.save_images = gui_config['save_images']
+            if not args.save_depths:  # Only override if not explicitly set
+                self.save_depths = gui_config['save_depths']
+        
+        # Set defaults if not provided
+        if not self.user:
+            self.user = "superman"
+        if not self.scene:
+            self.scene = "franka_irobman"
         
         # Validate: save_depths requires save_images
         if self.save_depths and not self.save_images:
             raise ValueError("--save-depths requires --save-images. Cannot save depth without images.")
         
-        # Build save_folder: if task is provided, automatically enable saving
+        # Build save_folder structure: success/failure folders (like droid)
+        # Auto-enable saving when task is provided
         if self.task_name:
-            self.save_folder = os.path.join(self.save_folder, self.task_name)
-            self.save_trajectory = True  # Auto-enable saving when task is provided
+            self.save_trajectory = True
+            # Create success and failure directories
+            self.success_logdir = os.path.join(self.save_folder, "success")
+            self.failure_logdir = os.path.join(self.save_folder, "failure")
+            os.makedirs(self.success_logdir, exist_ok=True)
+            os.makedirs(self.failure_logdir, exist_ok=True)
         else:
             self.save_folder = ''
             self.task_name = None
             self.save_trajectory = False  # No saving if no task
+            self.success_logdir = None
+            self.failure_logdir = None
         
         # State variables
         self._num_steps = 0
@@ -210,16 +614,25 @@ class CollectTrajectory:
         
         # Create trajectory writer if task is provided (auto-enable saving)
         if self.save_trajectory and self.save_folder:
-            # Ensure save folder exists
-            os.makedirs(self.save_folder, exist_ok=True)
+            # Generate time string (like droid: time.asctime().replace(" ", "_"))
+            time_str = time.asctime().replace(" ", "_")
             
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self._current_traj_filepath = os.path.join(
-                self.save_folder, f"trajectory_{timestamp}.h5"
-            )
+            # Save to failure folder initially (will be moved to success if successful)
+            traj_dir = os.path.join(self.failure_logdir, time_str)
+            os.makedirs(traj_dir, exist_ok=True)
             
-            # Build metadata
-            metadata = {"trajectory_id": self._traj_count}
+            self._current_traj_filepath = os.path.join(traj_dir, "trajectory.h5")
+            self._current_traj_dir = traj_dir
+            self._current_time_str = time_str
+            
+            # Build metadata (like droid)
+            metadata = {
+                "trajectory_id": self._traj_count,
+                "time": time_str,
+                "user": self.user,
+                "scene": self.scene,
+                "version": VERSION,
+            }
             if self.task_name:
                 metadata["task_name"] = self.task_name
             
@@ -233,6 +646,8 @@ class CollectTrajectory:
         else:
             self._traj_writer = None
             self._current_traj_filepath = None
+            self._current_traj_dir = None
+            self._current_time_str = None
             self._print(f"🎮 Trajectory #{self._traj_count} (teleoperation only)")
     
     def _check_long_press(self, controller_info: dict) -> tuple:
@@ -317,6 +732,16 @@ class CollectTrajectory:
                 obs["timestamp"] = {}
             obs["timestamp"]["skip_action"] = skip_action
             
+            # Update GUI images (if enabled)
+            if self.enable_viz and self.gui and self.gui.recording_active:
+                with self.image_lock:
+                    # Copy camera images for GUI
+                    if "image" in obs:
+                        self.image_dict.clear()
+                        for camera_id, img in obs["image"].items():
+                            if img is not None:
+                                self.image_dict[camera_id] = img.copy()
+            
             # Get Action
             control_timestamps["policy_start"] = get_ros_time_ns(self._node)
             action, controller_action_info = self.controller.forward(obs, include_info=True)
@@ -367,10 +792,21 @@ class CollectTrajectory:
         self._print(f"✅ Trajectory #{self._traj_count} SUCCESS")
         self._print(f"   Total steps: {self._num_steps}")
         
-        # Close and save trajectory
+        # Close and save trajectory (like droid: both success and failure in metadata)
         if self._traj_writer is not None:
             self._traj_writer.close(metadata={"success": True, "failure": False})
-            self._print(f"💾 Saved: {self._current_traj_filepath}")
+            
+            # Move from failure folder to success folder (like droid)
+            if self._current_traj_dir and os.path.exists(self._current_traj_dir):
+                new_traj_dir = os.path.join(self.success_logdir, self._current_time_str)
+                try:
+                    os.rename(self._current_traj_dir, new_traj_dir)
+                    self._print(f"💾 Saved: {os.path.join(new_traj_dir, 'trajectory.h5')}")
+                except Exception as e:
+                    self._print(f"⚠️ Failed to move trajectory to success folder: {e}")
+                    self._print(f"💾 Saved: {self._current_traj_filepath}")
+            else:
+                self._print(f"💾 Saved: {self._current_traj_filepath}")
         
         self._print("=" * 70)
         
@@ -389,27 +825,20 @@ class CollectTrajectory:
         self._print("⏸️  Hold GRIP button to start recording...")
     
     def _handle_trajectory_failure(self):
-        """Handle failed trajectory - DISCARD and reset robot."""
+        """Handle failed trajectory - SAVE to failure folder and reset robot."""
         self._print("")
         self._print("=" * 70)
         self._print(f"❌ Trajectory #{self._traj_count} FAILURE")
         self._print(f"   Total steps: {self._num_steps}")
         
-        # Discard trajectory (close without saving, delete file)
+        # Save trajectory to failure folder (like droid: both success and failure in metadata)
         if self._traj_writer is not None:
-            # Close the writer first
             try:
                 self._traj_writer.close(metadata={"success": False, "failure": True})
-            except Exception:
-                pass
-            
-            # Delete the file
-            if self._current_traj_filepath and os.path.exists(self._current_traj_filepath):
-                try:
-                    os.remove(self._current_traj_filepath)
-                    self._print(f"🗑️ Discarded: {self._current_traj_filepath}")
-                except Exception as e:
-                    self._print(f"Failed to delete trajectory file: {e}")
+                # Trajectory is already in failure folder, no need to move
+                self._print(f"💾 Saved to failure folder: {self._current_traj_filepath}")
+            except Exception as e:
+                self._print(f"⚠️ Failed to close trajectory writer: {e}")
         
         self._print("=" * 70)
         
@@ -430,6 +859,10 @@ class CollectTrajectory:
     def shutdown(self):
         """Clean shutdown."""
         self._shutdown_requested = True
+        
+        # Shutdown GUI
+        if self.gui:
+            self.gui.shutdown()
         
         # Close trajectory writer if open
         if self._traj_writer is not None:
@@ -482,7 +915,19 @@ Examples:
         '--task',
         type=str,
         default='',
-        help='Task name. If provided, automatically enables saving to save_folder/task_name/'
+        help='Task name. If provided, automatically enables saving to save_folder/success|failure/time/trajectory.h5'
+    )
+    parser.add_argument(
+        '--user',
+        type=str,
+        default='superman',
+        help='User name for metadata (default: superman)'
+    )
+    parser.add_argument(
+        '--scene',
+        type=str,
+        default='franka_irobman',
+        help='Scene name for metadata (default: franka_irobman)'
     )
     parser.add_argument(
         '--save-images',
@@ -561,6 +1006,13 @@ Examples:
         type=int,
         default=-1,
         help='Maximum steps per trajectory (-1 for unlimited, default: -1)'
+    )
+    
+    # Visualization settings
+    parser.add_argument(
+        '--viz',
+        action='store_true',
+        help='Enable GUI visualization with camera display'
     )
     
     return parser.parse_args()

@@ -82,9 +82,9 @@ class ROS2CameraReader:
         # Thread-safe storage for raw messages (lazy decoding)
         # Queue stores: {timestamp_ns: (camera_info_msg, rgb_msg, depth_msg, sub_t_ns)}
         self._raw_data_queue: Dict[int, Tuple[CameraInfo, Image, Image, int]] = {}
-        self._timestamp_order: deque = deque(maxlen=100)
+        self._timestamp_order: deque = deque(maxlen=15)
         self._data_lock = threading.Lock()
-        self._queue_max_size = 100
+        self._queue_max_size = 15
         
         # Cache for decoded data to avoid re-decoding
         self._decoded_cache: Dict[int, Tuple[Dict, Dict]] = {}
@@ -113,7 +113,7 @@ class ROS2CameraReader:
         self._cached_static_extrinsic: Optional[np.ndarray] = None  # Cache for static TF
         self._is_static_tf: Optional[bool] = None  # None=unknown, True=static, False=dynamic
         self._tf_lookup_failure_count: int = 0
-        self._tf_lookup_max_failures: int = 10  # Stop trying after this many consecutive failures
+        self._tf_lookup_max_failures: int = 50  # Stop trying after this many consecutive failures
         self._tf_disabled: bool = False  # If True, skip TF lookup entirely
         self._tf_lookup_success_count: int = 0  # Track successful lookups to detect static TF
         
@@ -198,9 +198,17 @@ class ROS2CameraReader:
                 self._timestamp_order.append(pub_t_ns)
                 
                 # Remove oldest entries if queue exceeds max size
-                while len(self._raw_data_queue) > self._queue_max_size:
-                    if self._timestamp_order:
-                        oldest_timestamp = self._timestamp_order.popleft()
+                # Optimize: calculate how many to remove and do it in one pass
+                excess_count = len(self._raw_data_queue) - self._queue_max_size
+                if excess_count > 0:
+                    timestamps_to_remove = []
+                    for _ in range(excess_count):
+                        if self._timestamp_order:
+                            oldest_timestamp = self._timestamp_order.popleft()
+                            timestamps_to_remove.append(oldest_timestamp)
+                    
+                    # Remove from queue and cache
+                    for oldest_timestamp in timestamps_to_remove:
                         if oldest_timestamp in self._raw_data_queue:
                             del self._raw_data_queue[oldest_timestamp]
                         # Also clear decoded cache for this timestamp
@@ -212,7 +220,10 @@ class ROS2CameraReader:
             self._data_available_event.set()
             self._data_available_event.clear()
             
-            # Track callback count
+            # Track callback count (thread-safe increment)
+            # Note: In Python, += is not atomic for integers, but for simple counters
+            # this is acceptable. For strict thread safety, use a lock or atomic operation.
+            # However, this is just for logging/debugging, so minor race conditions are acceptable.
             self._callback_count += 1
             
             # Trigger event-driven callback (AFTER storing data)

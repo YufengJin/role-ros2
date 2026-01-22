@@ -44,7 +44,7 @@
     {
         "name": "Collect Trajectory",
         "container": "ros2_cu118_container",
-        "command": "cd /app/ros2_ws/src/role-ros2 && python3 scripts/collect_trajectory.py",
-        "kill_keyword": "python3 scripts/collect_trajectory.py"
+        "command": "cd /app/ros2_ws/src/role-ros2 && python3 scripts/collect_trajectory.py --viz",
+        "kill_keyword": "python3 scripts/collect_trajectory.py --viz"
     }
 ]

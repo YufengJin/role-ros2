@@ -305,21 +305,25 @@ class MultiCameraWrapper:
                 )
                 camera_timestamps[camera_id] = ts_ns
             
+            expired_requests_for_fallback = []
+            
             with self._sync_requests_lock:
                 # Create new sync request
                 self._sync_request_counter += 1
                 request_id = self._sync_request_counter
                 
-                # Clean up old requests
-                self._cleanup_old_requests(start_t_ns)
+                # Clean up old requests (returns list of expired requests for fallback)
+                expired_requests_for_fallback = self._cleanup_old_requests(start_t_ns)
                 
                 # Limit queue size
                 if len(self._pending_sync_requests) >= self._max_pending_requests:
                     oldest_id = min(self._pending_sync_requests.keys())
                     self._remove_sync_request(oldest_id)
-                    self._node.get_logger().debug(
-                        f"[MultiCamera] Request queue full, removed oldest request #{oldest_id}"
-                    )
+                    # Only format string if debug logging is enabled to avoid overhead
+                    if self._node.get_logger().get_effective_level() <= 10:  # DEBUG level
+                        self._node.get_logger().debug(
+                            f"[MultiCamera] Request queue full, removed oldest request #{oldest_id}"
+                        )
                 
                 # Create SyncRequest
                 sync_request = SyncRequest(
@@ -336,15 +340,41 @@ class MultiCameraWrapper:
                 for camera_id, ts_ns in camera_timestamps.items():
                     self._timestamp_to_request[(camera_id, ts_ns)] = request_id
                 
-                # Check if data is already available for any cameras
-                for camera_id, ts_ns in camera_timestamps.items():
-                    camera_reader = self.camera_dict.get(camera_id)
-                    if camera_reader and camera_reader.has_data_for_timestamp(ts_ns):
+                # Collect cameras to check (release lock before checking to avoid deadlock)
+                cameras_to_check = [
+                    (camera_id, ts_ns) 
+                    for camera_id, ts_ns in camera_timestamps.items()
+                ]
+            
+            # Check data availability outside lock to avoid deadlock
+            # (has_data_for_timestamp acquires _data_lock in ROS2CameraReader)
+            for camera_id, ts_ns in cameras_to_check:
+                camera_reader = self.camera_dict.get(camera_id)
+                if camera_reader and camera_reader.has_data_for_timestamp(ts_ns):
+                    # Re-acquire lock to update request state
+                    with self._sync_requests_lock:
+                        # Re-check request still exists (may have been cleaned up)
+                        if request_id not in self._pending_sync_requests:
+                            break
+                        sync_request = self._pending_sync_requests[request_id]
                         sync_request.mark_camera_ready(camera_id)
-                
-                # If all cameras already have data, process immediately
-                if sync_request.is_complete():
-                    self._process_complete_request(sync_request)
+                        
+                        # Check if all cameras ready
+                        if sync_request.is_complete():
+                            # Store reference before releasing lock
+                            sync_request_to_process = sync_request
+                        else:
+                            sync_request_to_process = None
+                    
+                    # Process outside lock to avoid deadlock
+                    # (_process_complete_request calls get_data_for_timestamp which needs _data_lock)
+                    if sync_request_to_process is not None:
+                        self._process_complete_request(sync_request_to_process)
+                        break
+            
+            # Process fallbacks for expired requests (outside lock to avoid deadlock)
+            for expired_sync_request in expired_requests_for_fallback:
+                self._try_fallback_for_request(expired_sync_request, start_t_ns)
                     
         except Exception as e:
             self._node.get_logger().error(f"Error in multi-camera sync callback: {e}")
@@ -363,6 +393,8 @@ class MultiCameraWrapper:
             timestamp_ns: Timestamp of the received data
         """
         try:
+            sync_request_to_process = None
+            
             with self._sync_requests_lock:
                 # Look up request by (camera_id, timestamp)
                 request_id = self._timestamp_to_request.get((camera_id, timestamp_ns))
@@ -376,8 +408,14 @@ class MultiCameraWrapper:
                 
                 # Mark this camera as ready
                 if sync_request.mark_camera_ready(camera_id):
-                    # All cameras ready - process immediately!
-                    self._process_complete_request(sync_request)
+                    # All cameras ready - store reference before releasing lock
+                    # Process outside lock to avoid deadlock
+                    # (_process_complete_request calls get_data_for_timestamp which needs _data_lock)
+                    sync_request_to_process = sync_request
+            
+            # Process outside lock to avoid deadlock
+            if sync_request_to_process is not None:
+                self._process_complete_request(sync_request_to_process)
                     
         except Exception as e:
             self._node.get_logger().error(
@@ -388,7 +426,8 @@ class MultiCameraWrapper:
         """
         Process a completed sync request and update synchronized data.
         
-        Must be called with _sync_requests_lock held.
+        Must be called WITHOUT _sync_requests_lock held to avoid deadlock.
+        This method calls get_data_for_timestamp which needs _data_lock in ROS2CameraReader.
         
         Args:
             sync_request: The completed SyncRequest
@@ -463,7 +502,7 @@ class MultiCameraWrapper:
             for camera_id, ts_ns in sync_request.camera_timestamps.items():
                 self._timestamp_to_request.pop((camera_id, ts_ns), None)
     
-    def _cleanup_old_requests(self, current_time_ns: int) -> None:
+    def _cleanup_old_requests(self, current_time_ns: int) -> List:
         """
         Clean up sync requests that have timed out.
         
@@ -471,19 +510,24 @@ class MultiCameraWrapper:
         
         Args:
             current_time_ns: Current time in nanoseconds
+        
+        Returns:
+            List of expired SyncRequest objects for fallback processing (outside lock)
         """
-        expired_ids = []
+        # Optimize: collect expired requests in one pass
+        expired_requests = []
         for request_id, sync_request in self._pending_sync_requests.items():
             age_ns = current_time_ns - sync_request.created_time_ns
             if age_ns > self._max_request_age_ns:
-                expired_ids.append(request_id)
+                expired_requests.append((request_id, sync_request))
         
-        for request_id in expired_ids:
-            sync_request = self._pending_sync_requests.get(request_id)
-            if sync_request:
-                # Try fallback: use latest data from each camera
-                self._try_fallback_for_request(sync_request, current_time_ns)
+        # Remove expired requests from tracking (while holding lock)
+        for request_id, _ in expired_requests:
             self._remove_sync_request(request_id)
+        
+        # Return expired requests for fallback processing outside lock
+        # (_try_fallback_for_request calls get_data_for_timestamp which needs _data_lock)
+        return [sync_request for _, sync_request in expired_requests]
     
     def _try_fallback_for_request(
         self,
@@ -493,7 +537,8 @@ class MultiCameraWrapper:
         """
         Try to use latest available data when a sync request times out.
         
-        Must be called with _sync_requests_lock held.
+        Should be called WITHOUT _sync_requests_lock held to avoid deadlock.
+        This method calls get_data_for_timestamp which needs _data_lock.
         
         Args:
             sync_request: The timed-out SyncRequest
