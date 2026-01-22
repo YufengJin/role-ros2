@@ -24,6 +24,10 @@ global_sync:
 #   - base_frame: Overrides global base_frame (default: uses global base_frame)
 #   - camera_frame: Camera frame name for TF lookup (optional)
 #   - queue_size: Queue size for TimeSynchronizer (default: uses global queue_size)
+#   - publish_rate: Publishing rate in Hz for fake camera publisher (default: 30.0)
+#   - start_delay_ms: Start delay in milliseconds before first publish (default: 0.0).
+#                     This allows camera B to start publishing after camera A with a delay,
+#                     while both maintain fixed FPS.
 # Note: slop parameter is deprecated for Layer 1 (TimeSynchronizer uses exact timestamp matching)
 cameras:
   # Hand Camera (mounted on gripper)
@@ -37,6 +41,8 @@ cameras:
     camera_base_parent_frame: "fr3_panda_link8"  # parent frame of camera_base_frame for calibration
     base_frame: "base_link"  # Optional: overrides global base_frame
     queue_size: 10  # Optional: queue size for TimeSynchronizer
+    publish_rate: 30.0  # Optional: publishing rate in Hz for fake camera publisher
+    start_delay_ms: 0.0  # Optional: start delay in ms (camera A starts immediately)
     
   # Static Camera (fixed position)
   - camera_id: "24285872"  # Serial number or identifier
@@ -49,7 +55,24 @@ cameras:
     camera_base_parent_frame: "base_link"   # parent frame of camera_base_frame for calibration
     base_frame: "base_link"  # Optional: overrides global base_frame
     queue_size: 10  # Optional: queue size for TimeSynchronizer
-    
+    publish_rate: 30.0  # Optional: publishing rate in Hz for fake camera publisher
+    start_delay_ms: 0.0  # Optional: start delay in ms (camera B starts 10ms after camera A)   start_delay_ms: 10.0  # Optional: start delay in ms (camera B starts 10ms after camera A)
+
+   # Static Camera 2 (fixed position) fake camera publisher
+  # - camera_id: "24285877"  # Serial number or identifier
+  #   calibration_mode: "third" # "hand" or "third"
+  #   rgb_topic: "/static_camera2/zed_node/rgb/image_rect_color"
+  #   depth_topic: "/static_camera2/zed_node/depth/depth_registered"
+  #   camera_info_topic: "/static_camera2/zed_node/rgb/camera_info"
+  #   camera_frame: "static_camera2_left_camera_optical_frame"  # Optional: for TF lookup
+  #   camera_base_frame: "static_camera2_camera_link"
+  #   camera_base_parent_frame: "base_link"   # parent frame of camera_base_frame for calibration
+  #   base_frame: "base_link"  # Optional: overrides global base_frame
+  #   queue_size: 10  # Optional: queue size for TimeSynchronizer
+  #   publish_rate: 30.0  # Optional: publishing rate in Hz for fake camera publisher
+  #   start_delay_ms: 0  # Optional: start delay in ms (camera B starts 5ms after camera A)
+  
+  
   # Hand Camera (mounted on gripper) - RealSense D435i
   # - camera_id: "336222076118"  # Serial number or identifier
   #   rgb_topic: "/realsense_node/hand_camera/color/image_raw"
