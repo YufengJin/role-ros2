@@ -18,17 +18,18 @@ except ImportError:
     ROS2_AVAILABLE = False
 
 
-def get_package_config_path(config_file: str, package_name: str = "role_ros2") -> Path:
+def get_package_config_path(config_file: str, package_name: str = "role_ros2", use_source: bool = True) -> Path:
     """
-    Get path to configuration file in ROS2 package config/ directory.
+    Get path to configuration file in config/ directory.
     
-    This function tries to find the config file through ROS2 package system first.
-    If ROS2 is not available (e.g., when running Python code directly), it falls
-    back to finding the file relative to the workspace root.
+    By default (use_source=True), this function prioritizes the source directory
+    over the ROS2 package install directory. This ensures that configuration files
+    are read from and written to the source directory, not the install directory.
     
     Args:
         config_file: Configuration file name (e.g., 'multi_camera_config.yaml')
         package_name: ROS2 package name (default: 'role_ros2')
+        use_source: If True, prioritize source directory over install directory (default: True)
     
     Returns:
         Path to configuration file
@@ -36,6 +37,14 @@ def get_package_config_path(config_file: str, package_name: str = "role_ros2") -
     Raises:
         FileNotFoundError: If config file cannot be found
     """
+    # If use_source is True, try source directory first
+    source_path = None
+    if use_source:
+        source_path = get_source_config_path(config_file)
+        if source_path.exists():
+            return source_path
+    
+    # Fallback: try ROS2 package install directory (for backward compatibility)
     if ROS2_AVAILABLE:
         try:
             package_share_dir = get_package_share_directory(package_name)
@@ -46,15 +55,17 @@ def get_package_config_path(config_file: str, package_name: str = "role_ros2") -
             # Fall through to fallback method
             pass
     
-    # Fallback: try to find relative to workspace root
-    # This works when running Python code directly (not through ROS2)
-    current_file = Path(__file__)
-    # role_ros2/config_loader.py -> role_ros2/ -> workspace root
+    # Final fallback: try to find relative to workspace root (when running from source)
+    current_file = Path(__file__).resolve()
     workspace_root = current_file.parent.parent
     config_path = workspace_root / "config" / config_file
     
     if config_path.exists():
         return config_path
+    
+    # If use_source is True and file doesn't exist, return source path anyway (for writing)
+    if use_source and source_path is not None:
+        return source_path
     
     # Build error message
     error_msg = f"Config file not found: {config_file}.\n"
@@ -99,16 +110,50 @@ def get_source_config_path(config_file: str) -> Path:
     regardless of ROS2 installation. Use this for writing files that should
     be saved in the source directory (e.g., calibration results).
     
+    The function tries multiple methods to find the source directory:
+    1. Environment variable ROLE_ROS2_SOURCE_DIR (if set)
+    2. Infer from workspace structure (install/... -> src/role-ros2/config/)
+    3. Infer from current file location (when running from source)
+    
     Args:
         config_file: Configuration file name (e.g., 'calibration_results.yaml')
     
     Returns:
         Path to configuration file in source directory
     """
-    current_file = Path(__file__)
-    # role_ros2/config_loader.py -> role_ros2/ -> workspace root
+    # Method 1: Check environment variable (highest priority)
+    if 'ROLE_ROS2_SOURCE_DIR' in os.environ:
+        source_dir = Path(os.environ['ROLE_ROS2_SOURCE_DIR'])
+        config_path = source_dir / "config" / config_file
+        if config_path.exists():
+            return config_path
+    
+    # Method 2: Try to infer from workspace structure (for Docker/install environments)
+    # Look for install directory and go up to find src/role-ros2/config/
+    current_file = Path(__file__).resolve()
+    
+    # Try to find workspace root by going up from install directory
+    # install/role_ros2/local/lib/python3.10/dist-packages/role_ros2/config_loader.py
+    # -> install -> workspace root -> src/role-ros2/config/
+    for parent in current_file.parents:
+        if parent.name == 'install':
+            # Found install directory, go up to workspace root
+            workspace_root = parent.parent
+            src_config_path = workspace_root / "src" / "role-ros2" / "config" / config_file
+            if src_config_path.exists():
+                return src_config_path
+    
+    # Method 3: Infer from current file location (when running from source)
+    # role_ros2/config_loader.py -> role_ros2/ -> workspace root -> config/
     workspace_root = current_file.parent.parent
     config_path = workspace_root / "config" / config_file
+    
+    # If file exists at this path, return it
+    if config_path.exists():
+        return config_path
+    
+    # If file doesn't exist, still return the path (for writing)
+    # This allows the function to be used for both reading and writing
     return config_path
 
 
