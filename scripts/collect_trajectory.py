@@ -127,7 +127,8 @@ class TrajectoryGUI:
             
             self.root = tk.Tk()
             self.root.title("Trajectory Collection")
-            self.root.geometry("800x600")
+            # Larger window for better image display
+            self.root.geometry("1600x900")
             
             # Bind window close event to shutdown callback (equivalent to Ctrl+C)
             def on_closing():
@@ -494,7 +495,7 @@ Click 'Start Recording' when ready to begin.
                     if img is None:
                         continue
                     
-                    # Resize image for display (max 400x300)
+                    # Resize image for display (max 800x600 for better visibility)
                     display_img = img.copy()
                     
                     # Apply horizontal flip if needed
@@ -502,7 +503,8 @@ Click 'Start Recording' when ready to begin.
                         display_img = cv2.flip(display_img, 1)  # 1 = horizontal flip
                     
                     h, w = display_img.shape[:2]
-                    max_w, max_h = 400, 300
+                    # Increased max size for better visibility (800x600 instead of 400x300)
+                    max_w, max_h = 800, 600
                     
                     if w > max_w or h > max_h:
                         scale = min(max_w / w, max_h / h)
