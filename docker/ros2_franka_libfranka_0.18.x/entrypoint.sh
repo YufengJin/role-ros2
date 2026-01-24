@@ -66,11 +66,15 @@ ensure_ros2_daemon() {
     return 1
 }
 
-# Fix git safe directory for Polymetis version detection
-git config --global --add safe.directory /opt/fairo 2>/dev/null || true
-
 # Source ROS2 Foxy
 source /opt/ros/foxy/setup.bash
+
+# Auto colcon build on startup when workspace src exists
+if [ -d "/app/ros2_ws/src" ]; then
+    echo "Running colcon build --symlink-install..." >&2
+    (cd /app/ros2_ws && colcon build --symlink-install) || \
+        echo "Warning: colcon build failed. Please run 'cd /app/ros2_ws && colcon build --symlink-install' manually" >&2
+fi
 
 # Source ROS2 workspace if it exists
 if [ -f "/app/ros2_ws/install/setup.bash" ]; then
@@ -84,31 +88,6 @@ if [ -f "/app/ros2_ws/src/role-ros2/docker/ros2_franka_libfranka_0.18.x/polymeti
     source /app/ros2_ws/src/role-ros2/docker/ros2_franka_libfranka_0.18.x/polymetis_ros2.env >/dev/null 2>&1 || \
     source /app/ros2_ws/src/role-ros2/docker/ros2_franka_libfranka_0.18.x/polymetis_ros2.env
 fi
-
-# Set Polymetis Python path
-export PYTHONPATH=/opt/fairo/polymetis/polymetis/python:/usr/lib/python3.8/site-packages:${PYTHONPATH}
-
-# Set CONDA_PREFIX for torchcontrol to find shared libraries
-export CONDA_PREFIX=/opt/fairo/polymetis/polymetis/build
-
-# Set library paths
-export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/opt/ros/foxy/lib:/opt/ros/foxy/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH}
-export LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/opt/openrobots/lib:/usr/local/lib:/opt/fairo/polymetis/polymetis/build/torch_isolation
-
-# ROS2 DDS configuration - using FastRTPS with shared memory disabled
-# This avoids SIGSEGV issues in Docker environment
-export ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
-export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
-export FASTDDS_BUILTIN_TRANSPORTS=${FASTDDS_BUILTIN_TRANSPORTS:-UDPv4}
-export ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY:-0}
-
-# ROS2 logging
-export RCUTILS_LOGGING_SEVERITY=INFO
-export RCUTILS_LOGGING_USE_STDOUT=1
-
-# Set DISPLAY environment variable to suppress GLFW X11 warnings in Docker
-# This prevents "X11: Failed to open display" warnings when running in headless mode
-export DISPLAY=${DISPLAY:-:0}
 
 # Initialize and start ROS2 daemon with robust error handling
 ensure_ros2_daemon || {
