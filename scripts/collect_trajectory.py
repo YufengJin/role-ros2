@@ -878,7 +878,6 @@ class CollectTrajectory:
             
             # Build metadata (like droid)
             metadata = {
-                "trajectory_id": self._traj_count,
                 "time": time_str,
                 "user": self.user,
                 "scene": self.scene,

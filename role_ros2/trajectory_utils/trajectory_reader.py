@@ -224,6 +224,8 @@ class TrajectoryReader:
         
         metadata = {}
         for key in self._hdf5_file.attrs.keys():
+            if key == "trajectory_id":
+                continue
             value = self._hdf5_file.attrs[key]
             metadata[key] = _convert_hdf5_value(value)
         

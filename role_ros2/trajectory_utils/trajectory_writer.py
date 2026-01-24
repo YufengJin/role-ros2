@@ -157,6 +157,7 @@ class TrajectoryWriter:
 
     def _update_metadata(self, metadata):
         """Update file metadata with type safety for HDF5/NumPy 2.0."""
+        metadata = {k: v for k, v in metadata.items() if k != "trajectory_id"}
         for key, value in metadata.items():
             # 1. Handle None (HDF5 does not support NoneType, store as string)
             if value is None:
