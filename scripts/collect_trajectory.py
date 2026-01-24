@@ -509,13 +509,12 @@ Click 'Start Recording' when ready to begin.
                         new_w, new_h = int(w * scale), int(h * scale)
                         display_img = cv2.resize(display_img, (new_w, new_h))
                     
-                    # Convert BGR to RGB for tkinter
-                    display_img_rgb = cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB)
-                    
+                    # Image from read_cameras is already RGB (ros2_camera_reader uses rgb8).
+                    # No BGR2RGB conversion needed for tkinter/PIL.
                     # Convert to PhotoImage
                     try:
                         from PIL import Image, ImageTk
-                        pil_img = Image.fromarray(display_img_rgb)
+                        pil_img = Image.fromarray(display_img)
                         photo = ImageTk.PhotoImage(image=pil_img)
                     except ImportError:
                         # Fallback if PIL not available
