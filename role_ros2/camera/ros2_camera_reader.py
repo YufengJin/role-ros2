@@ -268,28 +268,28 @@ class ROS2CameraReader:
         # Get ROS time at decode (end processing time)
         end_t_ns = get_ros_time_ns(self.node)
         
-        # Convert images
-        rgb_cv = self.cv_bridge.imgmsg_to_cv2(rgb_msg, desired_encoding='bgr8')
+        # Convert images: use rgb8 so output is RGB (trajectory_writer, label_data, imageio use RGB)
+        img_rgb = self.cv_bridge.imgmsg_to_cv2(rgb_msg, desired_encoding='rgb8')
         depth_cv = self.cv_bridge.imgmsg_to_cv2(depth_msg, desired_encoding='passthrough')
-        
+
         # Convert depth to uint16 if needed
         if depth_cv.dtype == np.float32:
             depth_cv_mm = depth_cv * 1000
             depth_cv = np.clip(depth_cv_mm, 0, 65535).astype(np.uint16)
         elif depth_cv.dtype != np.uint16:
             depth_cv = depth_cv.astype(np.uint16)
-        
+
         # Extract intrinsics from camera_info
         if len(camera_info_msg.k) == 9:
             K = np.array(camera_info_msg.k).reshape(3, 3)
         else:
             K = None
-        
+
         if len(camera_info_msg.d) > 0:
             distortion_coeffs = np.array(camera_info_msg.d)
         else:
             distortion_coeffs = None
-        
+
         intrinsics = {
             "K": K,
             "cameraMatrix": K,
@@ -297,14 +297,14 @@ class ROS2CameraReader:
             "width": camera_info_msg.width,
             "height": camera_info_msg.height
         }
-        
+
         # Update intrinsics (thread-safe)
         with self._data_lock:
             self._intrinsics = intrinsics
-        
-        # Build data_dict in droid format
+
+        # Build data_dict in droid format (image in RGB for trajectory_writer / imageio / PIL)
         data_dict = {
-            "image": {self.camera_id: rgb_cv},
+            "image": {self.camera_id: img_rgb},
             "depth": {self.camera_id: depth_cv}
         }
         

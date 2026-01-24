@@ -30,6 +30,7 @@ Author: Role-ROS2 Team
 
 import argparse
 import os
+import shutil
 import signal
 import time
 import traceback
@@ -53,6 +54,9 @@ VERSION = "1.0"
 
 # Long press duration threshold (seconds)
 LONG_PRESS_THRESHOLD = 0.5
+
+# Minimum steps to keep a failure trajectory; shorter ones are discarded as useless
+MIN_FAILURE_STEPS = 10
 
 
 class TrajectoryGUI:
@@ -865,13 +869,17 @@ class CollectTrajectory:
         
         # Create trajectory writer if task is provided (auto-enable saving)
         if self.save_trajectory and self.save_folder:
-            # Generate time string (like droid: time.asctime().replace(" ", "_"))
-            time_str = time.asctime().replace(" ", "_")
-            
-            # Save to failure folder initially (will be moved to success if successful)
-            traj_dir = os.path.join(self.failure_logdir, time_str)
+            # Base time string (like droid: time.asctime().replace(" ", "_"))
+            # Append _1, _2, ... if path exists to avoid overwriting (time.asctime has second resolution)
+            base = time.asctime().replace(" ", "_")
+            traj_dir = os.path.join(self.failure_logdir, base)
+            idx = 0
+            while os.path.exists(traj_dir):
+                idx += 1
+                traj_dir = os.path.join(self.failure_logdir, f"{base}_{idx}")
             os.makedirs(traj_dir, exist_ok=True)
-            
+            time_str = os.path.basename(traj_dir)
+
             self._current_traj_filepath = os.path.join(traj_dir, "trajectory.h5")
             self._current_traj_dir = traj_dir
             self._current_time_str = time_str
@@ -1094,8 +1102,12 @@ class CollectTrajectory:
         if self._traj_writer is not None:
             try:
                 self._traj_writer.close(metadata={"success": False, "failure": True})
-                # Trajectory is already in failure folder, no need to move
-                self._print(f"💾 Saved to failure folder: {self._current_traj_filepath}")
+                # Discard useless short failures (e.g. accidental B-press or 0-step from overwrite)
+                if self._num_steps < MIN_FAILURE_STEPS and self._current_traj_dir and os.path.isdir(self._current_traj_dir):
+                    shutil.rmtree(self._current_traj_dir)
+                    self._print(f"🗑️ Discarded short failure ({self._num_steps} steps < {MIN_FAILURE_STEPS})")
+                else:
+                    self._print(f"💾 Saved to failure folder: {self._current_traj_filepath}")
             except Exception as e:
                 self._print(f"⚠️ Failed to close trajectory writer: {e}")
         
