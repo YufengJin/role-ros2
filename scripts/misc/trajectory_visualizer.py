@@ -26,9 +26,6 @@ from matplotlib.patches import Rectangle
 from matplotlib.gridspec import GridSpec
 import matplotlib.colors as mcolors
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from role_ros2.trajectory_utils.trajectory_reader import TrajectoryReader
 
 

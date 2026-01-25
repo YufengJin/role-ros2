@@ -395,8 +395,8 @@ View and analyze structure and data of HDF5 trajectory files.
 
 **Usage**:
 ```bash
-python3 misc/hdf5_reader.py /path/to/trajectory.h5
-python3 misc/hdf5_reader.py /path/to/trajectory.h5 --show-data 0  # Show data at index 0
+python3 scripts/misc/hdf5_reader.py /path/to/trajectory.h5
+python3 scripts/misc/hdf5_reader.py /path/to/trajectory.h5 --show-data 0  # Show data at index 0
 ```
 
 #### 2. `control_analysis.py` - Control System Performance Analysis
@@ -412,8 +412,8 @@ Analyze robot control system performance metrics.
 
 **Usage**:
 ```bash
-python3 misc/control_analysis.py /path/to/trajectory.h5
-python3 misc/control_analysis.py /path/to/trajectory.h5 --dim 0  # Analyze specific dimension
+python3 scripts/misc/control_analysis.py /path/to/trajectory.h5
+python3 scripts/misc/control_analysis.py /path/to/trajectory.h5 --dim 0  # Analyze specific dimension
 ```
 
 #### 3. `trajectory_visualizer.py` - Trajectory Visualization Tool
@@ -430,7 +430,7 @@ Interactive GUI tool for visualizing robot learning trajectory data.
 
 **Usage**:
 ```bash
-python3 misc/trajectory_visualizer.py /path/to/trajectory.h5
+python3 scripts/misc/trajectory_visualizer.py /path/to/trajectory.h5
 ```
 
 #### 4. `mujoco_to_urdf.py` - MuJoCo to URDF Converter
@@ -444,7 +444,7 @@ Convert MuJoCo XML models to URDF format for ROS2 visualization.
 
 **Usage**:
 ```bash
-python3 misc/mujoco_to_urdf.py input.xml output.urdf arm_id
+python3 scripts/misc/mujoco_to_urdf.py input.xml output.urdf arm_id
 ```
 
 ## Package Structure
@@ -456,12 +456,15 @@ role-ros2/
 │   ├── collect_trajectory.py  # Trajectory collection tool
 │   ├── replay_trajectory.py   # Trajectory replay tool
 │   ├── calibrate_camera.py    # Camera calibration tool
-│   └── config.json            # bringup.py configuration file
-├── misc/                       # Utility scripts
-│   ├── hdf5_reader.py         # HDF5 trajectory file viewer
-│   ├── control_analysis.py    # Control system performance analysis
-│   ├── trajectory_visualizer.py # Trajectory visualization tool (GUI)
-│   └── mujoco_to_urdf.py      # MuJoCo XML to URDF converter
+│   ├── config.json            # bringup.py configuration file
+│   ├── misc/                  # Utility scripts
+│   │   ├── hdf5_reader.py         # HDF5 trajectory file viewer
+│   │   ├── control_analysis.py    # Control system performance analysis
+│   │   ├── trajectory_visualizer.py # Trajectory visualization tool (GUI)
+│   │   └── mujoco_to_urdf.py      # MuJoCo XML to URDF converter
+│   └── postprocess/           # Data postprocessing
+│       ├── to_tfrecord.py     # Convert .h5 to TFRecord
+│       └── label_data.py      # GUI to label success/failure/task_name
 ├── launch/                     # Launch files
 │   ├── franka_robot.launch.py  # Start robot controller
 │   ├── zed_camera.launch.py    # Start ZED camera

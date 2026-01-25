@@ -1,14 +1,28 @@
 # Scripts Documentation
 
-This directory contains Python scripts for robot trajectory collection, replay, and camera calibration.
+This document describes scripts in `scripts/`, including `scripts/postprocess/` and `scripts/misc/`.
 
 ## Overview
+
+**scripts/**
 
 - **`collect_trajectory.py`**: Collect robot trajectories using VR controller (Oculus Quest)
 - **`replay_trajectory.py`**: Replay saved robot trajectories from HDF5 files
 - **`calibrate_camera.py`**: Perform hand-eye calibration for cameras using Charuco board
+- **`bringup.py`**: Docker-ROS control center (PyQt5 GUI). Reads `scripts/config.json` to start/stop commands in Docker containers and view logs.
 
-All scripts are pure Python scripts (not ROS2 nodes) that use `RobotEnv` internally for robot control.
+**scripts/postprocess/**
+
+- **`scripts/postprocess/to_tfrecord.py`**: Convert `.h5` trajectories to TFRecord (success-only; uses `task_labels.json` when present).
+- **`scripts/postprocess/label_data.py`**: Tk GUI to label success/failure/task_name for `**/trajectory.h5`, maintains `task_labels.json` and `_last_index`.
+
+**scripts/misc/**
+
+- **`scripts/misc/hdf5_reader.py`**: Inspect HDF5 trajectory structure, shapes, and attributes.
+- **`scripts/misc/trajectory_visualizer.py`**: Matplotlib GUI to visualize trajectories (slider, camera images, robot/action plots, Gantt).
+- **`scripts/misc/mujoco_to_urdf.py`**: Convert MuJoCo XML to URDF for ROS2.
+
+Robot-control scripts (collect, replay, calibrate) are pure Python (not ROS2 nodes) and use `RobotEnv` internally. `bringup.py` is a standalone PyQt5 GUI.
 
 ---
 
@@ -259,6 +273,71 @@ python3 replay_trajectory.py \
 
 ---
 
+## 📦 scripts/postprocess/to_tfrecord.py
+
+### Description
+
+Convert role-ros2 `.h5` trajectories under a data directory to TFRecord for training (e.g. with droid_dataset_builder-style loaders).
+
+- **Input**: `--data-dir` (required). `task_labels.json` is read only from `<data-dir>/task_labels.json`.
+- **No `task_labels.json`**: Uses `success/**/trajectory.h5` only; prints a notice that data was not relabeled and may prompt to continue.
+- **With `task_labels.json`**: Uses all HDF5 with `success: true` in labels. If some `success/` trajectories are not in `task_labels`, warns and asks: include them or use only relabeled success.
+- **Output fields**: `action/*` (cartesian_position, cartesian_velocity, gripper_position, gripper_velocity, joint_position, joint_velocity), `observation/robot_state/*` (cartesian_position, gripper_position, joint_positions), `observations/videos/{hand_camera,varied_camera_1,...}`. Camera mapping is defined in `CAMERA_ID_TO_NAME` at the top of the file (e.g. 11022812 → `hand_camera`, 24285872 → `varied_camera_1`).
+
+### Dependencies
+
+- `tensorflow` (required for writing)
+- `h5py`, `numpy` (from role_ros2)
+- `tqdm` (optional)
+
+### Usage
+
+```bash
+# Required: --data-dir. Output defaults to <data-dir>/tfrecord
+python3 scripts/postprocess/to_tfrecord.py --data-dir /path/to/data
+
+# Custom output and overwrite
+python3 scripts/postprocess/to_tfrecord.py --data-dir /path/to/data --output-dir /path/to/tfrecords --overwrite
+
+# Tune sharding and workers
+python3 scripts/postprocess/to_tfrecord.py --data-dir /path/to/data --shard-size 200 --num-workers 4
+```
+
+### Arguments
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--data-dir` | Path | **Required** | Data root (success/, failure/, task_labels.json) |
+| `--output-dir` | Path | `<data-dir>/tfrecord` | Output dir with train/ and test/ |
+| `--shard-size` | int | 200 | Max trajectories per TFRecord shard |
+| `--train-fraction` | float | 0.8 | Fraction for train split; rest for test |
+| `--overwrite` | flag | False | Overwrite existing output directory |
+| `--image-height` | int | 180 | Resize height for video frames |
+| `--image-width` | int | 320 | Resize width for video frames |
+| `--num-workers` | int | 4 | Parallel workers for shard conversion (use 1 for sequential) |
+
+---
+
+## 🏷️ scripts/postprocess/label_data.py
+
+### Description
+
+Tk-based GUI to label trajectories under a data folder: set **success** / **failure** and **task_name** for each `**/trajectory.h5`. Reads and writes `<data_folder>/task_labels.json` and keeps `_last_index` so you can resume from the last labeled file.
+
+### Usage
+
+```bash
+python3 scripts/postprocess/label_data.py <data_folder>
+```
+
+### Arguments
+
+| Argument | Type | Description |
+|----------|------|-------------|
+| `data_folder` | str | **Required** (positional). Root folder containing `**/trajectory.h5`; `task_labels.json` will be at `<data_folder>/task_labels.json`. |
+
+---
+
 ## 📷 calibrate_camera.py
 
 ### Description
@@ -456,6 +535,52 @@ python3 calibrate_camera.py \
 
 ---
 
+## 🖥️ bringup.py
+
+### Description
+
+Docker-ROS control center: a PyQt5 GUI that reads `scripts/config.json` and provides start/stop buttons and a log view for each entry. Each entry specifies a Docker `container`, a `command` to run inside it (e.g. `ros2 launch ...` or `python3 scripts/collect_trajectory.py`), and a `kill_keyword` to stop the process. Useful to launch robot, cameras, Rviz2, and collection scripts from one window.
+
+### Prerequisites
+
+- Docker with the target containers running (e.g. `ros2_polymetis_container`, `ros2_cu118_container`)
+- PyQt5, `psutil`
+- `scripts/config.json` in the same directory as `bringup.py`
+
+### Usage
+
+```bash
+python3 scripts/bringup.py
+```
+
+No CLI arguments; config is loaded from `scripts/config.json`.
+
+---
+
+## 🛠️ scripts/misc/ Tools
+
+### scripts/misc/hdf5_reader.py
+
+Inspect HDF5 trajectory files: hierarchy, dataset shapes/dtypes, and attributes.
+
+```bash
+python3 scripts/misc/hdf5_reader.py /path/to/trajectory.h5 [--show-data 0 | --show-all-data] [--max-depth N] [--show-attrs] [--timestamps-only] [--summary-only]
+```
+
+### scripts/misc/trajectory_visualizer.py
+
+Matplotlib GUI: slider, camera images, robot/action time series, Gantt chart. Depends on `role_ros2.trajectory_utils.trajectory_reader`.
+
+```bash
+python3 scripts/misc/trajectory_visualizer.py /path/to/trajectory.h5 [--debug]
+```
+
+### scripts/misc/mujoco_to_urdf.py
+
+Convert MuJoCo XML model to URDF for use in ROS2. Can optionally generate `joint_names.yaml`.
+
+---
+
 ## 🔧 Common Issues
 
 ### collect_trajectory.py
@@ -624,10 +749,10 @@ ros2 service list
 
 ### Verify Trajectory File
 
-Use `misc/hdf5_reader.py` to inspect trajectory files:
+Use `scripts/misc/hdf5_reader.py` to inspect trajectory structure, shapes, and attributes. For interactive visualization, see **scripts/misc/ Tools** (`scripts/misc/trajectory_visualizer.py`).
 
 ```bash
-python3 misc/hdf5_reader.py /path/to/trajectory.h5
+python3 scripts/misc/hdf5_reader.py /path/to/trajectory.h5
 ```
 
 ### Enable Debug Logging
