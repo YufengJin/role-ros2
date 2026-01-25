@@ -23,7 +23,7 @@ dependencies = [
     "opencv-python==4.6.0.66",
     "opencv-contrib-python==4.6.0.66",
     "Pillow",
-    "protobuf==3.20.1",
+    "protobuf==3.20.3",
     "psutil",
     "pyrallis",
     "scipy",

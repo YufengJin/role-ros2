@@ -258,9 +258,10 @@ RUN python3 -m pip install --ignore-installed \
     opencv-python==4.6.0.66 \
     opencv-contrib-python==4.6.0.66 \
     Pillow \
-    protobuf==3.20.1 \
+    protobuf==3.20.3 \
     psutil \
-    pyrallis
+    pyrallis \
+    tensorflow==2.15.0
 
 # 10.7 Install dm-robotics packages (required for IK solver)
 # Done with --no-deps to avoid dependency conflicts
@@ -285,7 +286,8 @@ RUN python3 -m pip uninstall -y h5py numpy && \
 RUN python3 -c "import numpy; print(f'✓ NumPy version: {numpy.__version__}')" && \
     python3 -c "import mujoco; print(f'✓ MuJoCo version: {mujoco.__version__}')" && \
     python3 -c "import dm_control; print(f'✓ dm-control version: {dm_control.__version__}')" && \
-    python3 -c "import torch; print(f'✓ PyTorch version: {torch.__version__}')" || \
+    python3 -c "import torch; print(f'✓ PyTorch version: {torch.__version__}')" && \
+    python3 -c "import tensorflow as tf; print(f'✓ TensorFlow version: {tf.__version__}')" || \
     echo "Warning: Some verification checks failed, continuing..."
 
 # Note: oculus_reader and role_ros2 are NOT installed here
