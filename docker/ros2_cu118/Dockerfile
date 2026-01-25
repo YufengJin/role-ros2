@@ -249,6 +249,12 @@ RUN python3 -m pip install matplotlib tqdm imageio[ffmpeg]
 
 # 10.6 Install role_ros2 dependencies from pyproject.toml
 # Use --ignore-installed to handle system-installed packages
+# TF stack: install protobuf first, then tf-metadata (compatible with 3.20), then tf+tfds
+# to avoid tfds pulling tensorflow-metadata>=1.17 (requires protobuf>=4.21.6)
+RUN python3 -m pip install --ignore-installed "protobuf==3.20.3"
+RUN python3 -m pip install --ignore-installed "tensorflow-metadata>=1.13,<1.15"
+RUN python3 -m pip install --ignore-installed tensorflow==2.15.0 tensorflow-datasets==4.9.4
+
 RUN python3 -m pip install --ignore-installed \
     boto3 \
     customtkinter \
@@ -258,10 +264,8 @@ RUN python3 -m pip install --ignore-installed \
     opencv-python==4.6.0.66 \
     opencv-contrib-python==4.6.0.66 \
     Pillow \
-    protobuf==3.20.3 \
     psutil \
-    pyrallis \
-    tensorflow==2.15.0
+    pyrallis
 
 # 10.7 Install dm-robotics packages (required for IK solver)
 # Done with --no-deps to avoid dependency conflicts

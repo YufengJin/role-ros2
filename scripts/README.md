@@ -20,7 +20,12 @@ This document describes scripts in `scripts/`, including `scripts/postprocess/` 
 
 - **`scripts/misc/hdf5_reader.py`**: Inspect HDF5 trajectory structure, shapes, and attributes.
 - **`scripts/misc/trajectory_visualizer.py`**: Matplotlib GUI to visualize trajectories (slider, camera images, robot/action plots, Gantt).
+- **`scripts/misc/visualize_tfds.py`**: Matplotlib GUI 可视化 TFDS/RLDS 数据（to_tfrecord、DROID 等）：三路图像、关节/夹爪/动作时序，Episode/Step 滑条。
 - **`scripts/misc/mujoco_to_urdf.py`**: Convert MuJoCo XML to URDF for ROS2.
+
+**scripts/tests/**
+
+- **`scripts/tests/test_tf_load.py`**: Inspect TFDS datasets (to_tfrecord output, DROID, etc.) and provide `get_tfds_dataloader()` for training.
 
 Robot-control scripts (collect, replay, calibrate) are pure Python (not ROS2 nodes) and use `RobotEnv` internally. `bringup.py` is a standalone PyQt5 GUI.
 
@@ -277,27 +282,31 @@ python3 replay_trajectory.py \
 
 ### Description
 
-Convert role-ros2 `.h5` trajectories under a data directory to TFRecord for training (e.g. with droid_dataset_builder-style loaders).
+Convert role-ros2 `.h5` trajectories under a data directory to a standard TFDS dataset for training (e.g. with droid_dataset_builder-style loaders).
 
-- **Input**: `--data-dir` (required). `task_labels.json` is read only from `<data-dir>/task_labels.json`.
-- **No `task_labels.json`**: Uses `success/**/trajectory.h5` only; prints a notice that data was not relabeled and may prompt to continue.
-- **With `task_labels.json`**: Uses all HDF5 with `success: true` in labels. If some `success/` trajectories are not in `task_labels`, warns and asks: include them or use only relabeled success.
-- **Output fields**: `action/*` (cartesian_position, cartesian_velocity, gripper_position, gripper_velocity, joint_position, joint_velocity), `observation/robot_state/*` (cartesian_position, gripper_position, joint_positions), `observations/videos/{hand_camera,varied_camera_1,...}`. Camera mapping is defined in `CAMERA_ID_TO_NAME` at the top of the file (e.g. 11022812 → `hand_camera`, 24285872 → `varied_camera_1`).
+- **Input**: `--data-dir` (required). `task_labels.json` from `<data-dir>/task_labels.json`.
+- **No `task_labels.json`**: Uses `success/**/trajectory.h5` only; prompts to continue.
+- **With `task_labels.json`**: Uses HDF5 with `success: true`; `task_name` from `labels[rel]["task_name"]` or HDF5 `attrs["task_name"]` or `"unknown"` → used as **language_instruction** per step.
+- **Output**: Standard TFDS dataset in `<output-dir>/<dataset-name>/<version>/`:
+  - `dataset_info.json`, `features.json`
+  - `{DATASET}-{SPLIT}.tfrecord-{X}-of-{Y}` (e.g. `role_ros2-train.tfrecord-00000-of-00005`)
+  - Usable with `tfds.builder_from_directory()` and `tfds.load()`.
+
+Each TFRecord entry = one episode: `steps` (observation: `exterior_image_1_left`, `exterior_image_2_left`, `wrist_image_left`, `cartesian_position`, `gripper_position`, `joint_position`; `action_dict`; `action` (7); `discount`; `reward`; `is_first`; `is_last`; `is_terminal`; `language_instruction`), `episode_metadata` (`file_path`, `recording_folderpath`). Camera mapping: `CAMERA_ID_TO_IMAGE_KEYS` (cam_id → RLDS/DROID observation key) in the script.
 
 ### Dependencies
 
-- `tensorflow` (required for writing)
-- `h5py`, `numpy` (from role_ros2)
-- `tqdm` (optional)
+- `tensorflow`, `tensorflow_datasets` (required; e.g. `pip install -e ".[tfrecord]"` or use the Docker image)
+- `h5py`, `numpy` (from role_ros2), `tqdm` (optional)
 
 ### Usage
 
 ```bash
-# Required: --data-dir. Output defaults to <data-dir>/tfrecord
+# Required: --data-dir. Output: <data-dir>/tfrecord/role_ros2/1.0.0
 python3 scripts/postprocess/to_tfrecord.py --data-dir /path/to/data
 
-# Custom output and overwrite
-python3 scripts/postprocess/to_tfrecord.py --data-dir /path/to/data --output-dir /path/to/tfrecords --overwrite
+# Custom output, dataset name, version, and overwrite
+python3 scripts/postprocess/to_tfrecord.py --data-dir /path/to/data --output-dir /path/to/tfrecords --dataset-name my_robot --version 2.0.0 --overwrite
 
 # Tune sharding and workers
 python3 scripts/postprocess/to_tfrecord.py --data-dir /path/to/data --shard-size 200 --num-workers 4
@@ -308,13 +317,132 @@ python3 scripts/postprocess/to_tfrecord.py --data-dir /path/to/data --shard-size
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
 | `--data-dir` | Path | **Required** | Data root (success/, failure/, task_labels.json) |
-| `--output-dir` | Path | `<data-dir>/tfrecord` | Output dir with train/ and test/ |
+| `--output-dir` | Path | `<data-dir>/tfrecord` | Parent of `<dataset-name>/<version>/`; versioned dir is `<output-dir>/<dataset-name>/<version>/` |
+| `--dataset-name` | str | `role_ros2` | TFDS dataset name for subdir and filenames |
+| `--version` | str | `1.0.0` | TFDS version subdir |
 | `--shard-size` | int | 200 | Max trajectories per TFRecord shard |
 | `--train-fraction` | float | 0.8 | Fraction for train split; rest for test |
-| `--overwrite` | flag | False | Overwrite existing output directory |
+| `--overwrite` | flag | False | Overwrite existing versioned output directory |
 | `--image-height` | int | 180 | Resize height for video frames |
 | `--image-width` | int | 320 | Resize width for video frames |
 | `--num-workers` | int | 4 | Parallel workers for shard conversion (use 1 for sequential) |
+
+### Inspecting and loading TFDS output
+
+The versioned dir (e.g. `<output-dir>/role_ros2/1.0.0`) contains `dataset_info.json` and `features.json`. Load with:
+
+```python
+import tensorflow_datasets as tfds
+builder = tfds.builder_from_directory("/path/to/role_ros2/1.0.0")
+ds = builder.as_dataset(split="train")
+```
+
+To inspect structure or get a batched dataloader, use **`scripts/tests/test_tf_load.py`** (see below).
+
+---
+
+## 🔍 scripts/tests/test_tf_load.py
+
+### Description
+
+Inspect TFDS datasets (to_tfrecord.py output, DROID, etc.) and provide `get_tfds_dataloader()` for training. Expects a TFDS versioned dir: `dataset_info.json`, `features.json`, and `{DATASET}-{SPLIT}.tfrecord-{X}-of-{Y}`. Uses `tfds.builder_from_directory()` and `builder.as_dataset()`.
+
+### Usage
+
+```bash
+# role_ros2 (to_tfrecord output)
+python3 scripts/tests/test_tf_load.py --tfrecord-dir /path/to/tfrecord/role_ros2/1.0.0
+
+# DROID or other TFDS
+python3 scripts/tests/test_tf_load.py --tfrecord-dir /app/datasets/droid/droid_100/1.0.0 --max-examples 1 --max-steps-per-episode 3
+```
+
+### Arguments
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--tfrecord-dir` | Path | `data/tfrecord` | TFDS versioned dir (dataset_info.json, *-train.tfrecord-*) |
+| `--split` | str | `train` | `train` or `test` |
+| `--max-examples` | int | 2 | Max episodes to describe |
+| `--max-steps-per-episode` | int | 10 | Max steps to show per episode |
+
+### get_tfds_dataloader()
+
+```python
+from scripts.tests.test_tf_load import get_tfds_dataloader
+
+ds = get_tfds_dataloader("/path/to/role_ros2/1.0.0", split="train", batch_size=4)
+for batch in ds.take(10):
+    # batch: { steps: Dataset, episode_metadata: {...} }
+    ...
+```
+
+**Args**: `builder_dir`, `split`, `shuffle_files`, `batch_size`, `**as_dataset_kwargs`. **Returns**: `tf.data.Dataset` of RLDS episodes.
+
+---
+
+## 📊 scripts/misc/visualize_tfds.py
+
+### Description
+
+用 Matplotlib 交互可视化 TFDS/RLDS 数据集（to_tfrecord 输出、DROID 等）。布局与 `trajectory_visualizer` 类似，数据来源为 TFDS：`tfds.builder_from_directory` + `as_dataset`。
+
+- **第一行**：三路相机图 `exterior_image_1_left`、`exterior_image_2_left`、`wrist_image_left` + 信息框（instruction、file）
+- **第二行**：`observation.joint_position`(7)、`observation.gripper_position`、`action`(7) 的时序到当前 step
+- **滑条**：Episode、Step；可用 `--max-episodes` 限制预加载的 episode 数
+
+目录需为含 `dataset_info.json` 的 TFDS 版本目录（如 `.../role_ros2/1.0.0` 或 `.../droid_100/1.0.0`）。
+
+### Usage
+
+```bash
+# role_ros2（to_tfrecord 输出）
+python3 scripts/misc/visualize_tfds.py --tfrecord-dir data/tfrecord/role_ros2/1.0.0
+
+# DROID，限制缓存 5 个 episode
+python3 scripts/misc/visualize_tfds.py --tfrecord-dir /app/datasets/droid/droid_100/1.0.0 --max-episodes 5
+
+# 无头保存为 PNG（无 GUI 时先 export MPLBACKEND=Agg）
+python3 scripts/misc/visualize_tfds.py --tfrecord-dir data/tfrecord/role_ros2/1.0.0 --save /tmp/out.png
+```
+
+### Arguments
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--tfrecord-dir` | Path | `data/tfrecord` | TFDS 版本目录（含 dataset_info.json、*-train.tfrecord-*） |
+| `--split` | str | `train` | `train` 或 `test` |
+| `--max-episodes` | int | 10 | 预加载并缓存的 episode 数量上限 |
+| `--save` | Path | - | 将当前 figure 保存到文件后退出（不弹 GUI）；无头环境可配合 `MPLBACKEND=Agg` |
+
+### Examples
+
+参见 **`scripts/misc/visualize_tfds_examples.sh`**：可复制其中命令，或在 role-ros2 根目录运行 `./scripts/misc/visualize_tfds_examples.sh 1` 等。
+
+#### Example 1: role_ros2（to_tfrecord 输出）
+
+```bash
+python3 scripts/misc/visualize_tfds.py --tfrecord-dir data/tfrecord/role_ros2/1.0.0
+```
+
+#### Example 2: DROID，限制缓存的 episode
+
+```bash
+python3 scripts/misc/visualize_tfds.py --tfrecord-dir /app/datasets/droid/droid_100/1.0.0 --max-episodes 5
+```
+
+#### Example 3: 无头保存（CI / 无显示器）
+
+```bash
+export MPLBACKEND=Agg
+python3 scripts/misc/visualize_tfds.py --tfrecord-dir data/tfrecord/role_ros2/1.0.0 --save /tmp/visualize_tfds_out.png
+```
+
+#### Example 4: 只缓存 3 个 episode、train 分片
+
+```bash
+python3 scripts/misc/visualize_tfds.py --tfrecord-dir data/tfrecord/role_ros2/1.0.0 --max-episodes 3 --split train
+```
 
 ---
 
@@ -573,6 +701,14 @@ Matplotlib GUI: slider, camera images, robot/action time series, Gantt chart. De
 
 ```bash
 python3 scripts/misc/trajectory_visualizer.py /path/to/trajectory.h5 [--debug]
+```
+
+### scripts/misc/visualize_tfds.py
+
+Matplotlib GUI 可视化 TFDS/RLDS：三路图像、joint/gripper/action 时序，Episode/Step 滑条。支持 to_tfrecord 输出与 DROID。示例：`scripts/misc/visualize_tfds_examples.sh`。
+
+```bash
+python3 scripts/misc/visualize_tfds.py --tfrecord-dir data/tfrecord/role_ros2/1.0.0 [--max-episodes 10] [--save out.png]
 ```
 
 ### scripts/misc/mujoco_to_urdf.py

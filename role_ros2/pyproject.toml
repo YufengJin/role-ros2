@@ -50,6 +50,12 @@ dev = [
 postprocessing = [
     "scikit-image",
 ]
+tfrecord = [
+    # tensorflow-metadata first: >=1.13,<1.15 compatible with protobuf==3.20.3; >=1.17 would need protobuf>=4.21.6
+    "tensorflow-metadata>=1.13,<1.15",
+    "tensorflow==2.15.0",
+    "tensorflow-datasets==4.9.4",
+]
 
 [project.urls]
 homepage = "https://github.com/YufengJin/role-ros2"
