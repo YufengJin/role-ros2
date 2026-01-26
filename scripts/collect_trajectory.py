@@ -676,6 +676,8 @@ class CollectTrajectory:
         self.save_images = args.save_images
         self.save_depths = args.save_depths
         self.right_controller = args.right_controller
+        self.pos_vel_scale = args.pos_vel_scale
+        self.rot_vel_scale = args.rot_vel_scale
         self.horizon = None if args.horizon <= 0 else args.horizon
         self.enable_viz = args.viz
         
@@ -802,9 +804,14 @@ class CollectTrajectory:
         # Initialize VRPolicy (controller)
         self._print("🎮 [2/4] Initializing VRPolicy controller...")
         try:
-            self.controller = VRPolicy(right_controller=self.right_controller)
+            self.controller = VRPolicy(
+                right_controller=self.right_controller,
+                pos_vel_scale=self.pos_vel_scale,
+                rot_vel_scale=self.rot_vel_scale
+            )
             controller_side = "RIGHT" if self.right_controller else "LEFT"
-            self._print(f"   ✅ VRPolicy initialized ({controller_side} controller)")
+            scale_info = f"pos_scale={self.pos_vel_scale:.2f}, rot_scale={self.rot_vel_scale:.2f}"
+            self._print(f"   ✅ VRPolicy initialized ({controller_side} controller, {scale_info})")
         except Exception as e:
             self._print(f"   ❌ Failed to initialize VRPolicy: {e}")
             raise
@@ -1257,6 +1264,18 @@ Examples:
         dest='right_controller',
         action='store_false',
         help='Use left controller'
+    )
+    parser.add_argument(
+        '--pos-vel-scale',
+        type=float,
+        default=1.0,
+        help='Scale factor for position velocity (0.0-1.0, reduces linear movement, default: 1.0)'
+    )
+    parser.add_argument(
+        '--rot-vel-scale',
+        type=float,
+        default=1.0,
+        help='Scale factor for rotation velocity (0.0-1.0, reduces rotational movement, default: 1.0)'
     )
     
     # Robot reset settings

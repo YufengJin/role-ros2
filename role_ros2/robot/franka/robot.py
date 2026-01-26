@@ -104,6 +104,12 @@ class FrankaRobot(BaseRobot):
         # Initialize IK solver
         self._ik_solver = RobotIKSolver()
         
+        # Reset/home joint positions (matching droid's reset_joints)
+        self.reset_joints = np.array([0, -1 / 5 * np.pi, 0, -4 / 5 * np.pi, 0, 3 / 5 * np.pi, 0.0])
+        
+        self.randomize_low = np.array([-0.15, -0.25, -0.15, -0.5, -0.5, -0.5])
+        self.randomize_high = np.array([0.15, 0.25, 0.15, 0.5, 0.5, 0.5]) 
+
         # Create ReentrantCallbackGroup for parallel callback execution
         self._cb_group = ReentrantCallbackGroup()
         
@@ -565,18 +571,56 @@ class FrankaRobot(BaseRobot):
     
     # ==================== ARM CONTROL ====================
     
+    def add_noise_to_joints(self, original_joints, cartesian_noise):
+        """
+        Add cartesian noise to joint positions using IK.
+        
+        Args:
+            original_joints: Original joint positions (7 DOF)
+            cartesian_noise: Cartesian noise [x, y, z, roll, pitch, yaw]
+        
+        Returns:
+            Noisy joint positions (7 DOF), or original if IK fails
+        """
+        # Get current pose from forward kinematics
+        curr_position, curr_orientation = self.compute_forward_kinematics(original_joints)
+        if curr_position is None or curr_orientation is None:
+            self._node.get_logger().warn("Failed to compute FK for noise application, using original joints")
+            return original_joints
+        
+        # curr_orientation is quaternion, convert to euler
+        curr_euler = quat_to_euler(curr_orientation)
+        curr_pose = list(curr_position) + list(curr_euler)
+        
+        # Add noise to pose
+        new_pose = add_poses(cartesian_noise, curr_pose)
+        
+        # Solve IK for new pose
+        new_position = new_pose[:3]
+        new_euler = new_pose[3:6]
+        noisy_joints, success = self.solve_inverse_kinematics(
+            new_position, new_euler, q0=original_joints
+        )
+        
+        if success and noisy_joints is not None:
+            return noisy_joints
+        else:
+            self._node.get_logger().warn("IK failed for noisy pose, using original joints")
+            return original_joints
+    
     def reset(self, randomize=False, wait_for_completion=True, wait_time_sec=30.0, open_gripper=True):
         """
         Reset robot to home position.
         
         Steps:
         1. Open gripper (blocking) - optional
-        2. Move arm to home position
+        2. Move arm to home position using update_joints
+        3. If randomize=True, add noise to joints and move to randomized position
         
         Args:
             randomize: If True, add random cartesian noise to reset position
-            wait_for_completion: If True, wait for reset to complete
-            wait_time_sec: Time to wait for reset completion
+            wait_for_completion: If True, wait for reset to complete (blocking=True)
+            wait_time_sec: Time to wait for reset completion (unused if blocking=True)
             open_gripper: If True, open gripper before resetting arm (default: True)
         """
         import inspect
@@ -596,32 +640,39 @@ class FrankaRobot(BaseRobot):
             else:
                 self._node.get_logger().warn("   ⚠️ Gripper open failed or service unavailable")
         
-        # Step 2: Reset arm to home position
-        self._node.get_logger().info("   Step 2: Resetting arm to home position...")
+        # Step 2: Determine target joint positions
+        target_joints = self.reset_joints.copy()
+        self._node.get_logger().info(f"   Reset joints (base): {target_joints}")
         
-        request = Reset.Request()
-        request.randomize = randomize
-        future = self._arm_reset_client.call_async(request)
-        
-        self._node.get_logger().info("   Waiting for arm reset service...")
-        
-        timeout_sec = 5.0
-        start_time = time.time()
-        while not future.done() and (time.time() - start_time) < timeout_sec:
-            time.sleep(0.001)
-        
-        if future.done():
-            response = future.result()
-            if response.success:
-                self._node.get_logger().info(f"   ✅ Arm reset accepted: {response.message}")
-                if wait_for_completion:
-                    self._node.get_logger().info(f"   ⏳ Waiting {wait_time_sec}s for reset to complete...")
-                    time.sleep(wait_time_sec)
-                    self._node.get_logger().info("   ✅ Reset wait complete")
-            else:
-                self._node.get_logger().error(f"   ❌ Arm reset failed: {response.message}")
+        # Step 3: Apply randomize noise if requested
+        if randomize:
+            self._node.get_logger().info("   Step 2: Applying randomize noise...")
+            try:
+                # Generate random noise
+                noise = np.random.uniform(low=self.randomize_low, high=self.randomize_high)
+                self._node.get_logger().info(f"   Generated cartesian noise: {noise}")
+                self._node.get_logger().info(f"   Noise range: low={self.randomize_low}, high={self.randomize_high}")
+                
+                # Apply noise to reset joints
+                target_joints = self.add_noise_to_joints(target_joints, noise)
+                self._node.get_logger().info(f"   Target joints (after noise): {target_joints}")
+                self._node.get_logger().info("   ✅ Noise applied to reset joints")
+            except Exception as e:
+                import traceback
+                self._node.get_logger().error(f"   ❌ Randomize failed: {e}")
+                self._node.get_logger().error(f"   Traceback: {traceback.format_exc()}")
+                self._node.get_logger().warn("   Using original reset joints (no randomize)")
+                target_joints = self.reset_joints.copy()
         else:
-            self._node.get_logger().error("   ❌ Reset service call timed out")
+            self._node.get_logger().info("   Step 2: No randomize requested, using base reset joints")
+        
+        # Step 4: Move to target position using update_joints
+        self._node.get_logger().info(f"   Step 3: Moving to target position (blocking={wait_for_completion})...")
+        success = self.update_joints(target_joints, velocity=False, blocking=wait_for_completion)
+        if success:
+            self._node.get_logger().info("   ✅ Reset completed successfully")
+        else:
+            self._node.get_logger().error("   ❌ Reset failed")
         
         self._node.get_logger().info("=" * 70)
     
@@ -708,6 +759,7 @@ class FrankaRobot(BaseRobot):
             msg.positions = list(command)
             msg.blocking = False
             self._joint_pos_cmd_pub.publish(msg)
+        return True  # Non-blocking always returns True (command published successfully)
     
     def update_pose(self, command, velocity=False, blocking=False):
         """

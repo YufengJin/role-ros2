@@ -57,6 +57,8 @@ class VRPolicy:
         pos_action_gain: float = 5,
         rot_action_gain: float = 2,
         gripper_action_gain: float = 3,
+        pos_vel_scale: float = 1.0,
+        rot_vel_scale: float = 1.0,
         rmat_reorder: list = [-2, -1, -3, 4],
     ):
         """
@@ -71,6 +73,8 @@ class VRPolicy:
             pos_action_gain: Position action gain
             rot_action_gain: Rotation action gain
             gripper_action_gain: Gripper action gain
+            pos_vel_scale: Scale factor for position velocity (0.0-1.0, reduces linear movement)
+            rot_vel_scale: Scale factor for rotation velocity (0.0-1.0, reduces rotational movement)
             rmat_reorder: Reorder matrix vector
         """
         self.oculus_reader = OculusReader()
@@ -82,6 +86,8 @@ class VRPolicy:
         self.pos_action_gain = pos_action_gain
         self.rot_action_gain = rot_action_gain
         self.gripper_action_gain = gripper_action_gain
+        self.pos_vel_scale = pos_vel_scale
+        self.rot_vel_scale = rot_vel_scale
         self.global_to_env_mat = vec_to_reorder_mat(rmat_reorder)
         self.controller_id = "r" if right_controller else "l"
         self.reset_orientation = True
@@ -245,6 +251,10 @@ class VRPolicy:
         euler_action *= self.rot_action_gain
         gripper_action *= self.gripper_action_gain
         lin_vel, rot_vel, gripper_vel = self._limit_velocity(pos_action, euler_action, gripper_action)
+
+        # Apply velocity scales to reduce movement magnitude (especially rotation)
+        lin_vel *= self.pos_vel_scale
+        rot_vel *= self.rot_vel_scale
 
         # Prepare Return Values
         info_dict = {"target_cartesian_position": target_cartesian, "target_gripper_position": target_gripper}
