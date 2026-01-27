@@ -666,9 +666,26 @@ class FrankaRobot(BaseRobot):
         else:
             self._node.get_logger().info("   Step 2: No randomize requested, using base reset joints")
         
-        # Step 4: Move to target position using update_joints
-        self._node.get_logger().info(f"   Step 3: Moving to target position (blocking={wait_for_completion})...")
-        success = self.update_joints(target_joints, velocity=False, blocking=wait_for_completion)
+        # Step 4: Move to target position using update_joints with slow time_to_go
+        # Calculate time_to_go based on displacement for safe, slow reset
+        current_joints = np.array(self.get_joint_positions())
+        displacement = np.abs(np.array(target_joints) - current_joints)
+        max_displacement = np.max(displacement)
+        
+        # Use slow velocity parameters for reset (similar to _reset_robot in interface node)
+        MAX_VELOCITY_SLOW = 0.1  # rad/s - slow and safe for reset
+        MIN_TIME_TO_GO_SLOW = 5.0  # seconds - minimum time for slow movements
+        MAX_TIME_TO_GO_SLOW = 40.0  # seconds - maximum time for slow movements
+        
+        if max_displacement > 0:
+            calculated_time = max_displacement / MAX_VELOCITY_SLOW
+            time_to_go = min(MAX_TIME_TO_GO_SLOW, max(MIN_TIME_TO_GO_SLOW, calculated_time))
+        else:
+            time_to_go = MIN_TIME_TO_GO_SLOW
+        
+        self._node.get_logger().info(f"   Step 3: Moving to target position (blocking={wait_for_completion}, time_to_go={time_to_go:.2f}s)...")
+        self._node.get_logger().info(f"   Max joint displacement: {max_displacement:.4f} rad")
+        success = self.update_joints(target_joints, velocity=False, blocking=wait_for_completion, time_to_go=time_to_go)
         if success:
             self._node.get_logger().info("   ✅ Reset completed successfully")
         else:
@@ -700,7 +717,7 @@ class FrankaRobot(BaseRobot):
         
         return action_dict
     
-    def update_joints(self, command, velocity=False, blocking=False, cartesian_noise=None):
+    def update_joints(self, command, velocity=False, blocking=False, cartesian_noise=None, time_to_go=None):
         """
         Update joint positions/velocities via V2 topics.
         
@@ -709,24 +726,32 @@ class FrankaRobot(BaseRobot):
             velocity: If True, command is velocity; if False, command is position
             blocking: Whether to wait for completion
             cartesian_noise: Optional cartesian noise (not supported)
+            time_to_go: Time to complete movement in seconds. If None or 0.0, auto-calculates.
+                        For reset operations, use a larger value (e.g., 5.0-10.0) for slower, safer movement.
         """
         if cartesian_noise is not None:
             self._node.get_logger().warn("cartesian_noise not supported via V2 interface")
         
         if blocking and not velocity:
-            return self._update_joints_blocking(command)
+            return self._update_joints_blocking(command, time_to_go=time_to_go)
         else:
             return self._update_joints_non_blocking(command, velocity)
     
-    def _update_joints_blocking(self, command) -> bool:
-        """Blocking joint update using service."""
+    def _update_joints_blocking(self, command, time_to_go=None) -> bool:
+        """
+        Blocking joint update using service.
+        
+        Args:
+            command: Joint command (7 DOF)
+            time_to_go: Time to complete movement in seconds. If None or 0.0, auto-calculates.
+        """
         if not self._move_to_joint_positions_client.wait_for_service(timeout_sec=1.0):
             self._node.get_logger().error("MoveToJointPositions service not available")
             return False
         
         request = MoveToJointPositions.Request()
         request.joint_positions = list(command)
-        request.time_to_go = 0.0  # Auto-calculate
+        request.time_to_go = float(time_to_go) if time_to_go is not None and time_to_go > 0.0 else 0.0
         
         future = self._move_to_joint_positions_client.call_async(request)
         timeout_sec = 10.0
