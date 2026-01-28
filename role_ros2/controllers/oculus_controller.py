@@ -220,10 +220,14 @@ class VRPolicy:
             Action array (7D: [vx, vy, vz, wx, wy, wz, gripper_vel])
             If include_info=True, also returns info dict
         """
-        # Read Sensor
-        if self.update_sensor:
+        # Always read latest VR state (especially trigger) for immediate response
+        # Don't wait for update_sensor flag - gripper needs real-time response
+        # This ensures trigger release is detected immediately, not delayed
+        if self._state["poses"] != {}:
             self._process_reading()
-            self.update_sensor = False
+        
+        # Mark sensor as updated to prevent duplicate processing
+        self.update_sensor = False
 
         # Read Observation
         robot_pos = np.array(state_dict["cartesian_position"][:3])
@@ -248,14 +252,29 @@ class VRPolicy:
         quat_action = quat_diff(target_quat_offset, robot_quat_offset)
         euler_action = quat_to_euler(quat_action)
 
-        # Calculate Gripper Action
-        gripper_action = (self.vr_state["gripper"] * 1.5) - robot_gripper
+        # Calculate Gripper Action - IMPROVED LOGIC
+        vr_target_gripper = self.vr_state["gripper"] * 1.5  # Target position (0 to 1.5, clamped to 1.0)
+        vr_target_gripper = min(vr_target_gripper, 1.0)
+        
+        # Direct position error
+        gripper_action = vr_target_gripper - robot_gripper
+        
+        # CRITICAL FIX: If trigger is released (vr_target_gripper < 0.1),
+        # always try to open regardless of delayed robot state
+        # This ensures immediate response when user releases trigger
+        if vr_target_gripper < 0.1:
+            # Trigger released - force open command (use direct velocity, not position error)
+            # This ensures immediate response even with delayed robot state
+            gripper_action = -0.3  # Direct open command (negative = open)
+        # Add deadband to prevent small oscillations when gripper is at target
+        elif abs(gripper_action) < 0.05:  # 5% deadband
+            gripper_action = 0.0
 
         # Calculate Desired Pose
         target_pos = pos_action + robot_pos
         target_euler = add_angles(euler_action, robot_euler)
         target_cartesian = np.concatenate([target_pos, target_euler])
-        target_gripper = self.vr_state["gripper"]
+        target_gripper = vr_target_gripper
 
         # Scale Appropriately
         pos_action *= self.pos_action_gain

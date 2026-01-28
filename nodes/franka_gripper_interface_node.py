@@ -344,6 +344,33 @@ class FrankaGripperInterfaceNode(Node):
     
     def _open_gripper_on_startup(self):
         """Open gripper to known state on startup."""
+        # Wait for gripper server to be ready if using real gripper
+        if not isinstance(self._gripper, MockGripperInterface):
+            max_wait = 10.0  # Maximum wait time in seconds
+            wait_interval = 0.5  # Check interval
+            waited = 0.0
+            
+            self.get_logger().info("Waiting for gripper server to be ready...")
+            while waited < max_wait:
+                try:
+                    # Try to get state to verify server is ready
+                    self._gripper.get_state()
+                    self.get_logger().info("Gripper server is ready")
+                    break  # Server is ready
+                except Exception as e:
+                    if waited < max_wait - wait_interval:
+                        time.sleep(wait_interval)
+                        waited += wait_interval
+                        self.get_logger().debug(
+                            f"Gripper server not ready yet (waited {waited:.1f}s): {e}. Retrying..."
+                        )
+                    else:
+                        self.get_logger().warn(
+                            f"Gripper server not ready after {max_wait}s: {e}. "
+                            "Skipping startup gripper open."
+                        )
+                        return
+        
         try:
             self.get_logger().info("Opening gripper on startup...")
             self._gripper.goto(

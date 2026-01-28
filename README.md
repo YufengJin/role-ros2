@@ -222,6 +222,60 @@ source install/setup.bash
 source ros2_ws/start_env.sh
 ```
 
+### Launch System via CLI
+
+You can launch system components directly from the command line in Docker containers. All commands from `scripts/config.json` can be executed manually:
+
+#### Launch Robot
+
+**Real Robot** (in `ros2_polymetis_container`):
+```bash
+docker exec -it ros2_polymetis_container bash -c "source /opt/ros/foxy/setup.bash && source /app/ros2_ws/install/setup.bash && ros2 launch role_ros2 franka_robot.launch.py use_mock:=false"
+```
+
+**Mock Robot** (in `ros2_polymetis_container`):
+```bash
+docker exec -it ros2_polymetis_container bash -c "source /opt/ros/foxy/setup.bash && source /app/ros2_ws/install/setup.bash && ros2 launch role_ros2 franka_robot.launch.py use_mock:=true"
+```
+
+#### Launch Cameras
+
+**ZED Hand Camera (Low Res)** (in `ros2_cu118_container`):
+```bash
+docker exec -it ros2_cu118_container bash -c "source /opt/ros/humble/setup.bash && source /app/ros2_ws/install/setup.bash && ros2 launch role_ros2 zed_camera.launch.py config_file:=hand_zed_low_res.yaml"
+```
+
+**ZED Static Camera (Low Res)** (in `ros2_cu118_container`):
+```bash
+docker exec -it ros2_cu118_container bash -c "source /opt/ros/humble/setup.bash && source /app/ros2_ws/install/setup.bash && ros2 launch role_ros2 zed_camera.launch.py config_file:=static_zed_low_res.yaml"
+```
+
+**ZED Hand Camera (High Res)** (in `ros2_cu118_container`):
+```bash
+docker exec -it ros2_cu118_container bash -c "source /opt/ros/humble/setup.bash && source /app/ros2_ws/install/setup.bash && ros2 launch role_ros2 zed_camera.launch.py config_file:=hand_zed_high_res.yaml"
+```
+
+**ZED Static Camera (High Res)** (in `ros2_cu118_container`):
+```bash
+docker exec -it ros2_cu118_container bash -c "source /opt/ros/humble/setup.bash && source /app/ros2_ws/install/setup.bash && ros2 launch role_ros2 zed_camera.launch.py config_file:=static_zed_high_res.yaml"
+```
+
+#### Launch Visualization
+
+**Rviz2** (in `ros2_cu118_container`):
+```bash
+docker exec -it ros2_cu118_container bash -c "cd /app/ros2_ws/src/role-ros2 && source /opt/ros/humble/setup.bash && source /app/ros2_ws/install/setup.bash && ros2 run rviz2 rviz2 -d config/rviz/collect_traj.rviz"
+```
+
+#### Launch Data Collection
+
+**Collect Trajectory** (in `ros2_cu118_container`):
+```bash
+docker exec -it ros2_cu118_container bash -c "cd /app/ros2_ws/src/role-ros2 && source /opt/ros/humble/setup.bash && source /app/ros2_ws/install/setup.bash && python3 scripts/collect_trajectory.py --viz"
+```
+
+**Note**: For easier management of multiple components, consider using the GUI tool `bringup.py` (see [Utility Scripts](#utility-scripts) section).
+
 ### Start Robot
 
 Start Franka robot arm and gripper controller:

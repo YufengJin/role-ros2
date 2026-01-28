@@ -310,6 +310,73 @@ class TrajectoryWriter:
         self._video_files[video_id] = temp_file
         return temp_file.name
 
+    def _create_concatenated_preview(self, video_paths_dict, output_path):
+        """
+        Create a concatenated preview video from multiple camera videos.
+        
+        Args:
+            video_paths_dict: Dictionary mapping camera_id to video file path
+            output_path: Path to save the concatenated preview video
+        """
+        # Read all videos
+        video_readers = {}
+        frame_counts = {}
+        
+        try:
+            # Open all video readers
+            for camera_id, video_path in video_paths_dict.items():
+                reader = imageio.get_reader(video_path)
+                video_readers[camera_id] = reader
+                frame_counts[camera_id] = reader.count_frames()
+            
+            # Get minimum frame count (to ensure all videos are same length)
+            min_frames = min(frame_counts.values()) if frame_counts else 0
+            
+            if min_frames == 0:
+                return  # No frames to process
+            
+            # Get video properties from first video
+            first_reader = list(video_readers.values())[0]
+            first_frame = first_reader.get_data(0)
+            frame_height, frame_width = first_frame.shape[:2]
+            
+            # Create concatenated video writer
+            # Arrange cameras horizontally (side by side)
+            num_cameras = len(video_readers)
+            concatenated_width = frame_width * num_cameras
+            concatenated_height = frame_height
+            
+            writer = imageio.get_writer(output_path, fps=first_reader.get_meta_data().get('fps', 30))
+            
+            # Process each frame
+            for frame_idx in range(min_frames):
+                # Read frame from each camera
+                frames = []
+                for camera_id in sorted(video_readers.keys()):  # Sort for consistent order
+                    reader = video_readers[camera_id]
+                    frame = reader.get_data(frame_idx)
+                    frames.append(frame)
+                
+                # Concatenate frames horizontally
+                concatenated_frame = np.hstack(frames)
+                
+                # Write concatenated frame
+                writer.append_data(concatenated_frame)
+            
+            # Close writer and readers
+            writer.close()
+            for reader in video_readers.values():
+                reader.close()
+                
+        except Exception as e:
+            # Clean up on error
+            for reader in video_readers.values():
+                try:
+                    reader.close()
+                except:
+                    pass
+            raise
+
     def close(self, metadata=None):
         """
         Close the trajectory file.
@@ -325,11 +392,26 @@ class TrajectoryWriter:
         for queue in self._queue_dict.values():
             queue.join()
 
-        # Close Video Writers
+        # Close Video Writers (this finalizes the video files)
         for video_id in self._video_writers:
             self._video_writers[video_id].close()
 
-        # Save Serialized Videos
+        # Get trajectory file directory for saving preview videos
+        traj_dir = os.path.dirname(self._filepath)
+        
+        # Create mp4 subdirectory for preview videos
+        mp4_dir = None
+        if self._save_images and traj_dir:
+            try:
+                mp4_dir = os.path.join(traj_dir, "mp4")
+                os.makedirs(mp4_dir, exist_ok=True)
+            except Exception:
+                mp4_dir = None  # Silently fail, will skip preview video saving
+
+        # Store video file paths for potential concatenation
+        saved_video_paths = {}
+
+        # Save Serialized Videos and create preview MP4 files
         for video_id in self._video_files:
             # Create Folder
             if "observations" not in self._hdf5_file:
@@ -337,18 +419,65 @@ class TrajectoryWriter:
             if "videos" not in self._hdf5_file["observations"]:
                 self._hdf5_file["observations"].create_group("videos")
 
-            # Get Serialized Video
-            self._video_files[video_id].seek(0)
-            serialized_video = np.asarray(bytearray(self._video_files[video_id].read()))
+            # Read video file content before closing
+            video_file = self._video_files[video_id]
+            video_file_path = video_file.name
+            
+            # Read video content from file (since file is still open)
+            video_file.seek(0)
+            video_content = video_file.read()
+            
+            # Convert to numpy array for HDF5 storage
+            serialized_video = np.asarray(bytearray(video_content))
 
-            # Save Data
+            # Save Data to HDF5
             self._hdf5_file["observations"]["videos"].create_dataset(video_id, data=serialized_video)
-            self._video_files[video_id].close()
-            # Clean up temp file
+            
+            # Save individual camera MP4 file to mp4/ subdirectory
+            if mp4_dir:
+                try:
+                    # Save each camera video: mp4/{camera_id}.mp4
+                    camera_video_path = os.path.join(mp4_dir, f"{video_id}.mp4")
+                    with open(camera_video_path, 'wb') as camera_file:
+                        camera_file.write(video_content)
+                    saved_video_paths[video_id] = camera_video_path
+                except Exception:
+                    # Silently fail if preview video cannot be saved
+                    pass
+            
+            # Close and clean up temp file
+            video_file.close()
             try:
-                os.unlink(self._video_files[video_id].name)
+                os.unlink(video_file_path)
             except Exception:
                 pass
+
+        # Create concatenated preview video if multiple cameras exist
+        if mp4_dir and len(saved_video_paths) > 1:
+            try:
+                self._create_concatenated_preview(saved_video_paths, os.path.join(mp4_dir, "preview.mp4"))
+            except Exception:
+                # Silently fail if concatenation cannot be done
+                pass
+        elif mp4_dir and len(saved_video_paths) == 1:
+            # Single camera: rename the only video to preview.mp4
+            try:
+                single_camera_path = list(saved_video_paths.values())[0]
+                preview_path = os.path.join(mp4_dir, "preview.mp4")
+                if single_camera_path != preview_path:
+                    # Only rename if different
+                    if os.path.exists(preview_path):
+                        os.remove(preview_path)
+                    os.rename(single_camera_path, preview_path)
+            except Exception:
+                # If rename fails, try copying instead
+                try:
+                    single_camera_path = list(saved_video_paths.values())[0]
+                    preview_path = os.path.join(mp4_dir, "preview.mp4")
+                    with open(single_camera_path, 'rb') as src, open(preview_path, 'wb') as dst:
+                        dst.write(src.read())
+                except Exception:
+                    pass
 
         # Close File
         self._hdf5_file.close()
