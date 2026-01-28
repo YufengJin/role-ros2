@@ -678,6 +678,7 @@ class CollectTrajectory:
         self.right_controller = args.right_controller
         self.pos_vel_scale = args.pos_vel_scale
         self.rot_vel_scale = args.rot_vel_scale
+        self.mirror_xy = args.mirror_xy
         self.horizon = None if args.horizon <= 0 else args.horizon
         self.enable_viz = args.viz
         
@@ -807,11 +808,13 @@ class CollectTrajectory:
             self.controller = VRPolicy(
                 right_controller=self.right_controller,
                 pos_vel_scale=self.pos_vel_scale,
-                rot_vel_scale=self.rot_vel_scale
+                rot_vel_scale=self.rot_vel_scale,
+                mirror_xy=self.mirror_xy
             )
             controller_side = "RIGHT" if self.right_controller else "LEFT"
             scale_info = f"pos_scale={self.pos_vel_scale:.2f}, rot_scale={self.rot_vel_scale:.2f}"
-            self._print(f"   ✅ VRPolicy initialized ({controller_side} controller, {scale_info})")
+            mirror_info = ", mirror_xy=True" if self.mirror_xy else ""
+            self._print(f"   ✅ VRPolicy initialized ({controller_side} controller, {scale_info}{mirror_info})")
         except Exception as e:
             self._print(f"   ❌ Failed to initialize VRPolicy: {e}")
             raise
@@ -1276,6 +1279,11 @@ Examples:
         type=float,
         default=1.0,
         help='Scale factor for rotation velocity (0.0-1.0, reduces rotational movement, default: 1.0)'
+    )
+    parser.add_argument(
+        '--mirror-xy',
+        action='store_true',
+        help='Mirror X and Y axes: forward<->backward, left<->right (Z axis unchanged)'
     )
     
     # Robot reset settings

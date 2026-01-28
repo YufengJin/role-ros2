@@ -60,6 +60,7 @@ class VRPolicy:
         pos_vel_scale: float = 1.0,
         rot_vel_scale: float = 1.0,
         rmat_reorder: list = [-2, -1, -3, 4],
+        mirror_xy: bool = False,
     ):
         """
         Initialize VR Policy.
@@ -76,6 +77,7 @@ class VRPolicy:
             pos_vel_scale: Scale factor for position velocity (0.0-1.0, reduces linear movement)
             rot_vel_scale: Scale factor for rotation velocity (0.0-1.0, reduces rotational movement)
             rmat_reorder: Reorder matrix vector
+            mirror_xy: If True, mirror X and Y axes (forward<->backward, left<->right, Z unchanged)
         """
         self.oculus_reader = OculusReader()
         self.vr_to_global_mat = np.eye(4)
@@ -90,6 +92,7 @@ class VRPolicy:
         self.rot_vel_scale = rot_vel_scale
         self.global_to_env_mat = vec_to_reorder_mat(rmat_reorder)
         self.controller_id = "r" if right_controller else "l"
+        self.mirror_xy = mirror_xy  # Mirror X and Y axes (forward<->backward, left<->right)
         self.reset_orientation = True
         self.reset_state()
 
@@ -165,6 +168,14 @@ class VRPolicy:
         rot_mat = np.asarray(self._state["poses"][self.controller_id])
         rot_mat = self.global_to_env_mat @ self.vr_to_global_mat @ rot_mat
         vr_pos = self.spatial_coeff * rot_mat[:3, 3]
+        
+        # Mirror X and Y axes if enabled (Z axis unchanged)
+        # This makes: forward<->backward, left<->right, but up/down stays the same
+        if self.mirror_xy:
+            vr_pos[0] *= -1  # Mirror X axis
+            vr_pos[1] *= -1  # Mirror Y axis
+            # Z axis (vr_pos[2]) remains unchanged
+        
         vr_quat = rmat_to_quat(rot_mat[:3, :3])
         
         # VR trigger value matches droid gripper convention:

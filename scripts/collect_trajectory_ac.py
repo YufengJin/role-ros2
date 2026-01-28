@@ -680,6 +680,7 @@ class CollectTrajectoryAC:
         self.right_controller = args.right_controller
         self.pos_vel_scale = args.pos_vel_scale
         self.rot_vel_scale = args.rot_vel_scale
+        self.mirror_xy = args.mirror_xy
         self.horizon = None if args.horizon <= 0 else args.horizon
         self.enable_viz = args.viz
         
@@ -818,7 +819,8 @@ class CollectTrajectoryAC:
             self.controller = VRPolicy(
                 right_controller=self.right_controller,
                 pos_vel_scale=self.pos_vel_scale,
-                rot_vel_scale=self.rot_vel_scale
+                rot_vel_scale=self.rot_vel_scale,
+                mirror_xy=self.mirror_xy
             )
             controller_side = "RIGHT" if self.right_controller else "LEFT"
             scale_info = f"pos_scale={self.pos_vel_scale:.2f}, rot_scale={self.rot_vel_scale:.2f}"
@@ -1335,8 +1337,13 @@ Examples:
     parser.add_argument(
         '--rot-vel-scale',
         type=float,
-        default=1.0,
+        default=0.5,
         help='Scale factor for rotation velocity (0.0-1.0, reduces rotational movement, default: 1.0)'
+    )
+    parser.add_argument(
+        '--mirror-xy',
+        action='store_true',
+        help='Mirror X and Y axes: forward<->backward, left<->right (Z axis unchanged)'
     )
     
     # Robot reset settings
@@ -1370,13 +1377,13 @@ Examples:
     parser.add_argument(
         '--action-steps',
         type=int,
-        default=4,
+        default=8,
         help='Number of steps to execute actions (default: 4)'
     )
     parser.add_argument(
         '--sleep-steps',
         type=int,
-        default=2,
+        default=4,
         help='Number of steps to sleep (zero action, hold current state) (default: 2)'
     )
     
