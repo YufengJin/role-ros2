@@ -1,6 +1,10 @@
 #!/bin/bash
 # Launch robot server for Polymetis
 #
+# When using ros2 launch role_ros2 franka_robot.launch.py, cleanup is already done
+# by the launch file (cleanup_polymetis_servers.sh). The pkill below is for standalone
+# use when you run this script directly.
+#
 # Usage: 
 #   ./launch_robot.sh                    # Use defaults from franka_robot_config_v2.yaml
 #   ./launch_robot.sh [robot_ip]         # Specify robot IP
@@ -36,12 +40,14 @@ echo "Server Port:   ${ROBOT_PORT}"
 echo "Real-time:     ${USE_REAL_TIME}"
 echo "========================================"
 
-# Kill any existing processes
+# Kill any existing robot server processes (for standalone use).
+# Use launch_robot\.py so we do NOT match this script's process (launch_robot.sh).
 echo "Cleaning up existing processes..."
 pkill -9 -f "run_server" 2>/dev/null || true
 pkill -9 -f "polymetis.*server" 2>/dev/null || true
 pkill -9 -f "franka_panda_cl" 2>/dev/null || true
 pkill -9 -f "franka_panda_client" 2>/dev/null || true
+pkill -9 -f "launch_robot\.py" 2>/dev/null || true
 
 # Wait for processes to terminate
 sleep 1

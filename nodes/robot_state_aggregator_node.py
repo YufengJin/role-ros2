@@ -33,10 +33,6 @@ from sensor_msgs.msg import JointState
 from role_ros2.msg import (
     ArmState, GripperState, RobotState,
 )
-# Import legacy messages for backward compatibility
-from role_ros2.msg import (
-    PolymetisGripperState, PolymetisRobotState
-)
 
 
 class RobotStateAggregatorNode(Node):
@@ -102,17 +98,7 @@ class RobotStateAggregatorNode(Node):
         self._robot_state_publisher = self.create_publisher(
             RobotState, '/robot_state', qos
         )
-        
-        # Legacy PolymetisRobotState publisher for backward compatibility
-        self._legacy_robot_state_publisher = self.create_publisher(
-            PolymetisRobotState, '/polymetis/robot_state', qos
-        )
-        
-        # Legacy gripper state publisher for backward compatibility
-        self._legacy_gripper_state_publisher = self.create_publisher(
-            PolymetisGripperState, '/polymetis/gripper_state', qos
-        )
-        
+
         # ===== Subscribers =====
         self._joint_state_subscribers = {}
         self._arm_state_subscribers = {}
@@ -252,85 +238,7 @@ class RobotStateAggregatorNode(Node):
             robot_state.gripper_states = gripper_states_list
             
             self._robot_state_publisher.publish(robot_state)
-            
-            # Publish legacy PolymetisRobotState for backward compatibility
-            # Use first arm state if available
-            if self._arm_states and self._gripper_states:
-                self._publish_legacy_robot_state()
-    
-    def _publish_legacy_robot_state(self):
-        """Publish legacy PolymetisRobotState for backward compatibility."""
-        now = self.get_clock().now()
-        
-        # Get first arm state
-        arm_state = None
-        for namespace in self._robot_namespaces:
-            if namespace in self._arm_states:
-                arm_state = self._arm_states[namespace]
-                break
-        
-        # Get first gripper state
-        gripper_state = None
-        for namespace in self._robot_namespaces:
-            if namespace in self._gripper_states:
-                gripper_state = self._gripper_states[namespace]
-                break
-        
-        if arm_state is None:
-            return
-        
-        # Create legacy PolymetisRobotState message
-        msg = PolymetisRobotState()
-        msg.header.stamp = now.to_msg()
-        msg.header.frame_id = 'base_link'
-        
-        # Copy arm state fields
-        msg.joint_positions = list(arm_state.joint_positions)
-        msg.joint_velocities = list(arm_state.joint_velocities)
-        msg.joint_torques_computed = list(arm_state.joint_torques_computed)
-        msg.prev_joint_torques_computed = list(arm_state.prev_joint_torques_computed)
-        msg.prev_joint_torques_computed_safened = list(arm_state.prev_joint_torques_computed_safened)
-        msg.motor_torques_measured = list(arm_state.motor_torques_measured)
-        msg.ee_position = list(arm_state.ee_position)
-        msg.ee_quaternion = list(arm_state.ee_quaternion)
-        msg.ee_euler = list(arm_state.ee_euler)
-        msg.prev_controller_latency_ms = arm_state.prev_controller_latency_ms
-        msg.prev_command_successful = arm_state.prev_command_successful
-        msg.is_running_policy = arm_state.is_running_policy
-        msg.polymetis_timestamp_ns = arm_state.polymetis_timestamp_ns
-        
-        # Copy gripper state fields if available
-        if gripper_state is not None:
-            msg.gripper_width = gripper_state.width
-            msg.gripper_position = gripper_state.position
-            msg.gripper_is_grasped = gripper_state.is_grasped
-            msg.gripper_is_moving = gripper_state.is_moving
-            msg.gripper_prev_command_successful = gripper_state.prev_command_successful
-            msg.gripper_error_code = gripper_state.error_code
-        else:
-            msg.gripper_width = 0.0
-            msg.gripper_position = 0.0
-            msg.gripper_is_grasped = False
-            msg.gripper_is_moving = False
-            msg.gripper_prev_command_successful = True
-            msg.gripper_error_code = 0
-        
-        self._legacy_robot_state_publisher.publish(msg)
-        
-        # Also publish legacy gripper state (convert from GripperState to PolymetisGripperState)
-        if gripper_state is not None:
-            legacy_gripper_msg = PolymetisGripperState()
-            legacy_gripper_msg.header = gripper_state.header
-            legacy_gripper_msg.width = gripper_state.width
-            legacy_gripper_msg.position = gripper_state.position
-            legacy_gripper_msg.is_grasped = gripper_state.is_grasped
-            legacy_gripper_msg.is_moving = gripper_state.is_moving
-            legacy_gripper_msg.prev_command_successful = gripper_state.prev_command_successful
-            legacy_gripper_msg.error_code = gripper_state.error_code
-            legacy_gripper_msg.max_width = gripper_state.max_width
-            legacy_gripper_msg.polymetis_timestamp_ns = gripper_state.timestamp_ns
-            self._legacy_gripper_state_publisher.publish(legacy_gripper_msg)
-    
+
     def destroy_node(self):
         """Clean up resources on shutdown."""
         super().destroy_node()

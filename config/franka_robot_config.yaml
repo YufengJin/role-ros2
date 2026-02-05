@@ -210,7 +210,7 @@ max_gripper_width: 0.08
 #
 # V1 (polymetis_bridge_node.py):
 #   - Single node handling both arm and gripper
-#   - Topics: /joint_states, /polymetis/robot_state, /polymetis/gripper_state
+#   - Topics: /joint_states, /robot_state
 #   - Subscriber: /polymetis/robot_command (combined arm+gripper)
 #
 # V2 (franka_robot_interface_node.py + franka_gripper_interface_node.py):

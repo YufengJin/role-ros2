@@ -1,0 +1,86 @@
+# Bimanual Franka Robot Configuration
+# Used by bimanual_franka_robot.launch.py
+# No global section: all parameters are under left_arm and right_arm.
+# Joint names match role_ros2/robot_ik/franka/bimanual_fr3_w_soft_fin.urdf
+
+# ============================================================================
+# Left Arm
+# ============================================================================
+# robot_ip: Robot (arm) IP. robot_port/gripper_port: Host PC ports where Polymetis
+#   server listens (when auto_launch_controller runs servers on host). When
+#   auto_launch runs both arms on the same host, use different ports per side.
+# ============================================================================
+left_arm:
+  robot_ip: "172.17.0.2"
+  arm_id: "left_fr3"
+  arm_namespace: "left_arm"
+  gripper_namespace: "left_gripper"
+  urdf_file: "bimanual_fr3_w_soft_fin.urdf"
+  arm_joints:
+    - left_fr3_panda_joint1
+    - left_fr3_panda_joint2
+    - left_fr3_panda_joint3
+    - left_fr3_panda_joint4
+    - left_fr3_panda_joint5
+    - left_fr3_panda_joint6
+    - left_fr3_panda_joint7
+  gripper_joints:
+    - left_fr3_panda_finger_joint1
+    - left_fr3_panda_finger_joint2
+  use_mock: false
+  load_gripper: true
+  auto_launch_controller: true
+  robot_port: "50051"
+  gripper_port: "50052"
+  use_real_time: true
+  gripper_type: "franka_hand"
+  publish_rate: 50.0
+  timeout_threshold: 1.0
+  default_controller_mode: "joint_impedance"
+  home_joints: [0.0, -0.628, 0.0, -2.513, 0.0, 1.885, 0.0]
+  auto_reset_on_startup: false
+  auto_reset_delay: 5.0
+  reset_velocity: 0.1
+  default_gripper_speed: 0.05
+  default_gripper_force: 0.1
+  max_gripper_width: 0.08
+
+# ============================================================================
+# Right Arm (base at -y 0.98 m in URDF)
+# When auto_launch: servers run on host; use different ports than left
+# (e.g. left 50051/50052, right 50053/50054) to avoid conflict on same host.
+# ============================================================================
+right_arm:
+  robot_ip: "172.16.0.2"
+  arm_id: "right_fr3"
+  arm_namespace: "right_arm"
+  gripper_namespace: "right_gripper"
+  urdf_file: "bimanual_fr3_w_soft_fin.urdf"
+  arm_joints:
+    - right_fr3_panda_joint1
+    - right_fr3_panda_joint2
+    - right_fr3_panda_joint3
+    - right_fr3_panda_joint4
+    - right_fr3_panda_joint5
+    - right_fr3_panda_joint6
+    - right_fr3_panda_joint7
+  gripper_joints:
+    - right_fr3_panda_finger_joint1
+    - right_fr3_panda_finger_joint2
+  use_mock: false
+  load_gripper: true
+  auto_launch_controller: true
+  robot_port: "50053"
+  gripper_port: "50054"
+  use_real_time: true
+  gripper_type: "franka_hand"
+  publish_rate: 50.0
+  timeout_threshold: 1.0
+  default_controller_mode: "joint_impedance"
+  home_joints: [0.0, -0.628, 0.0, -2.513, 0.0, 1.885, 0.0]
+  auto_reset_on_startup: false
+  auto_reset_delay: 5.0
+  reset_velocity: 0.1
+  default_gripper_speed: 0.05
+  default_gripper_force: 0.1
+  max_gripper_width: 0.08

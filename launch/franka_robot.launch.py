@@ -14,7 +14,7 @@
 # limitations under the License.
 
 """
-Franka Robot V2 Launch File
+Franka Robot Launch File
 
 This launch file starts the refactored robot interface nodes:
 - franka_robot_interface_node: Arm control (namespace: /{arm_namespace})
@@ -26,14 +26,14 @@ Features:
 - Clean separation of arm and gripper control
 - Backward compatibility via robot_state_aggregator
 - Mock mode for testing without hardware
-- Auto-launch of Polymetis robot/gripper servers (like V1)
+- Auto-launch of Polymetis robot/gripper servers
 - Auto-cleanup on shutdown
 - Real-time control support
 
 Usage:
-    ros2 launch role_ros2 franka_robot_v2.launch.py
-    ros2 launch role_ros2 franka_robot_v2.launch.py use_mock:=true
-    ros2 launch role_ros2 franka_robot_v2.launch.py arm_namespace:=robot1_arm gripper_namespace:=robot1_gripper
+    ros2 launch role_ros2 franka_robot.launch.py
+    ros2 launch role_ros2 franka_robot.launch.py use_mock:=true
+    ros2 launch role_ros2 franka_robot.launch.py arm_namespace:=robot1_arm gripper_namespace:=robot1_gripper
 
 Author: Role-ROS2 Team
 """
@@ -56,22 +56,43 @@ from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node, PushRosNamespace
 
+# Delay (seconds) before starting servers after cleanup so ports are released.
+CLEANUP_DELAY = 3.0
+
+
+def _get_cleanup_script_path():
+    """Return path to kill_all.sh (external script so pkill -f does not self-match)."""
+    return os.path.join(get_package_share_directory('role_ros2'), 'kill_all.sh')
+
+
+def _run_hardware_script(script_path, *args):
+    """Build bash -c string to activate conda/micromamba and run script with args."""
+    quoted = ' '.join(f'"{a}"' for a in args)
+    return (
+        'if command -v micromamba &> /dev/null; then '
+        '  eval "$(micromamba shell hook --shell=bash)" && micromamba activate polymetis-local && '
+        f'  "{script_path}" {quoted}; '
+        'elif command -v conda &> /dev/null; then '
+        '  source $(conda info --base)/etc/profile.d/conda.sh && conda activate polymetis-local && '
+        f'  "{script_path}" {quoted}; '
+        'else '
+        f'  "{script_path}" {quoted}; '
+        'fi'
+    )
+
 
 def load_config_yaml(package_name, config_file):
     """Load launch configuration YAML file."""
     try:
         package_share_dir = get_package_share_directory(package_name)
         config_path = os.path.join(package_share_dir, 'config', config_file)
-        
         if os.path.exists(config_path):
             with open(config_path, 'r') as f:
                 config = yaml.safe_load(f)
                 return config if config else {}
-        else:
-            print(f"Warning: Config file not found: {config_path}")
+        print(f"Warning: Config file not found: {config_path}")
     except Exception as e:
         print(f"Warning: Could not load config file {config_file}: {e}")
-    
     return {}
 
 
@@ -80,7 +101,6 @@ def create_server_launch_processes(context: LaunchContext, robot_ip, use_mock,
                                    robot_port, gripper_port, use_real_time,
                                    gripper_type):
     """Create processes for launching Polymetis robot and gripper servers."""
-    # Resolve LaunchConfiguration values
     robot_ip_str = context.perform_substitution(robot_ip)
     use_mock_str = context.perform_substitution(use_mock)
     auto_launch_str = context.perform_substitution(auto_launch_controller)
@@ -88,121 +108,56 @@ def create_server_launch_processes(context: LaunchContext, robot_ip, use_mock,
     robot_port_str = context.perform_substitution(robot_port)
     gripper_port_str = context.perform_substitution(gripper_port)
     gripper_type_str = context.perform_substitution(gripper_type)
-    # Note: use_real_time is kept as launch arg for backwards compatibility but not used
-    
-    # Convert to bool
+
     use_mock_bool = use_mock_str.lower() == 'true'
     auto_launch_bool = auto_launch_str.lower() == 'true'
     load_gripper_bool = load_gripper_str.lower() == 'true'
-    # Note: use_real_time is no longer used as Polymetis doesn't support it as runtime arg
-    
+
     processes = []
-    
-    # Only launch servers in real robot mode with auto_launch enabled
     if use_mock_bool or not auto_launch_bool:
         print(f"Info: Skipping server launch (use_mock={use_mock_bool}, auto_launch={auto_launch_bool})")
         return processes
-    
+
     print(f"Info: Auto-launching Polymetis servers (robot_ip={robot_ip_str}, robot_port={robot_port_str})")
-    
-    # Step 1: Kill existing server processes (cleanup)
-    cleanup_robot_cmd = (
-        'pkill -9 -f "run_server" || '
-        'pkill -9 -f "polymetis.*server" || '
-        'pkill -9 -f "franka_panda_cl" || '
-        'pkill -9 -f "franka_panda_client" || true'
-    )
-    
-    cleanup_gripper_cmd = (
-        'pkill -9 -f "franka_hand_cl" || '
-        'pkill -9 -f "franka_hand_client" || '
-        'pkill -9 -f "launch_gripper" || '
-        'pkill -9 -f "robotiq" || true'
-    )
-    
+
     processes.append(
         ExecuteProcess(
-            cmd=['bash', '-c', cleanup_robot_cmd],
+            cmd=['bash', _get_cleanup_script_path()],
             output='screen',
-            name='cleanup_robot_server',
+            name='cleanup_robot_gripper_servers',
         )
     )
-    
-    if load_gripper_bool:
-        processes.append(
-            ExecuteProcess(
-                cmd=['bash', '-c', cleanup_gripper_cmd],
-                output='screen',
-                name='cleanup_gripper_server',
-            )
-        )
-    
-    # Step 2: Build launch_robot.py command with configurable parameters
-    # Note: Polymetis uses Hydra config system. Real-time control is configured at build time,
-    # not as a runtime argument. The --use_real_time flag is not supported.
-    
-    robot_launch_cmd = (
-        'if command -v micromamba &> /dev/null; then '
-        '  eval "$(micromamba shell hook --shell=bash)" && micromamba activate polymetis-local && '
-        f'  launch_robot.py robot_client=franka_hardware '
-        f'  robot_client.executable_cfg.robot_ip={robot_ip_str} '
-        f'  port={robot_port_str}; '
-        'elif command -v conda &> /dev/null; then '
-        '  source $(conda info --base)/etc/profile.d/conda.sh && conda activate polymetis-local && '
-        f'  launch_robot.py robot_client=franka_hardware '
-        f'  robot_client.executable_cfg.robot_ip={robot_ip_str} '
-        f'  port={robot_port_str}; '
-        'else '
-        f'  launch_robot.py robot_client=franka_hardware '
-        f'  robot_client.executable_cfg.robot_ip={robot_ip_str} '
-        f'  port={robot_port_str}; '
-        'fi'
-    )
-    
-    processes.append(
+
+    pkg_share = get_package_share_directory('role_ros2')
+    launch_robot_script = os.path.join(pkg_share, 'launch_robot.sh')
+    launch_gripper_script = os.path.join(pkg_share, 'launch_gripper.sh')
+
+    server_actions_after_cleanup = [
         ExecuteProcess(
-            cmd=['bash', '-c', robot_launch_cmd],
+            cmd=['bash', '-c', _run_hardware_script(launch_robot_script, robot_ip_str, robot_port_str)],
             output='screen',
             name='launch_robot_server',
             additional_env={'ROBOT_IP': robot_ip_str},
-        )
-    )
-    
-    # Step 3: Launch gripper server (delayed to allow robot to initialize)
+        ),
+    ]
     if load_gripper_bool:
-        gripper_launch_cmd = (
-            'if command -v micromamba &> /dev/null; then '
-            '  eval "$(micromamba shell hook --shell=bash)" && micromamba activate polymetis-local && '
-            f'  launch_gripper.py gripper={gripper_type_str} '
-            f'  gripper.executable_cfg.robot_ip={robot_ip_str} '
-            f'  port={gripper_port_str}; '
-            'elif command -v conda &> /dev/null; then '
-            '  source $(conda info --base)/etc/profile.d/conda.sh && conda activate polymetis-local && '
-            f'  launch_gripper.py gripper={gripper_type_str} '
-            f'  gripper.executable_cfg.robot_ip={robot_ip_str} '
-            f'  port={gripper_port_str}; '
-            'else '
-            f'  launch_gripper.py gripper={gripper_type_str} '
-            f'  gripper.executable_cfg.robot_ip={robot_ip_str} '
-            f'  port={gripper_port_str}; '
-            'fi'
-        )
-        
-        # Wrap in TimerAction to delay gripper server launch
-        processes.append(
+        server_actions_after_cleanup.append(
             TimerAction(
                 period=5.0,
                 actions=[
                     ExecuteProcess(
-                        cmd=['bash', '-c', gripper_launch_cmd],
+                        cmd=['bash', '-c', _run_hardware_script(
+                            launch_gripper_script, robot_ip_str, gripper_port_str, gripper_type_str
+                        )],
                         output='screen',
                         name='launch_gripper_server',
                         additional_env={'ROBOT_IP': robot_ip_str},
-                    )
-                ]
+                    ),
+                ],
             )
         )
-    
+
+    processes.append(TimerAction(period=CLEANUP_DELAY, actions=server_actions_after_cleanup))
     return processes
 
 
@@ -234,12 +189,14 @@ def create_robot_nodes(context: LaunchContext, arm_id, urdf_file, use_mock,
     publish_rate_float = float(publish_rate_str)
     auto_reset_delay_float = float(auto_reset_delay_str)
     
-    # Load URDF from install directory
+    # Load config (URDF path and joint names)
     config = load_config_yaml('role_ros2', 'franka_robot_config.yaml')
-    
+    arm_joints_from_config = config.get('arm_joints', [])
+    gripper_joints_from_config = config.get('gripper_joints', [])
+
     if not urdf_file_str:
         urdf_file_str = config.get('urdf_file', f'{arm_id_str}.urdf')
-    
+
     package_share_dir = get_package_share_directory('role_ros2')
     urdf_filepath = os.path.join(package_share_dir, 'robot_ik', 'franka', urdf_file_str)
     
@@ -275,12 +232,9 @@ def create_robot_nodes(context: LaunchContext, arm_id, urdf_file, use_mock,
         {'namespace': arm_namespace_str},
         {'auto_reset_on_startup': auto_reset_bool},
         {'auto_reset_delay': auto_reset_delay_float},
+        {'arm_joint_names': arm_joints_from_config},
+        {'polymetis_port': int(robot_port_str)},
     ]
-    
-    # Add port if not default
-    if robot_port_str != '50051':
-        arm_node_params.append({'polymetis_port': int(robot_port_str)})
-    
     arm_node = GroupAction([
         PushRosNamespace(arm_namespace_str),
         Node(
@@ -298,12 +252,9 @@ def create_robot_nodes(context: LaunchContext, arm_id, urdf_file, use_mock,
         {'ip_address': 'localhost'},
         {'publish_rate': publish_rate_float},
         {'namespace': gripper_namespace_str},
+        {'gripper_joint_names': gripper_joints_from_config},
+        {'polymetis_port': int(gripper_port_str)},
     ]
-    
-    # Add port if not default
-    if gripper_port_str != '50052':
-        gripper_node_params.append({'polymetis_port': int(gripper_port_str)})
-    
     gripper_node = None
     if load_gripper_bool:
         gripper_node = GroupAction([
@@ -507,19 +458,7 @@ def generate_launch_description():
             OnShutdown(
                 on_shutdown=[
                     ExecuteProcess(
-                        cmd=['bash', '-c',
-                            'echo "V2: Cleaning up robot and gripper servers..." && '
-                            'pkill -9 -f "run_server" || true && '
-                            'pkill -9 -f "polymetis.*server" || true && '
-                            'pkill -9 -f "franka_panda_cl" || true && '
-                            'pkill -9 -f "franka_panda_client" || true && '
-                            'pkill -9 -f "franka_hand_cl" || true && '
-                            'pkill -9 -f "franka_hand_client" || true && '
-                            'pkill -9 -f "launch_gripper" || true && '
-                            'pkill -9 -f "launch_robot" || true && '
-                            'pkill -9 -f "robotiq" || true && '
-                            'echo "V2: Cleanup complete."'
-                        ],
+                        cmd=['bash', '-c', 'echo "Cleaning up robot and gripper servers..." && bash "%s" && echo "Cleanup complete."' % _get_cleanup_script_path()],
                         output='screen',
                         condition=IfCondition(
                             PythonExpression(["'", use_mock, "' == 'false' and '", auto_launch_controller, "' == 'true'"])

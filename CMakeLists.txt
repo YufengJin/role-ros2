@@ -150,6 +150,14 @@ install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME}/
 )
 
+# Install hardware scripts (kill_all, launch_robot, launch_gripper) for launch files
+install(PROGRAMS
+  hardware/franka/launch/kill_all.sh
+  hardware/franka/launch/launch_robot.sh
+  hardware/franka/launch/launch_gripper.sh
+  DESTINATION share/${PROJECT_NAME}
+)
+
 # Install configuration files (for launch files to load)
 install(DIRECTORY config
   DESTINATION share/${PROJECT_NAME}/
@@ -168,6 +176,7 @@ install(FILES
   role_ros2/robot_ik/franka/fr3.urdf
   role_ros2/robot_ik/franka/fr3_w_fin.urdf
   role_ros2/robot_ik/franka/fr3_w_soft_fin.urdf
+  role_ros2/robot_ik/franka/bimanual_fr3_w_soft_fin.urdf
   DESTINATION share/${PROJECT_NAME}/robot_ik/franka
 )
 

@@ -24,9 +24,7 @@ import time
 import threading
 import os
 import sys
-import yaml
 import traceback
-from pathlib import Path
 from typing import Optional, List, Tuple
 import numpy as np
 
@@ -59,60 +57,6 @@ DEFAULT_GRIPPER_SPEED = 0.05  # Default gripper movement speed (m/s)
 DEFAULT_GRIPPER_FORCE = 0.1  # Default gripper force (normalized 0-1)
 
 # ============================================================================
-
-
-def load_gripper_joint_names_from_config(config_file: Optional[str] = None) -> Tuple[List[str], str]:
-    """
-    Load gripper joint names from config/franka_robot_config.yaml.
-    
-    Args:
-        config_file: Path to config file. If None, use ROS2 package share directory.
-    
-    Returns:
-        tuple: (gripper_joint_names, arm_id)
-    """
-    if config_file is None:
-        try:
-            from ament_index_python.packages import get_package_share_directory
-            package_share_dir = get_package_share_directory('role_ros2')
-            config_file = Path(package_share_dir) / 'config' / 'franka_robot_config.yaml'
-        except Exception as e:
-            raise FileNotFoundError(f"Failed to get package share directory: {e}")
-    else:
-        config_file = Path(config_file)
-    
-    if not config_file.exists():
-        raise FileNotFoundError(f"Config file not found: {config_file}")
-    
-    try:
-        with open(config_file, 'r') as f:
-            config = yaml.safe_load(f)
-    except Exception as e:
-        raise ValueError(f"Failed to parse config file {config_file}: {e}")
-    
-    if config is None:
-        raise ValueError(f"Config file {config_file} is empty or invalid YAML")
-    
-    gripper_joints = config.get('gripper_joints', [])
-    arm_id = config.get('arm_id', '')
-    
-    if not isinstance(gripper_joints, list):
-        raise ValueError(f"gripper_joints must be a list, got {type(gripper_joints).__name__}")
-    if not isinstance(arm_id, str) or not arm_id:
-        raise ValueError("arm_id is missing or empty in franka_robot_config.yaml")
-    if not gripper_joints:
-        raise ValueError("gripper_joints is empty or missing in franka_robot_config.yaml")
-    
-    for joint in gripper_joints:
-        if not isinstance(joint, str):
-            raise ValueError(f"Joint name must be a string, got {type(joint).__name__}: {joint}")
-        if not joint.startswith(f'{arm_id}_'):
-            raise ValueError(
-                f"Gripper joint name '{joint}' does not match arm_id '{arm_id}'. "
-                f"Expected format: '{arm_id}_panda_finger_jointX'"
-            )
-    
-    return gripper_joints, arm_id
 
 
 class MockGripperInterface:
@@ -223,31 +167,31 @@ class FrankaGripperInterfaceNode(Node):
         node_name = 'franka_gripper_interface_node'
         super().__init__(node_name, namespace=namespace)
         
-        # Declare parameters
+        # Declare parameters (joint names are passed from launch; launch reads from config)
         self.declare_parameter('use_mock', use_mock)
         self.declare_parameter('ip_address', ip_address)
         self.declare_parameter('publish_rate', 50.0)
         self.declare_parameter('namespace', namespace)
-        
-        # Load gripper joint names from config
-        try:
-            gripper_joints, arm_id = load_gripper_joint_names_from_config()
-            self.get_logger().info(f"Loaded {len(gripper_joints)} gripper joint names for {arm_id}")
-        except (FileNotFoundError, ValueError) as e:
-            error_msg = f"Failed to load gripper joint names: {e}"
-            self.get_logger().error(error_msg)
-            raise
-        
-        self.declare_parameter('gripper_joint_names', gripper_joints)
-        
-        # Get parameters
+        self.declare_parameter('gripper_joint_names', [])
+        self.declare_parameter('polymetis_port', 50052)
+
+        # Get parameters (ROS 2: declare then get; launch must pass gripper_joint_names from config)
         use_mock = self.get_parameter('use_mock').get_parameter_value().bool_value
         ip_address = self.get_parameter('ip_address').get_parameter_value().string_value
+        polymetis_port = self.get_parameter('polymetis_port').get_parameter_value().integer_value
         self.publish_rate = self.get_parameter('publish_rate').get_parameter_value().double_value
-        self.gripper_joint_names = list(self.get_parameter('gripper_joint_names').get_parameter_value().string_array_value)
         self._namespace = self.get_parameter('namespace').get_parameter_value().string_value
-        
-        self.get_logger().info(f"Using gripper joint names: {self.gripper_joint_names}")
+        self.gripper_joint_names = list(
+            self.get_parameter('gripper_joint_names').get_parameter_value().string_array_value
+        )
+        if not self.gripper_joint_names:
+            raise ValueError(
+                "gripper_joint_names is empty. Launch file must pass gripper_joints from config "
+                "(franka_robot_config.yaml or bimanual_franka_robot_config.yaml)."
+            )
+        self.get_logger().info(
+            f"Using {len(self.gripper_joint_names)} gripper joint names: {self.gripper_joint_names}"
+        )
         
         # Initialize gripper interface
         self._gripper: Optional[GripperInterface] = None
@@ -257,8 +201,8 @@ class FrankaGripperInterfaceNode(Node):
                 self.get_logger().info("Using MockGripperInterface (no hardware)")
                 self._gripper = MockGripperInterface(update_rate=self.publish_rate)
             else:
-                self.get_logger().info(f"Connecting to Polymetis gripper server at {ip_address}")
-                self._gripper = self._init_gripper_interface_with_retry(ip_address)
+                self.get_logger().info(f"Connecting to Polymetis gripper server at {ip_address}:{polymetis_port}")
+                self._gripper = self._init_gripper_interface_with_retry(ip_address, polymetis_port)
                 if self._gripper is None:
                     self.get_logger().warn("Failed to initialize real gripper. Using mock.")
                     self._gripper = MockGripperInterface(update_rate=self.publish_rate)
@@ -383,27 +327,29 @@ class FrankaGripperInterfaceNode(Node):
         except Exception as e:
             self.get_logger().warn(f"⚠️ Failed to open gripper on startup: {e}")
     
-    def _init_gripper_interface_with_retry(self, ip_address: str, max_retries: int = 10, retry_delay: float = 0.5):
+    def _init_gripper_interface_with_retry(self, ip_address: str, port: int = 50052,
+                                           max_retries: int = 10, retry_delay: float = 0.5):
         """
         Initialize GripperInterface with retry mechanism.
-        
+
         Args:
             ip_address: IP address of the gripper server
+            port: Port of the gripper server (default 50052)
             max_retries: Maximum number of retry attempts
             retry_delay: Initial delay between retries in seconds
-        
+
         Returns:
             GripperInterface or None if all retries failed
         """
         import grpc
-        
+
         for attempt in range(max_retries):
             try:
                 if attempt > 0:
                     self.get_logger().info(
                         f"Initializing GripperInterface (attempt {attempt + 1}/{max_retries})..."
                     )
-                gripper = GripperInterface(ip_address=ip_address)
+                gripper = GripperInterface(ip_address=ip_address, port=port)
                 
                 if hasattr(gripper, 'metadata') and gripper.metadata is not None:
                     self.get_logger().info(

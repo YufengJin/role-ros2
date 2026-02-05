@@ -34,11 +34,9 @@ import time
 import threading
 import os
 import sys
-import yaml
 import traceback
 import subprocess
 import signal
-from pathlib import Path
 from typing import Optional, List, Tuple
 import numpy as np
 from scipy.spatial.transform import Rotation as R
@@ -112,64 +110,6 @@ MAX_VELOCITY_FOR_TIME_CALC = 1.0  # Maximum velocity for time calculation (rad/s
 MAX_VELOCITY_SLOW = 0.1  # Maximum velocity for slow/safe movements (rad/s)
 
 # ============================================================================
-
-
-def load_joint_names_from_config(config_file: Optional[str] = None) -> Tuple[List[str], str]:
-    """
-    Load arm joint names from config/franka_robot_config.yaml.
-    
-    Args:
-        config_file: Path to config file. If None, use ROS2 package share directory.
-    
-    Returns:
-        tuple: (arm_joint_names, arm_id)
-    
-    Raises:
-        FileNotFoundError: If config file not found
-        ValueError: If joint names are missing or don't match arm_id format
-    """
-    if config_file is None:
-        try:
-            from ament_index_python.packages import get_package_share_directory
-            package_share_dir = get_package_share_directory('role_ros2')
-            config_file = Path(package_share_dir) / 'config' / 'franka_robot_config.yaml'
-        except Exception as e:
-            raise FileNotFoundError(f"Failed to get package share directory: {e}")
-    else:
-        config_file = Path(config_file)
-    
-    if not config_file.exists():
-        raise FileNotFoundError(f"Config file not found: {config_file}")
-    
-    try:
-        with open(config_file, 'r') as f:
-            config = yaml.safe_load(f)
-    except Exception as e:
-        raise ValueError(f"Failed to parse config file {config_file}: {e}")
-    
-    if config is None:
-        raise ValueError(f"Config file {config_file} is empty or invalid YAML")
-    
-    arm_joints = config.get('arm_joints', [])
-    arm_id = config.get('arm_id', '')
-    
-    if not isinstance(arm_joints, list):
-        raise ValueError(f"arm_joints must be a list, got {type(arm_joints).__name__}")
-    if not isinstance(arm_id, str) or not arm_id:
-        raise ValueError("arm_id is missing or empty in franka_robot_config.yaml")
-    if not arm_joints:
-        raise ValueError("arm_joints is empty or missing in franka_robot_config.yaml")
-    
-    for joint in arm_joints:
-        if not isinstance(joint, str):
-            raise ValueError(f"Joint name must be a string, got {type(joint).__name__}: {joint}")
-        if not joint.startswith(f'{arm_id}_'):
-            raise ValueError(
-                f"Joint name '{joint}' does not match arm_id '{arm_id}'. "
-                f"Expected format: '{arm_id}_panda_jointX'"
-            )
-    
-    return arm_joints, arm_id
 
 
 class MockRobotInterface:
@@ -438,31 +378,29 @@ class FrankaRobotInterfaceNode(Node):
         node_name = 'franka_robot_interface_node'
         super().__init__(node_name, namespace=namespace)
         
-        # Declare parameters
+        # Declare parameters (joint names are passed from launch; launch reads from config)
         self.declare_parameter('use_mock', use_mock)
         self.declare_parameter('ip_address', ip_address)
         self.declare_parameter('publish_rate', 50.0)
         self.declare_parameter('namespace', namespace)
-        
-        # Load joint names from config
-        try:
-            arm_joints, arm_id = load_joint_names_from_config()
-            self.get_logger().info(f"Loaded {len(arm_joints)} arm joint names for {arm_id}")
-        except (FileNotFoundError, ValueError) as e:
-            error_msg = f"Failed to load joint names: {e}"
-            self.get_logger().error(error_msg)
-            raise
-        
-        self.declare_parameter('arm_joint_names', arm_joints)
-        
-        # Get parameters
+        self.declare_parameter('arm_joint_names', [])
+        self.declare_parameter('polymetis_port', 50051)
+
+        # Get parameters (ROS 2: declare then get; launch must pass arm_joint_names from config)
         use_mock = self.get_parameter('use_mock').get_parameter_value().bool_value
         ip_address = self.get_parameter('ip_address').get_parameter_value().string_value
+        polymetis_port = self.get_parameter('polymetis_port').get_parameter_value().integer_value
         self.publish_rate = self.get_parameter('publish_rate').get_parameter_value().double_value
-        self.arm_joint_names = list(self.get_parameter('arm_joint_names').get_parameter_value().string_array_value)
         self._namespace = self.get_parameter('namespace').get_parameter_value().string_value
-        
-        self.get_logger().info(f"Using joint names: {self.arm_joint_names}")
+        self.arm_joint_names = list(
+            self.get_parameter('arm_joint_names').get_parameter_value().string_array_value
+        )
+        if not self.arm_joint_names:
+            raise ValueError(
+                "arm_joint_names is empty. Launch file must pass arm_joints from config "
+                "(franka_robot_config.yaml or bimanual_franka_robot_config.yaml)."
+            )
+        self.get_logger().info(f"Using {len(self.arm_joint_names)} arm joint names: {self.arm_joint_names}")
         
         # Initialize robot interface
         self._robot: Optional[RobotInterface] = None
@@ -472,8 +410,8 @@ class FrankaRobotInterfaceNode(Node):
                 self.get_logger().info("Using MockRobotInterface (no hardware)")
                 self._robot = MockRobotInterface(num_dofs=7, update_rate=self.publish_rate)
             else:
-                self.get_logger().info(f"Connecting to Polymetis server at {ip_address}")
-                self._robot = RobotInterface(ip_address=ip_address)
+                self.get_logger().info(f"Connecting to Polymetis server at {ip_address}:{polymetis_port}")
+                self._robot = RobotInterface(ip_address=ip_address, port=polymetis_port)
                 self.get_logger().info("Successfully connected to Polymetis server")
         except Exception as e:
             self.get_logger().error(f"Failed to connect to Polymetis: {e}. Using mock interface.")

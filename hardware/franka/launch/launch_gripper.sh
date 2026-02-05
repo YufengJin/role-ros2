@@ -1,6 +1,10 @@
 #!/bin/bash
 # Launch gripper server for Polymetis
 #
+# When using ros2 launch role_ros2 franka_robot.launch.py, cleanup is already done
+# by the launch file (cleanup_polymetis_servers.sh). The pkill below is for standalone
+# use when you run this script directly.
+#
 # Usage:
 #   ./launch_gripper.sh                              # Use defaults from franka_robot_config_v2.yaml
 #   ./launch_gripper.sh [robot_ip]                   # Specify robot IP
@@ -47,12 +51,13 @@ if [ "$GRIPPER_TYPE" = "robotiq_2f" ]; then
 fi
 echo "========================================"
 
-# Kill any existing processes
+# Kill any existing gripper server processes (for standalone use).
+# Use launch_gripper\.py so we do NOT match this script's process (launch_gripper.sh).
 echo "Cleaning up existing processes..."
 pkill -9 -f "franka_hand_cl" 2>/dev/null || true
 pkill -9 -f "franka_hand_client" 2>/dev/null || true
 pkill -9 -f "robotiq" 2>/dev/null || true
-pkill -9 -f "launch_gripper" 2>/dev/null || true
+pkill -9 -f "launch_gripper\.py" 2>/dev/null || true
 
 # Wait for processes to terminate
 sleep 1
