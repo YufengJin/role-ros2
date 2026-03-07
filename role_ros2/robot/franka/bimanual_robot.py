@@ -72,8 +72,8 @@ class BimanualFrankaRobot(BaseRobot):
     - gripper_states[i]: gripper position, width, etc.
     """
 
-    DOF_CARTESIAN = 16  # 6+6+2 (left arm, right arm, left gripper, right gripper)
-    DOF_JOINT = 18     # 7+7+2
+    DOF_CARTESIAN = 14  # 6+6+2 (left arm, right arm, left gripper, right gripper)
+    DOF_JOINT = 16     # 7+7+2
 
     _DEFAULT_ARM_STATE = {
         "cartesian_position_local": [0.0] * 6,
@@ -194,8 +194,10 @@ class BimanualFrankaRobot(BaseRobot):
             self._executor.add_node(self._node)
             self._spin_thread = threading.Thread(target=self._spin_executor, daemon=True)
             self._spin_thread.start()
+            self._wait_for_state(timeout=5.0)
+        # When _own_node=False, executor is external; wait_for_ready() should be
+        # called by the caller (e.g. RobotEnv) after the executor is running.
 
-        self._wait_for_state(timeout=5.0)
         self._node.get_logger().info(
             f"BimanualFrankaRobot initialized "
             f"(arms: {arm_namespaces}, grippers: {gripper_namespaces})"
@@ -221,6 +223,14 @@ class BimanualFrankaRobot(BaseRobot):
                     return
             time.sleep(0.1)
         self._node.get_logger().warn("Timeout waiting for initial bimanual robot state")
+
+    def wait_for_ready(self, timeout: float = 5.0):
+        """
+        Wait for initial robot state to be received.
+
+        Call this after the node's executor is running (e.g. when using external node).
+        """
+        self._wait_for_state(timeout=timeout)
 
     def _find_arm_gripper(self, msg: RobotState) -> Tuple:
         """
@@ -263,8 +273,8 @@ class BimanualFrankaRobot(BaseRobot):
 
         Returns:
             tuple: (state_dict, timestamp_dict)
-            state_dict has left_arm, right_arm (each with cartesian_position in arm base
-            frame for IK, and cartesian_position in base_link for observation),
+            state_dict has left_arm, right_arm (each with cartesian_position_local in arm
+            base frame for IK, and cartesian_position in base_link for observation),
             left_gripper_position, right_gripper_position.
         """
         with self._state_lock:
@@ -343,11 +353,11 @@ class BimanualFrankaRobot(BaseRobot):
         Create action dictionary from action array.
 
         Action format:
-        - cartesian_velocity: [left_lin(3), left_rot(3), right_lin(3), right_rot(3), left_grip, right_grip] = 16D
+        - cartesian_velocity: [left_lin(3), left_rot(3), right_lin(3), right_rot(3), left_grip, right_grip] = 14D
         - joint_velocity: [left_joint(7), right_joint(7), left_grip, right_grip] = 18D
-        - cartesian_position / joint_position: same structure, 16D / 18D
+        - cartesian_position / joint_position: same structure, 14D / 18D
 
-        Uses robot_state["left_arm"]["cartesian_position"] (arm base frame) for IK.
+        Uses robot_state["left_arm"]["cartesian_position_local"] (arm base frame) for IK.
         """
         assert action_space in [
             "cartesian_position",
@@ -464,7 +474,7 @@ class BimanualFrankaRobot(BaseRobot):
         Update robot command for both arms and grippers.
 
         Args:
-            command: 16D (cartesian) or 18D (joint) action array
+            command: 14D (cartesian) or 18D (joint) action array
             action_space: "cartesian_position", "joint_position", "cartesian_velocity", "joint_velocity"
             gripper_action_space: "position" or "velocity"
             blocking: Whether to wait for completion (not fully supported for bimanual)
@@ -480,9 +490,8 @@ class BimanualFrankaRobot(BaseRobot):
         left_grip = action_dict["left_gripper_position"]
         right_grip = action_dict["right_gripper_position"]
 
-        velocity = "velocity" in action_space
-        self._publish_joints("left", left_joints, velocity)
-        self._publish_joints("right", right_joints, velocity)
+        self._publish_joints("left", left_joints, velocity=False)
+        self._publish_joints("right", right_joints, velocity=False)
         self._publish_gripper("left", left_grip)
         self._publish_gripper("right", right_grip)
 
@@ -584,5 +593,5 @@ class BimanualFrankaRobot(BaseRobot):
 
     @property
     def dof(self) -> int:
-        """Degrees of freedom for cartesian_velocity (16) or joint_velocity (18)."""
+        """Degrees of freedom for cartesian_velocity (14) or joint_velocity (18)."""
         return self.DOF_CARTESIAN

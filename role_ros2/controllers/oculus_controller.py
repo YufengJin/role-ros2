@@ -6,10 +6,12 @@ copied from droid.controllers.oculus_controller and adapted for role_ros2.
 """
 
 import time
+from typing import Dict, Tuple, Union
 
 import numpy as np
 from oculus_reader.reader import OculusReader
 
+from role_ros2.controllers.base_controller import BaseController
 from role_ros2.misc.subprocess_utils import run_threaded_command
 from role_ros2.misc.transformations import (
     add_angles,
@@ -37,7 +39,7 @@ def vec_to_reorder_mat(vec):
     return X
 
 
-class VRPolicy:
+class VRPolicy(BaseController):
     """
     VR Policy for robot control using Oculus Quest controllers.
     
@@ -336,18 +338,18 @@ class VRPolicy:
 # VRBimanPolicy - Bimanual VR control using both Oculus controllers
 # ---------------------------------------------------------------------------
 
-# Bimanual action dimension (cartesian_velocity): 16D
-DOF_BIMANUAL_CARTESIAN = 16  # left_lin(3)+left_rot(3)+right_lin(3)+right_rot(3)+left_grip+right_grip
+# Bimanual action dimension (cartesian_velocity): 14D
+DOF_BIMANUAL_CARTESIAN = 14  # left_lin(3)+left_rot(3)+right_lin(3)+right_rot(3)+left_grip+right_grip
 
 
-class VRBimanPolicy:
+class VRBimanPolicy(BaseController):
     """
     Bimanual VR Policy using both Oculus Quest controllers.
 
     - Left controller -> left arm (pose) + left gripper (trigger)
     - Right controller -> right arm (pose) + right gripper (trigger)
     - Each arm has independent origin reset when its grip is toggled
-    - Output: 16D cartesian_velocity action for BimanualFrankaRobot
+    - Output: 14D cartesian_velocity action for BimanualFrankaRobot
 
     Observation format (from BimanualFrankaRobot.get_robot_state()[0]):
         state_dict = {
@@ -361,8 +363,11 @@ class VRBimanPolicy:
             "right_gripper_position": float,
         }
 
-    Uses cartesian_position (world frame) for VR-robot pose comparison.
-    Output velocity is in world frame; BimanualFrankaRobot IK handles per-arm frames.
+    Uses cartesian_position_local (arm base frame) for VR-robot pose comparison
+    so that the output velocity is in the same frame the IK solver expects.
+    NOTE: VR offset is in world/env frame.  This works when arm-local and world
+    frames share the same orientation (just translated).  If the arms are
+    rotated relative to world an additional rotation transform is needed.
     """
 
     def __init__(
@@ -526,6 +531,9 @@ class VRBimanPolicy:
         """
         Compute 7D action (lin_vel, rot_vel, gripper_vel) for one arm.
 
+        robot_pos / robot_euler should be in arm-local frame so that the
+        resulting velocity matches the IK solver's expected frame.
+
         Returns:
             (lin_vel, rot_vel, gripper_vel, new_robot_origin, new_vr_origin, reset_origin_consumed)
         """
@@ -563,9 +571,15 @@ class VRBimanPolicy:
 
     def _calculate_action(self, state_dict: dict, include_info: bool = False):
         """
-        Calculate 16D bimanual action from robot state and VR state.
+        Calculate 14D bimanual action from robot state and VR state.
 
-        state_dict: BimanualFrankaRobot observation format.
+        Robot positions are read from cartesian_position_local (arm base frame)
+        so the output velocity is in the arm-local frame expected by the IK solver.
+
+        Args:
+            state_dict: BimanualFrankaRobot observation format with left_arm,
+                        right_arm, left_gripper_position, right_gripper_position.
+            include_info: If True, also return a diagnostics dict.
         """
         if self._state["poses"] != {}:
             self._process_reading()
@@ -575,11 +589,13 @@ class VRBimanPolicy:
         left_gripper = state_dict.get("left_gripper_position", 0.0)
         right_gripper = state_dict.get("right_gripper_position", 0.0)
 
-        # Use cartesian_position (world frame) for VR comparison
-        robot_pos_left = np.array(left_arm.get("cartesian_position", [0] * 6)[:3])
-        robot_euler_left = np.array(left_arm.get("cartesian_position", [0] * 6)[3:])
-        robot_pos_right = np.array(right_arm.get("cartesian_position", [0] * 6)[:3])
-        robot_euler_right = np.array(right_arm.get("cartesian_position", [0] * 6)[3:])
+        # Use cartesian_position_local (arm base frame) so that the resulting
+        # velocity is in the same frame the IK solver expects.  For single-arm
+        # setups local == world, but for bimanual the two frames differ.
+        robot_pos_left = np.array(left_arm.get("cartesian_position_local", [0] * 6)[:3])
+        robot_euler_left = np.array(left_arm.get("cartesian_position_local", [0] * 6)[3:])
+        robot_pos_right = np.array(right_arm.get("cartesian_position_local", [0] * 6)[:3])
+        robot_euler_right = np.array(right_arm.get("cartesian_position_local", [0] * 6)[3:])
 
         # Default VR state if controller missing
         vl = self.vr_state_left or {"pos": robot_pos_left, "quat": euler_to_quat(robot_euler_left), "gripper": 0.0}
@@ -626,13 +642,16 @@ class VRBimanPolicy:
             self.reset_origin_right,
         )
 
-        # Zero out arm action when grip not pressed (movement disabled for that arm)
+        # Zero out arm and gripper action when grip not pressed (movement disabled for that arm)
+        # When only one controller is held, the other side must not receive any velocity command
         if not self._state["movement_enabled_left"]:
             lin_left = np.zeros(3)
             rot_left = np.zeros(3)
+            grip_left = 0.0
         if not self._state["movement_enabled_right"]:
             lin_right = np.zeros(3)
             rot_right = np.zeros(3)
+            grip_right = 0.0
 
         action = np.concatenate([lin_left, rot_left, lin_right, rot_right, [grip_left, grip_right]])
         action = action.clip(-1, 1)
@@ -659,7 +678,7 @@ class VRBimanPolicy:
 
     def forward(self, obs_dict: dict, include_info: bool = False):
         """
-        Forward pass: compute 16D bimanual action from observation.
+        Forward pass: compute 14D bimanual action from observation.
 
         Args:
             obs_dict: Must contain "robot_state" with BimanualFrankaRobot format:
@@ -668,7 +687,7 @@ class VRBimanPolicy:
             include_info: If True, return additional info dict
 
         Returns:
-            Action array (16D: [left_lin(3), left_rot(3), right_lin(3), right_rot(3), left_grip, right_grip])
+            Action array (14D: [left_lin(3), left_rot(3), right_lin(3), right_rot(3), left_grip, right_grip])
         """
         if self._state["poses"] == {}:
             action = np.zeros(DOF_BIMANUAL_CARTESIAN)

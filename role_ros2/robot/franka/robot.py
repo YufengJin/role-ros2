@@ -252,12 +252,12 @@ class FrankaRobot(BaseRobot):
             self._spin_thread = threading.Thread(target=self._spin_executor, daemon=True)
             self._spin_thread.start()
             self._node.get_logger().info("FrankaRobotV2: Own node created with spin thread")
+            self._wait_for_state(timeout=5.0)
         else:
             self._node.get_logger().debug("FrankaRobotV2: Using shared node - external executor handles spinning")
-        
-        # Wait for initial state
-        self._wait_for_state(timeout=5.0)
-        
+            # When using external node, _wait_for_state is deferred to wait_for_ready()
+            # (called by RobotEnv after executor is running)
+
         self._node.get_logger().info(
             f"FrankaRobotV2 interface initialized "
             f"(arm: /{arm_namespace}, gripper: /{gripper_namespace})"
@@ -298,7 +298,17 @@ class FrankaRobot(BaseRobot):
                     return
             time.sleep(0.1)
         self._node.get_logger().warn("Timeout waiting for initial V2 robot state")
-    
+
+    def wait_for_ready(self, timeout: float = 5.0):
+        """
+        Wait for initial robot state to be received.
+
+        Call this after the executor is spinning (e.g. from RobotEnv).
+        When using external node (_own_node=False), __init__ skips _wait_for_state;
+        the caller must invoke wait_for_ready() once the executor is running.
+        """
+        self._wait_for_state(timeout=timeout)
+
     # ==================== STATE GETTERS ====================
     
     def _get_robot_state_msg(self) -> Optional[RobotState]:

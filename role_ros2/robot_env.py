@@ -109,6 +109,12 @@ class RobotEnv(gym.Env):
         
         self._node.get_logger().info("RobotEnv: Background executor thread started")
 
+        # Wait for robot state (when robot uses external node, it defers _wait_for_state
+        # until executor is running; wait_for_ready() does that now)
+        wait_for_ready = getattr(self._robot, "wait_for_ready", None)
+        if callable(wait_for_ready):
+            wait_for_ready(timeout=5.0)
+
         # Reset Robot
         if do_reset:
             self._node.get_logger().info("🔄 RobotEnv: Calling reset() during initialization...")
