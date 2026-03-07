@@ -44,6 +44,8 @@ left_arm:
   default_gripper_speed: 0.05
   default_gripper_force: 0.1
   max_gripper_width: 0.08
+  # Frame ID for EE pose and arm state (pose is in this frame)
+  ee_frame_id: "left_fr3_panda_link0"
 
 # ============================================================================
 # Right Arm (base at -y 0.98 m in URDF)
@@ -84,3 +86,5 @@ right_arm:
   default_gripper_speed: 0.05
   default_gripper_force: 0.1
   max_gripper_width: 0.08
+  # Frame ID for EE pose and arm state (pose is in this frame)
+  ee_frame_id: "right_fr3_panda_link0"

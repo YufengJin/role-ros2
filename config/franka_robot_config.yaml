@@ -43,6 +43,10 @@ gripper_joints:
 
 # Arm interface node namespace
 arm_namespace: "fr3_arm"
+
+# Frame ID for EE pose and arm state (pose is in this frame)
+# For single arm: base_link (arm base coincides with world base)
+ee_frame_id: "base_link"
 # Topics: /{arm_namespace}/joint_states, /{arm_namespace}/arm_state, /{arm_namespace}/ee_pose
 # Subscribers: /{arm_namespace}/joint_position_controller/command, etc.
 # Services: /{arm_namespace}/reset, /{arm_namespace}/move_to_joint_positions, etc.

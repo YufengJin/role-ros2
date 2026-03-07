@@ -53,7 +53,6 @@ class RobotEnv(gym.Env):
         self.action_space = action_space
         self.gripper_action_space = gripper_action_space
         self.check_action_range = "velocity" in action_space
-        self.DoF = 7 if ("cartesian" in action_space) else 8
         self.control_hz = control_hz
 
         # Ensure a node exists (create one if node is None)
@@ -71,6 +70,16 @@ class RobotEnv(gym.Env):
             self._robot: BaseRobot = FrankaRobot(node=self._node)
         else:
             self._robot: BaseRobot = robot
+
+        # Get DoF from robot (supports single-arm and bimanual)
+        if hasattr(self._robot, "DOF_CARTESIAN") and hasattr(self._robot, "DOF_JOINT"):
+            self.DoF = (
+                self._robot.DOF_CARTESIAN
+                if "cartesian" in action_space
+                else self._robot.DOF_JOINT
+            )
+        else:
+            self.DoF = 7 if ("cartesian" in action_space) else 8
 
         # Initialize camera reader (before executor setup, so subscribers are registered)
         if camera_reader is None:
@@ -298,11 +307,13 @@ class RobotEnv(gym.Env):
         
         Returns:
             dict: Observation dictionary with the following structure:
+            - Single arm (FrankaRobot): robot_state has cartesian_position, gripper_position, etc.
+            - Bimanual (BimanualFrankaRobot): robot_state has left_arm, right_arm,
+              left_gripper_position, right_gripper_position.
             {
                 "robot_state": {
-                    "cartesian_position": [x, y, z, roll, pitch, yaw],  # 6 floats
-                    "gripper_position": float,  # normalized (0=closed, 1=open)
-                    "joint_positions": [q1, q2, ..., q7],  # 7 floats (radians)
+                    # Single arm: cartesian_position, gripper_position, joint_positions, ...
+                    # Bimanual: left_arm, right_arm, left_gripper_position, right_gripper_position
                     "joint_velocities": [qd1, qd2, ..., qd7],  # 7 floats (rad/s)
                     "joint_torques_computed": [tau1, ..., tau7],  # 7 floats
                     "prev_joint_torques_computed": [tau1, ..., tau7],  # 7 floats

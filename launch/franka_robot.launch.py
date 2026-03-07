@@ -225,6 +225,7 @@ def create_robot_nodes(context: LaunchContext, arm_id, urdf_file, use_mock,
     gripper_node_delay = 13.0 if (auto_launch_bool and not use_mock_bool) else 0.0
     
     # ========== Robot Arm Interface Node ==========
+    ee_frame_id = config.get('ee_frame_id', 'base_link')
     arm_node_params = [
         {'use_mock': use_mock_bool},
         {'ip_address': 'localhost'},
@@ -234,6 +235,7 @@ def create_robot_nodes(context: LaunchContext, arm_id, urdf_file, use_mock,
         {'auto_reset_delay': auto_reset_delay_float},
         {'arm_joint_names': arm_joints_from_config},
         {'polymetis_port': int(robot_port_str)},
+        {'ee_frame_id': ee_frame_id},
     ]
     arm_node = GroupAction([
         PushRosNamespace(arm_namespace_str),

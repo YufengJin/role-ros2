@@ -19,9 +19,11 @@ This enables multi-robot support and compatibility with robot_state_publisher.
 Author: Role-ROS2 Team
 """
 
+import copy
 import threading
 from typing import Dict, List, Optional
 import numpy as np
+from scipy.spatial.transform import Rotation as R
 
 import rclpy
 from rclpy.node import Node
@@ -29,10 +31,19 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from sensor_msgs.msg import JointState
 
+import tf2_ros
+from tf2_ros import TransformException as TF2TransformException
+
 # Import custom messages (V2)
 from role_ros2.msg import (
     ArmState, GripperState, RobotState,
 )
+
+try:
+    from role_ros2.misc.transformations import quat_to_euler
+    QUAT_TO_EULER_AVAILABLE = True
+except ImportError:
+    QUAT_TO_EULER_AVAILABLE = False
 
 
 class RobotStateAggregatorNode(Node):
@@ -61,15 +72,27 @@ class RobotStateAggregatorNode(Node):
         self.declare_parameter('robot_namespaces', robot_namespaces or default_namespaces)
         self.declare_parameter('publish_rate', 50.0)
         self.declare_parameter('timeout_threshold', 1.0)  # seconds
-        
+        self.declare_parameter('target_ee_frame_id', 'base_link')
+
         # Get parameters
         self._robot_namespaces = list(
             self.get_parameter('robot_namespaces').get_parameter_value().string_array_value
         )
         self._publish_rate = self.get_parameter('publish_rate').get_parameter_value().double_value
         self._timeout_threshold = self.get_parameter('timeout_threshold').get_parameter_value().double_value
-        
-        self.get_logger().info(f"Aggregating states from namespaces: {self._robot_namespaces}")
+        self._target_ee_frame_id = self.get_parameter(
+            'target_ee_frame_id'
+        ).get_parameter_value().string_value
+
+        # TF for ee_pose transform (source frame -> target_ee_frame_id, e.g. base_link)
+        self._tf_buffer = tf2_ros.Buffer()
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
+        self._cached_transforms: Dict[str, object] = {}  # frame_id -> TransformStamped
+
+        self.get_logger().info(
+            f"Aggregating states from namespaces: {self._robot_namespaces}, "
+            f"target_ee_frame_id: {self._target_ee_frame_id}"
+        )
         
         # State storage (thread-safe)
         self._state_lock = threading.Lock()
@@ -173,7 +196,56 @@ class RobotStateAggregatorNode(Node):
         with self._state_lock:
             self._gripper_states[namespace] = msg
             self._last_update_times[f'{namespace}_gripper'] = self.get_clock().now().nanoseconds / 1e9
-    
+
+    def _get_transform_to_target(self, source_frame_id: str):
+        """
+        Get cached transform from source_frame_id to target_ee_frame_id.
+        Returns None if frames are the same or transform lookup fails.
+        """
+        if source_frame_id == self._target_ee_frame_id:
+            return None
+        if source_frame_id in self._cached_transforms:
+            return self._cached_transforms[source_frame_id]
+        try:
+            trans = self._tf_buffer.lookup_transform(
+                self._target_ee_frame_id,
+                source_frame_id,
+                rclpy.time.Time(),
+            )
+            self._cached_transforms[source_frame_id] = trans
+            return trans
+        except TF2TransformException:
+            return None
+
+    def _transform_arm_state_ee_to_target(self, arm_state: ArmState) -> ArmState:
+        """
+        Transform arm_state ee_pose from header.frame_id to target_ee_frame_id.
+        Returns a new ArmState (does not modify the original).
+        Compatible with single arm (frame_id already base_link) and bimanual.
+        """
+        if arm_state.header.frame_id == self._target_ee_frame_id:
+            return arm_state
+        trans = self._get_transform_to_target(arm_state.header.frame_id)
+        if trans is None:
+            return arm_state
+        # Copy arm_state to avoid mutating cached data
+        out = copy.deepcopy(arm_state)
+        pos = np.array(arm_state.ee_position, dtype=np.float64)
+        quat = np.array(arm_state.ee_quaternion, dtype=np.float64)
+        t = trans.transform.translation
+        r = trans.transform.rotation
+        t_vec = np.array([t.x, t.y, t.z])
+        r_rot = R.from_quat([r.x, r.y, r.z, r.w])
+        pos_new = r_rot.apply(pos) + t_vec
+        r_pose = R.from_quat(quat)
+        quat_new = (r_rot * r_pose).as_quat()
+        out.ee_position = pos_new.tolist()
+        out.ee_quaternion = quat_new.tolist()
+        if QUAT_TO_EULER_AVAILABLE and len(arm_state.ee_euler) >= 3:
+            out.ee_euler = quat_to_euler(quat_new).tolist()
+        out.header.frame_id = self._target_ee_frame_id
+        return out
+
     def _publish_aggregated_states(self):
         """Publish aggregated joint states and robot states."""
         now = self.get_clock().now()
@@ -219,15 +291,15 @@ class RobotStateAggregatorNode(Node):
             robot_state.header.frame_id = 'base_link'
             robot_state.num_robots = len(self._robot_namespaces)
             robot_state.robot_namespaces = self._robot_namespaces
-            robot_state.joint_positions = all_positions
-            robot_state.joint_velocities = all_velocities
-            robot_state.joint_names = all_joint_names
             
-            # Add arm states
+            # Add arm states (transform ee_pose to target_ee_frame_id when needed)
             arm_states_list = []
             for namespace in self._robot_namespaces:
                 if namespace in self._arm_states:
-                    arm_states_list.append(self._arm_states[namespace])
+                    arm_state = self._transform_arm_state_ee_to_target(
+                        self._arm_states[namespace]
+                    )
+                    arm_states_list.append(arm_state)
             robot_state.arm_states = arm_states_list
             
             # Add gripper states

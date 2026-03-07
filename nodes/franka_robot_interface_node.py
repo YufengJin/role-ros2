@@ -385,6 +385,7 @@ class FrankaRobotInterfaceNode(Node):
         self.declare_parameter('namespace', namespace)
         self.declare_parameter('arm_joint_names', [])
         self.declare_parameter('polymetis_port', 50051)
+        self.declare_parameter('ee_frame_id', 'base_link')
 
         # Get parameters (ROS 2: declare then get; launch must pass arm_joint_names from config)
         use_mock = self.get_parameter('use_mock').get_parameter_value().bool_value
@@ -395,12 +396,16 @@ class FrankaRobotInterfaceNode(Node):
         self.arm_joint_names = list(
             self.get_parameter('arm_joint_names').get_parameter_value().string_array_value
         )
+        self._ee_frame_id = self.get_parameter('ee_frame_id').get_parameter_value().string_value
         if not self.arm_joint_names:
             raise ValueError(
                 "arm_joint_names is empty. Launch file must pass arm_joints from config "
                 "(franka_robot_config.yaml or bimanual_franka_robot_config.yaml)."
             )
-        self.get_logger().info(f"Using {len(self.arm_joint_names)} arm joint names: {self.arm_joint_names}")
+        self.get_logger().info(
+            f"Using {len(self.arm_joint_names)} arm joint names: {self.arm_joint_names}, "
+            f"ee_frame_id: {self._ee_frame_id}"
+        )
         
         # Initialize robot interface
         self._robot: Optional[RobotInterface] = None
@@ -660,7 +665,7 @@ class FrankaRobotInterfaceNode(Node):
             msg = JointState()
             now = self.get_clock().now()
             msg.header.stamp = now.to_msg()
-            msg.header.frame_id = 'base_link'
+            msg.header.frame_id = self._ee_frame_id
             msg.name = list(self.arm_joint_names)
             msg.position = joint_positions[:len(self.arm_joint_names)]
             msg.velocity = joint_velocities[:len(self.arm_joint_names)]
@@ -688,7 +693,7 @@ class FrankaRobotInterfaceNode(Node):
             
             msg = ArmState()
             msg.header.stamp = data_ros_time.to_msg()
-            msg.header.frame_id = 'base_link'
+            msg.header.frame_id = self._ee_frame_id
             
             msg.joint_positions = to_list(robot_state.joint_positions)
             msg.joint_velocities = to_list(robot_state.joint_velocities)
@@ -697,14 +702,20 @@ class FrankaRobotInterfaceNode(Node):
             msg.prev_joint_torques_computed_safened = to_list(robot_state.prev_joint_torques_computed_safened)
             msg.motor_torques_measured = to_list(robot_state.motor_torques_measured)
             
-            msg.ee_position = pos.tolist() if hasattr(pos, 'tolist') else list(pos)
-            msg.ee_quaternion = quat.tolist() if hasattr(quat, 'tolist') else list(quat)
-            
+            ee_pos_list = pos.tolist() if hasattr(pos, 'tolist') else list(pos)
+            ee_quat_list = quat.tolist() if hasattr(quat, 'tolist') else list(quat)
             try:
                 euler = quat_to_euler(quat) if IK_SOLVER_AVAILABLE else np.zeros(3)
-                msg.ee_euler = euler.tolist() if hasattr(euler, 'tolist') else list(euler)
-            except:
-                msg.ee_euler = [0.0, 0.0, 0.0]
+                ee_euler_list = euler.tolist() if hasattr(euler, 'tolist') else list(euler)
+            except Exception:
+                ee_euler_list = [0.0, 0.0, 0.0]
+
+            msg.ee_position = ee_pos_list
+            msg.ee_quaternion = ee_quat_list
+            msg.ee_euler = ee_euler_list
+            msg.ee_position_local = ee_pos_list[:]
+            msg.ee_quaternion_local = ee_quat_list[:]
+            msg.ee_euler_local = ee_euler_list[:]
             
             msg.prev_controller_latency_ms = float(robot_state.prev_controller_latency_ms)
             msg.prev_command_successful = bool(robot_state.prev_command_successful)
@@ -738,7 +749,7 @@ class FrankaRobotInterfaceNode(Node):
             msg = PoseStamped()
             now = self.get_clock().now()
             msg.header.stamp = now.to_msg()
-            msg.header.frame_id = 'base_link'
+            msg.header.frame_id = self._ee_frame_id
             
             msg.pose.position.x = float(pos[0])
             msg.pose.position.y = float(pos[1])
@@ -758,7 +769,7 @@ class FrankaRobotInterfaceNode(Node):
             msg = ControllerStatus()
             now = self.get_clock().now()
             msg.header.stamp = now.to_msg()
-            msg.header.frame_id = 'base_link'
+            msg.header.frame_id = self._ee_frame_id
             
             msg.is_running_policy = bool(self._robot.is_running_policy())
             msg.controller_mode = self._controller_mode

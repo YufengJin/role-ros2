@@ -688,6 +688,7 @@ Apache-2.0
 
 ## Related Documentation
 
+- [Code Deep Understanding](docs/CODE_DEEP_UNDERSTANDING.md) - Architecture, core modules, data flow, and design decisions
 - [ROS2 Workspace README](../../README.md)
 - [Franka ROS2 Documentation](https://github.com/souljaboy764/franka_ros2)
 - [ZED ROS2 Wrapper Documentation](https://github.com/stereolabs/zed-ros2-wrapper)

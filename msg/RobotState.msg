@@ -11,18 +11,9 @@ uint32 num_robots
 # Robot namespaces
 string[] robot_namespaces
 
-# Combined joint positions (all robots)
-float64[] joint_positions
-
-# Combined joint velocities (all robots)
-float64[] joint_velocities
-
-# Combined joint names (all robots)
-string[] joint_names
-
 # Individual arm states (one per robot arm)
+# Each ArmState contains joint_positions, joint_velocities, ee_pose, etc.
 ArmState[] arm_states
 
 # Individual gripper states (one per gripper)
 GripperState[] gripper_states
-

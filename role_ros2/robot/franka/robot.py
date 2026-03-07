@@ -73,7 +73,10 @@ class FrankaRobot(BaseRobot):
     - Separate command publishers for different control modes
     - Full service support for blocking operations
     """
-    
+
+    DOF_CARTESIAN = 7   # 6 (pose) + 1 (gripper)
+    DOF_JOINT = 8      # 7 (joints) + 1 (gripper)
+
     def __init__(
         self,
         node: Optional[Node] = None,
@@ -391,6 +394,7 @@ class FrankaRobot(BaseRobot):
     _DEFAULT_STATE = (
         {
             "cartesian_position": [0.0] * 6,
+            "cartesian_position_local": [0.0] * 6,
             "gripper_position": 0.0,
             "joint_positions": [0.0] * 7,
             "joint_velocities": [0.0] * 7,
@@ -546,10 +550,17 @@ class FrankaRobot(BaseRobot):
         if arm_state is None:
             return self._DEFAULT_STATE[0].copy()
         
+        # cartesian_position_local: arm base frame (for IK)
+        # cartesian_position: world/base_link frame (for observation/visualization)
+        if arm_state.ee_position_local:
+            cartesian_position_local = list(arm_state.ee_position_local) + list(arm_state.ee_euler_local)
+        else:
+            cartesian_position_local = list(arm_state.ee_position) + list(arm_state.ee_euler)
         cartesian_position = list(arm_state.ee_position) + list(arm_state.ee_euler)
-        
+
         return {
             "cartesian_position": cartesian_position,
+            "cartesian_position_local": cartesian_position_local,
             "gripper_position": gripper_position,
             "joint_positions": list(arm_state.joint_positions),
             "joint_velocities": list(arm_state.joint_velocities),
@@ -1193,11 +1204,11 @@ class FrankaRobot(BaseRobot):
                 action_dict["cartesian_velocity"] = action[:-1]
                 cartesian_delta = self._ik_solver.cartesian_velocity_to_delta(action[:-1])
                 action_dict["cartesian_position"] = add_poses(
-                    cartesian_delta, robot_state["cartesian_position"]
+                    cartesian_delta, robot_state["cartesian_position_local"]
                 ).tolist()
             else:
                 action_dict["cartesian_position"] = action[:-1]
-                cartesian_delta = pose_diff(action[:-1], robot_state["cartesian_position"])
+                cartesian_delta = pose_diff(action[:-1], robot_state["cartesian_position_local"])
                 cartesian_velocity = self._ik_solver.cartesian_delta_to_velocity(cartesian_delta)
                 action_dict["cartesian_velocity"] = cartesian_velocity.tolist()
             

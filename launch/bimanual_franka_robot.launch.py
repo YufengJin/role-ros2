@@ -193,8 +193,16 @@ def create_bimanual_nodes(context: LaunchContext, use_mock, publish_rate):
     left = config.get('left_arm', {})
     right = config.get('right_arm', {})
     urdf_file = left.get('urdf_file', right.get('urdf_file', 'bimanual_fr3_w_soft_fin.urdf'))
-    left_use_mock = left.get('use_mock', use_mock_bool) if isinstance(left.get('use_mock'), bool) else use_mock_bool
-    right_use_mock = right.get('use_mock', use_mock_bool) if isinstance(right.get('use_mock'), bool) else use_mock_bool
+    # Launch arg use_mock takes precedence: when true, both arm and gripper use mock
+    if use_mock_bool:
+        left_use_mock = right_use_mock = True
+    else:
+        left_use_mock = (
+            left.get('use_mock', False) if isinstance(left.get('use_mock'), bool) else False
+        )
+        right_use_mock = (
+            right.get('use_mock', False) if isinstance(right.get('use_mock'), bool) else False
+        )
     left_load_gripper = left.get('load_gripper', True)
     right_load_gripper = right.get('load_gripper', True)
     left_auto = left.get('auto_launch_controller', False)
@@ -232,6 +240,7 @@ def create_bimanual_nodes(context: LaunchContext, use_mock, publish_rate):
         {'auto_reset_delay': float(left.get('auto_reset_delay', 5.0))},
         {'arm_joint_names': left.get('arm_joints', [])},
         {'polymetis_port': left_arm_port},
+        {'ee_frame_id': left.get('ee_frame_id', 'base_link')},
     ]
     nodes.append(
         GroupAction([
@@ -256,6 +265,7 @@ def create_bimanual_nodes(context: LaunchContext, use_mock, publish_rate):
         {'auto_reset_delay': float(right.get('auto_reset_delay', 5.0))},
         {'arm_joint_names': right.get('arm_joints', [])},
         {'polymetis_port': right_arm_port},
+        {'ee_frame_id': right.get('ee_frame_id', 'right_fr3_panda_link0')},
     ]
     nodes.append(
         GroupAction([
