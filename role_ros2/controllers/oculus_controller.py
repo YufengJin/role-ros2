@@ -348,6 +348,7 @@ class VRBimanPolicy(BaseController):
 
     - Left controller -> left arm (pose) + left gripper (trigger)
     - Right controller -> right arm (pose) + right gripper (trigger)
+    - When mirror_arms=True: left controller -> right arm, right controller -> left arm
     - Each arm has independent origin reset when its grip is toggled
     - Output: 14D cartesian_velocity action for BimanualFrankaRobot
 
@@ -383,6 +384,7 @@ class VRBimanPolicy(BaseController):
         rot_vel_scale: float = 1.0,
         rmat_reorder: list = [-2, -1, -3, 4],
         mirror_xy: bool = False,
+        mirror_arms: bool = False,
     ):
         """
         Initialize VR Bimanual Policy.
@@ -399,6 +401,7 @@ class VRBimanPolicy(BaseController):
             rot_vel_scale: Scale factor for rotation velocity (0.0-1.0)
             rmat_reorder: Reorder matrix vector for VR frame alignment
             mirror_xy: If True, mirror X and Y axes for both controllers
+            mirror_arms: If True, left joystick controls right arm, right joystick controls left arm
         """
         self.oculus_reader = OculusReader()
         self.vr_to_global_mat = np.eye(4)
@@ -413,6 +416,7 @@ class VRBimanPolicy(BaseController):
         self.rot_vel_scale = rot_vel_scale
         self.global_to_env_mat = vec_to_reorder_mat(rmat_reorder)
         self.mirror_xy = mirror_xy
+        self.mirror_arms = mirror_arms
         self.reset_orientation = True
         self.reset_state()
 
@@ -600,6 +604,9 @@ class VRBimanPolicy(BaseController):
         # Default VR state if controller missing
         vl = self.vr_state_left or {"pos": robot_pos_left, "quat": euler_to_quat(robot_euler_left), "gripper": 0.0}
         vr = self.vr_state_right or {"pos": robot_pos_right, "quat": euler_to_quat(robot_euler_right), "gripper": 0.0}
+        # In mirror_arms mode: left joystick -> right arm, right joystick -> left arm
+        if self.mirror_arms:
+            vl, vr = vr, vl
 
         if self.robot_origin_left is None:
             self.robot_origin_left = {"pos": robot_pos_left.copy(), "quat": euler_to_quat(robot_euler_left)}
@@ -608,13 +615,17 @@ class VRBimanPolicy(BaseController):
             self.robot_origin_right = {"pos": robot_pos_right.copy(), "quat": euler_to_quat(robot_euler_right)}
             self.vr_origin_right = {"pos": vr["pos"].copy(), "quat": vr["quat"].copy()}
 
+        # In mirror_arms mode: left arm reset = right grip, right arm reset = left grip
+        reset_left = self.reset_origin_right if self.mirror_arms else self.reset_origin_left
+        reset_right = self.reset_origin_left if self.mirror_arms else self.reset_origin_right
+
         (
             lin_left,
             rot_left,
             grip_left,
             self.robot_origin_left,
             self.vr_origin_left,
-            self.reset_origin_left,
+            reset_left_done,
         ) = self._compute_arm_action(
             robot_pos_left,
             robot_euler_left,
@@ -622,7 +633,7 @@ class VRBimanPolicy(BaseController):
             vl,
             self.robot_origin_left,
             self.vr_origin_left,
-            self.reset_origin_left,
+            reset_left,
         )
 
         (
@@ -631,7 +642,7 @@ class VRBimanPolicy(BaseController):
             grip_right,
             self.robot_origin_right,
             self.vr_origin_right,
-            self.reset_origin_right,
+            reset_right_done,
         ) = self._compute_arm_action(
             robot_pos_right,
             robot_euler_right,
@@ -639,16 +650,27 @@ class VRBimanPolicy(BaseController):
             vr,
             self.robot_origin_right,
             self.vr_origin_right,
-            self.reset_origin_right,
+            reset_right,
         )
+
+        # Write back consumed reset flags (mirror_arms swaps which grip triggers which)
+        if self.mirror_arms:
+            self.reset_origin_right = reset_left_done
+            self.reset_origin_left = reset_right_done
+        else:
+            self.reset_origin_left = reset_left_done
+            self.reset_origin_right = reset_right_done
 
         # Zero out arm and gripper action when grip not pressed (movement disabled for that arm)
         # When only one controller is held, the other side must not receive any velocity command
-        if not self._state["movement_enabled_left"]:
+        # In mirror_arms mode: left arm uses right grip, right arm uses left grip
+        enabled_left = self._state["movement_enabled_right"] if self.mirror_arms else self._state["movement_enabled_left"]
+        enabled_right = self._state["movement_enabled_left"] if self.mirror_arms else self._state["movement_enabled_right"]
+        if not enabled_left:
             lin_left = np.zeros(3)
             rot_left = np.zeros(3)
             grip_left = 0.0
-        if not self._state["movement_enabled_right"]:
+        if not enabled_right:
             lin_right = np.zeros(3)
             rot_right = np.zeros(3)
             grip_right = 0.0

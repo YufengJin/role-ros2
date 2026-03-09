@@ -15,7 +15,7 @@ Usage:
     python3 hdf5_reader.py /path/to/trajectory.h5 --show-all-data  # Show all data
     python3 hdf5_reader.py /path/to/trajectory.h5 --max-depth 3  # Limit structure depth
 
-Author: Role-ROS2 Team
+Author: Chaser Robotics Team
 """
 
 import argparse

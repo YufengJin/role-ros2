@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-Convert MuJoCo XML model to URDF format for ROS2
+Convert MuJoCo XML model to URDF format for ROS2.
+
+Author: Chaser Robotics Team
 """
 
 import xml.etree.ElementTree as ET
@@ -352,7 +354,7 @@ def mujoco_to_urdf(mujoco_file, output_file, arm_id='fr3', generate_config=True,
     if robot_base_link_elem is not None:
         inertial_elem = robot_base_link_elem.find('inertial')
         if inertial_elem is None:
-            # Add minimal inertial if missing (required for ROS2 robot_state_publisher)
+            # Add minimal inertial if missing
             inertial = ET.SubElement(robot_base_link_elem, 'inertial')
             origin = ET.SubElement(inertial, 'origin')
             origin.set('xyz', '0 0 0')

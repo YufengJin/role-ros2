@@ -2,6 +2,8 @@
 """
 Trajectory Visualizer - Advanced GUI to visualize robot learning HDF5 datasets.
 
+Author: Chaser Robotics Team
+
 Usage:
     python3 trajectory_visualizer.py /path/to/trajectory.h5
 

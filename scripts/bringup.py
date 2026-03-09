@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 Docker-ROS Control Center (Config Driven)
-Reads 'config.json' to dynamically generate controls.
+Reads config from scripts/conf/*.json (e.g. franka.json, biman_franka.json).
+
+Author: Chaser Robotics Team
 """
 
 import sys
@@ -9,11 +11,13 @@ import subprocess
 import time
 import json
 import os
+import argparse
 from typing import Optional, Dict, List
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QTableWidget, QTableWidgetItem, QTextEdit,
-    QLabel, QMessageBox, QHeaderView, QAbstractItemView
+    QLabel, QMessageBox, QHeaderView, QAbstractItemView,
+    QComboBox,
 )
 from PyQt5.QtCore import QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QFont, QColor
@@ -146,23 +150,41 @@ class ContainerWorker(QThread):
 # ============================================================================
 
 class DockerROSControlCenter(QMainWindow):
-    def __init__(self):
+    def __init__(self, initial_config_path: Optional[str] = None):
         super().__init__()
-        self.workers = {} # Key: Config Name, Value: Worker
-        self.configs = self.load_config()
+        self.scripts_dir = os.path.dirname(os.path.abspath(__file__))
+        self.conf_dir = os.path.join(self.scripts_dir, 'conf')
+        self.workers = {}  # Key: Config Name, Value: Worker
+        self.initial_config_path = initial_config_path
+        self.configs = self.load_config(initial_config_path)
         self.init_ui()
-        
-    def load_config(self) -> List[dict]:
-        """Load config.json from the same directory."""
-        config_path = os.path.join(os.path.dirname(__file__), 'config.json')
-        if not os.path.exists(config_path):
-            QMessageBox.critical(self, "Error", f"Config file not found:\n{config_path}")
+
+    def get_available_configs(self) -> List[tuple]:
+        """Return [(display_name, full_path), ...] for conf/*.json."""
+        configs = []
+        if os.path.isdir(self.conf_dir):
+            for name in ["franka.json", "biman_franka.json"]:
+                path = os.path.join(self.conf_dir, name)
+                if os.path.exists(path):
+                    display = name.replace(".json", "").replace("_", " ").title()
+                    configs.append((f"{display}", path))
+        return configs
+
+    def load_config(self, config_path: Optional[str] = None) -> List[dict]:
+        """Load config from path. If None, use conf/franka.json."""
+        if config_path and os.path.exists(config_path):
+            path = config_path
+        else:
+            path = os.path.join(self.conf_dir, 'franka.json')
+        if not os.path.exists(path):
+            QMessageBox.critical(self, "Error", f"Config file not found:\n{path}")
             sys.exit(1)
         try:
-            with open(config_path, 'r') as f:
-                return json.load(f)
+            with open(path, 'r') as f:
+                data = json.load(f)
+            return data if isinstance(data, list) else [data]
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Invalid JSON:\n{e}")
+            QMessageBox.critical(self, "Error", f"Invalid JSON in {path}:\n{e}")
             sys.exit(1)
 
     def init_ui(self):
@@ -197,11 +219,24 @@ class DockerROSControlCenter(QMainWindow):
         top_layout = QHBoxLayout()
         self.lbl_info = QLabel(f"Loaded {len(self.configs)} configurations")
         self.lbl_info.setStyleSheet("color: #666666;")
+        self.config_combo = QComboBox()
+        for display, path in self.get_available_configs():
+            self.config_combo.addItem(display, path)
+        self.config_combo.currentIndexChanged.connect(self.on_config_changed)
+        if self.initial_config_path:
+            self.config_combo.blockSignals(True)
+            for i in range(self.config_combo.count()):
+                if self.config_combo.itemData(i) == self.initial_config_path:
+                    self.config_combo.setCurrentIndex(i)
+                    break
+            self.config_combo.blockSignals(False)
         btn_start_all = QPushButton("Start All")
         btn_stop_all = QPushButton("Stop All")
         btn_start_all.clicked.connect(self.start_all)
         btn_stop_all.clicked.connect(self.stop_all)
-        
+
+        top_layout.addWidget(QLabel("Config:"))
+        top_layout.addWidget(self.config_combo)
         top_layout.addWidget(self.lbl_info)
         top_layout.addStretch()
         top_layout.addWidget(btn_start_all)
@@ -209,7 +244,7 @@ class DockerROSControlCenter(QMainWindow):
         layout.addLayout(top_layout)
 
         # --- Dynamic Table ---
-        self.table = QTableWidget(len(self.configs), 4)
+        self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["Name", "Container", "Status", "Controls"])
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
@@ -226,36 +261,44 @@ class DockerROSControlCenter(QMainWindow):
                 border: 1px solid #d0d0d0;
             }
         """)
-        
+        layout.addWidget(self.table)
+        self.rebuild_table()
+        self.init_log_view(layout)
+
+    def on_config_changed(self, index: int):
+        """Reload config when user selects a different config file."""
+        path = self.config_combo.itemData(index)
+        if not path or not os.path.exists(path):
+            return
+        self.stop_all()
+        self.workers = {}
+        self.configs = self.load_config(path)
+        self.rebuild_table()
+        self.lbl_info.setText(f"Loaded {len(self.configs)} configurations")
+        self.log(f"Switched to config: {path}")
+
+    def rebuild_table(self):
+        """Rebuild the table from current self.configs."""
+        self.table.setRowCount(len(self.configs))
         for i, cfg in enumerate(self.configs):
-            # Name
             self.table.setItem(i, 0, QTableWidgetItem(cfg['name']))
-            # Container
             self.table.setItem(i, 1, QTableWidgetItem(cfg['container']))
-            # Status
             status_item = QTableWidgetItem("Stopped")
-            status_item.setForeground(QColor("#d32f2f"))  # Darker red for light theme
+            status_item.setForeground(QColor("#d32f2f"))
             self.table.setItem(i, 2, status_item)
-            
-            # Buttons
             btn_widget = QWidget()
             btn_layout = QHBoxLayout(btn_widget)
             btn_layout.setContentsMargins(0, 0, 0, 0)
-            
             b_start = QPushButton("Start")
             b_stop = QPushButton("Stop")
-            
-            # 使用 closure 绑定当前的配置
             b_start.clicked.connect(lambda checked, idx=i: self.start_task(idx))
             b_stop.clicked.connect(lambda checked, idx=i: self.stop_task(idx))
-            
             btn_layout.addWidget(b_start)
             btn_layout.addWidget(b_stop)
             self.table.setCellWidget(i, 3, btn_widget)
 
-        layout.addWidget(self.table)
-
-        # --- Logs ---
+    def init_log_view(self, layout):
+        """Create log view (called once from init_ui)."""
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setStyleSheet("""
@@ -302,10 +345,10 @@ class DockerROSControlCenter(QMainWindow):
 
     def start_all(self):
         self.log("=== Starting All Tasks ===")
-        # 依次启动，中间加一点延迟防止瞬间负载过高
+        # Stagger start to avoid instant load spike
         for i in range(len(self.configs)):
             self.start_task(i)
-            QApplication.processEvents() # 刷新UI
+            QApplication.processEvents()  # Refresh UI
             time.sleep(0.5)
 
     def stop_all(self):
@@ -317,8 +360,37 @@ class DockerROSControlCenter(QMainWindow):
         self.stop_all()
         event.accept()
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Docker-ROS Control Center (Config Driven)",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Config file path (e.g. conf/franka.json, conf/biman_franka.json). "
+             "Default: conf/franka.json. Path is relative to scripts/ or absolute.",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
+    args = parse_args()
+    scripts_dir = os.path.dirname(os.path.abspath(__file__))
+    default_path = os.path.join(scripts_dir, 'conf', 'franka.json')
+    config_path = None
+    if args.config:
+        p = args.config
+        if not os.path.isabs(p):
+            p = os.path.join(scripts_dir, p)
+        if os.path.exists(p):
+            config_path = p
+        else:
+            print(f"Warning: Config not found: {p}, using default conf/franka.json")
+            config_path = default_path if os.path.exists(default_path) else None
+    else:
+        config_path = default_path if os.path.exists(default_path) else None
     app = QApplication(sys.argv)
-    win = DockerROSControlCenter()
+    win = DockerROSControlCenter(initial_config_path=config_path)
     win.show()
     sys.exit(app.exec_())

@@ -471,7 +471,7 @@ class CollectTrajectoryBase:
         self.save_depths = args.save_depths
         self.pos_vel_scale = args.pos_vel_scale
         self.rot_vel_scale = args.rot_vel_scale
-        self.mirror_xy = args.mirror_xy
+        self.mirror = getattr(args, "mirror", False)
         self.horizon = None if args.horizon <= 0 else args.horizon
         self.enable_viz = args.viz
 
@@ -908,8 +908,8 @@ def add_common_args(parser: argparse.ArgumentParser):
                         help="Scale factor for position velocity (0.0-1.0)")
     parser.add_argument("--rot-vel-scale", type=float, default=1.0,
                         help="Scale factor for rotation velocity (0.0-1.0)")
-    parser.add_argument("--mirror-xy", action="store_true",
-                        help="Mirror X and Y axes")
+    parser.add_argument("--mirror", action="store_true",
+                        help="Mirror mode: mirror XY axes and swap arms (left joystick->right arm, right->left)")
 
     # Robot reset
     parser.add_argument("--reset-robot", action="store_true", default=True)

@@ -6,10 +6,11 @@ This document describes scripts in `scripts/`, including `scripts/postprocess/` 
 
 **scripts/**
 
-- **`collect_trajectory.py`**: Collect robot trajectories using VR controller (Oculus Quest)
+- **`collect_trajectory_franka.py`**: Collect single-arm Franka trajectories using VR controller (Oculus Quest)
+- **`collect_trajectory_bimanual_franka.py`**: Collect bimanual Franka trajectories using VR controller
 - **`replay_trajectory.py`**: Replay saved robot trajectories from HDF5 files
 - **`calibrate_camera.py`**: Perform hand-eye calibration for cameras using Charuco board
-- **`bringup.py`**: Docker-ROS control center (PyQt5 GUI). Reads `scripts/config.json` to start/stop commands in Docker containers and view logs.
+- **`bringup.py`**: Docker-ROS control center (PyQt5 GUI). Reads `scripts/conf/*.json` to start/stop commands in Docker containers and view logs.
 
 **scripts/postprocess/**
 
@@ -31,14 +32,17 @@ Robot-control scripts (collect, replay, calibrate) are pure Python (not ROS2 nod
 
 ---
 
-## 📝 collect_trajectory.py
+## 📝 collect_trajectory_franka.py / collect_trajectory_bimanual_franka.py
 
 ### Description
 
-Collect robot trajectories using an Oculus Quest VR controller. The script provides two modes:
+Collect robot trajectories using an Oculus Quest VR controller. The scripts provide two modes:
 
 1. **Teleoperation Mode**: Control the robot without saving data (default when no `--task` is provided)
 2. **Recording Mode**: Automatically enabled when `--task` is provided, saves trajectories to HDF5 files
+
+- **`collect_trajectory_franka.py`**: Single-arm Franka (VRPolicy)
+- **`collect_trajectory_bimanual_franka.py`**: Bimanual Franka (VRBimanPolicy)
 
 ### Features
 
@@ -62,17 +66,17 @@ Collect robot trajectories using an Oculus Quest VR controller. The script provi
 #### Basic Usage
 
 ```bash
-# Teleoperation only (no saving)
-python3 collect_trajectory.py
+# Single-arm Franka
+python3 collect_trajectory_franka.py --task pick_and_place --viz
 
-# Save trajectory with task name (auto-enables saving)
-python3 collect_trajectory.py --task pick_and_place
+# Bimanual Franka
+python3 collect_trajectory_bimanual_franka.py --task pick_and_place --viz
 ```
 
 #### Full Options
 
 ```bash
-python3 collect_trajectory.py \
+python3 collect_trajectory_franka.py \
     --task pick_and_place \
     --save-folder /path/to/save \
     --save-images \
@@ -154,14 +158,15 @@ Each trajectory file contains:
 
 ```bash
 # Just control the robot, no saving
-python3 collect_trajectory.py
+python3 collect_trajectory_franka.py --viz
 ```
 
 #### Example 2: Collect Pick and Place Trajectories
 
 ```bash
-python3 collect_trajectory.py \
+python3 collect_trajectory_franka.py \
     --task pick_and_place \
+    --viz \
     --save-images \
     --control-hz 20.0
 ```
@@ -169,8 +174,9 @@ python3 collect_trajectory.py \
 #### Example 3: Custom Save Location
 
 ```bash
-python3 collect_trajectory.py \
+python3 collect_trajectory_franka.py \
     --task assembly \
+    --viz \
     --save-folder /data/robot_trajectories \
     --action-space joint_velocity \
     --control-hz 10.0
@@ -667,21 +673,22 @@ python3 calibrate_camera.py \
 
 ### Description
 
-Docker-ROS control center: a PyQt5 GUI that reads `scripts/config.json` and provides start/stop buttons and a log view for each entry. Each entry specifies a Docker `container`, a `command` to run inside it (e.g. `ros2 launch ...` or `python3 scripts/collect_trajectory.py`), and a `kill_keyword` to stop the process. Useful to launch robot, cameras, Rviz2, and collection scripts from one window.
+Docker-ROS control center: a PyQt5 GUI that reads `scripts/conf/*.json` and provides start/stop buttons and a log view for each entry. Each entry specifies a Docker `container`, a `command` to run inside it (e.g. `ros2 launch ...` or `python3 scripts/collect_trajectory_franka.py`), and a `kill_keyword` to stop the process. Useful to launch robot, cameras, Rviz2, and collection scripts from one window.
 
 ### Prerequisites
 
 - Docker with the target containers running (e.g. `ros2_polymetis_container`, `ros2_cu118_container`)
 - PyQt5, `psutil`
-- `scripts/config.json` in the same directory as `bringup.py`
+- `scripts/conf/franka.json` or `scripts/conf/biman_franka.json`
 
 ### Usage
 
 ```bash
 python3 scripts/bringup.py
+# Or specify config: python3 scripts/bringup.py --config conf/biman_franka.json
 ```
 
-No CLI arguments; config is loaded from `scripts/config.json`.
+Default config: `scripts/conf/franka.json`. Use `--config` to load a different file.
 
 ---
 
@@ -719,7 +726,7 @@ Convert MuJoCo XML model to URDF for use in ROS2. Can optionally generate `joint
 
 ## 🔧 Common Issues
 
-### collect_trajectory.py
+### collect_trajectory_franka.py / collect_trajectory_bimanual_franka.py
 
 #### Issue: Controller not detected
 

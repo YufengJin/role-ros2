@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-to_tfrecord.py
+to_tfrecord.py - Convert role-ros2 .h5 trajectories to TFRecord in TFDS/RLDS format.
 
-Convert role-ros2 .h5 trajectories to TFRecord in TFDS/RLDS format (keys match
-droid_dataset_builder/droid). Language instruction = task_name from
+Author: Chaser Robotics Team
+
+Keys match droid_dataset_builder/droid. Language instruction = task_name from
 task_labels.json or HDF5 metadata.
 
 - Input: --data-dir. task_labels.json from <data-dir>/task_labels.json.

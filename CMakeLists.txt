@@ -125,7 +125,7 @@ install(PROGRAMS
 
 # Note: scripts/ directory contains pure Python scripts (not ROS2 nodes)
 # They should be run directly with python3, e.g.:
-#   python3 scripts/collect_trajectory.py --task pick_and_place
+#   python3 scripts/collect_trajectory_franka.py --task pick_and_place
 #   python3 scripts/replay_trajectory.py --filepath /path/to/trajectory.h5
 
 # Install Python package

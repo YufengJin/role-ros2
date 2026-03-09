@@ -1,3 +1,9 @@
+"""
+Label trajectory success/failure and task_name. GUI for HDF5 files.
+
+Author: Chaser Robotics Team
+"""
+
 import argparse
 import glob
 import h5py
@@ -12,9 +18,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from PIL import Image, ImageTk, ImageDraw, ImageFont
 
-# ==========================================
-# 1. Robust Video Decoder
-# ==========================================
+# --- 1. Robust Video Decoder ---
 class H5VideoReader:
     def __init__(self, h5_path):
         self.h5_path = h5_path
@@ -163,9 +167,7 @@ class H5VideoReader:
             
         return combined_img
 
-# ==========================================
-# 2. Manager (Unchanged)
-# ==========================================
+# --- 2. Manager ---
 class LabelManager:
     def __init__(self, data_folder):
         self.data_folder = os.path.abspath(data_folder)
@@ -241,9 +243,7 @@ class LabelManager:
             "task_name": str(task_name)
         }
 
-# ==========================================
-# 3. GUI App (Updated)
-# ==========================================
+# --- 3. GUI App ---
 class LabelApp:
     def __init__(self, root, manager):
         self.root = root

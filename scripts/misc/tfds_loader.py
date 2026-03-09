@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-test_tf_load.py
+tfds_loader.py - Inspect TFDS datasets and provide get_tfds_dataloader.
 
-Inspect TFDS datasets (to_tfrecord.py output, DROID, etc.) and provide get_tfds_dataloader.
+Author: Chaser Robotics Team
 
+Inspect TFDS datasets (to_tfrecord.py output, DROID, etc.).
 Layout: TFDS versioned dir with dataset_info.json, features.json,
 {DATASET}-{SPLIT}.tfrecord-{X}-of-{Y}. Uses tfds.builder_from_directory + as_dataset.
 
 Usage:
-  python scripts/tests/test_tf_load.py --tfrecord-dir /path/to/tfrecord/role_ros2/1.0.0
-  python scripts/tests/test_tf_load.py --tfrecord-dir /app/datasets/droid/droid_100/1.0.0 --max-examples 1 --max-steps-per-episode 3
+  python scripts/misc/tfds_loader.py --tfrecord-dir /path/to/tfrecord/role_ros2/1.0.0
 """
 
 from __future__ import annotations

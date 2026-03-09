@@ -28,7 +28,7 @@ Note:
     - Camera must exist in multi_camera_reader_config.yaml with calibration_mode specified
     - All calibration results are saved to config/calibration_results.yaml
 
-Author: Role-ROS2 Team
+Author: Chaser Robotics Team
 """
 
 import argparse
@@ -499,12 +499,7 @@ class CameraCalibrator:
     def wait_for_start_position(self):
         """
         Wait for user to move robot to start position using VR controller.
-        
-        Control flow (matching collect_trajectory.py exactly):
-        1. Wait for first grip button press to start control loop
-        2. Hold GRIP to enable movement
-        3. Long press A/X to START calibration
-        4. Long press B/Y to EXIT
+        Control flow matches collect_trajectory_franka.
         """
         self._print("")
         self._print("=" * 70)
@@ -519,7 +514,6 @@ class CameraCalibrator:
         self._print("")
         self._print("⏸️  Hold GRIP button to start control...")
         
-        # Reset controller state (matching collect_trajectory._start_new_trajectory)
         self.controller.reset_state()
         
         # Wait for robot to stabilize before starting control
@@ -530,14 +524,10 @@ class CameraCalibrator:
         self._success_press_start = None
         self._failure_press_start = None
         
-        # Track if control has started (matching collect_trajectory._recording_started)
         _control_started = False
-        
-        # Track step count (matching collect_trajectory.py)
         _step_count = 0
         
         while not self._shutdown_requested:
-            # Get controller info (matching collect_trajectory.py)
             try:
                 controller_info = self.controller.get_info()
             except Exception as e:
@@ -545,12 +535,8 @@ class CameraCalibrator:
                 time.sleep(0.1)
                 continue
             
-            # Calculate skip_action (matching collect_trajectory.py)
-            # In calibrate_camera, we always wait for controller (no wait_for_controller flag)
             skip_action = not controller_info.get("movement_enabled", False)
             
-            # Check if control has started (wait for first grip button press)
-            # (matching collect_trajectory.py _recording_started logic)
             if not _control_started:
                 movement_enabled = controller_info.get("movement_enabled", False)
                 
@@ -567,11 +553,9 @@ class CameraCalibrator:
                     # Wait a moment to ensure VR controller is stable before first forward() call
                     time.sleep(0.1)
                 else:
-                    # Not started yet, just wait (matching collect_trajectory.py)
                     time.sleep(0.05)
                     continue
             
-            # Check for long press (only after control started, matching collect_trajectory.py)
             is_success, is_failure = self._check_long_press(controller_info)
             
             if is_success:
@@ -581,10 +565,7 @@ class CameraCalibrator:
                 self._print("❌ Exiting calibration...")
                 return False
             
-            # Use ROS time for timestamps (matching collect_trajectory.py)
             control_timestamps = {"step_start": get_ros_time_ns(self._node)}
-            
-            # Get observation (matching collect_trajectory.py)
             obs = self.env.get_observation(use_sync=False)
             obs["controller_info"] = controller_info
             if "timestamp" not in obs:
@@ -600,7 +581,6 @@ class CameraCalibrator:
                     full_cam_id, obs["image"][full_cam_id],
                 )
             
-            # Get action from controller with info (matching collect_trajectory.py)
             control_timestamps["policy_start"] = get_ros_time_ns(self._node)
             action, controller_action_info = self.controller.forward(obs, include_info=True)
             action[-1] = 0  # Keep gripper open
@@ -611,7 +591,6 @@ class CameraCalibrator:
             if action_norm > 0.3:
                 self._print(f"⚠️ WARNING: Large action detected (norm={action_norm:.4f}) at step {_step_count}")
             
-            # Regularize control frequency (matching collect_trajectory.py)
             control_timestamps["sleep_start"] = get_ros_time_ns(self._node)
             comp_time_ns = get_ros_time_ns(self._node) - control_timestamps["step_start"]
             comp_time_s = comp_time_ns / 1e9
@@ -619,7 +598,6 @@ class CameraCalibrator:
             if sleep_left > 0:
                 time.sleep(sleep_left)
             
-            # Step environment (matching collect_trajectory.py)
             control_timestamps["control_start"] = get_ros_time_ns(self._node)
             if skip_action:
                 # Movement disabled: create zero action dict (robot won't move)
@@ -627,10 +605,7 @@ class CameraCalibrator:
             else:
                 # Movement enabled: execute action
                 action_info = self.env.step(action)
-            # Update action_info with controller_action_info (matching collect_trajectory.py)
             action_info.update(controller_action_info)
-            
-            # Progress logging (matching collect_trajectory.py)
             _step_count += 1
             if _step_count % 50 == 0 and _step_count > 0:
                 movement_status = "🟢 MOVING" if controller_info["movement_enabled"] else "🔴 STOPPED"

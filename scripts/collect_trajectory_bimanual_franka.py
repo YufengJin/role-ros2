@@ -2,6 +2,8 @@
 """
 Collect Trajectory - Bimanual Franka with VR controller (VRBimanPolicy).
 
+Author: Chaser Robotics Team
+
 Usage:
     python3 collect_trajectory_bimanual_franka.py --task pick_and_place --viz
 """
@@ -27,7 +29,8 @@ class CollectTrajectoryBimanualFranka(CollectTrajectoryBase):
         return VRBimanPolicy(
             pos_vel_scale=self.pos_vel_scale,
             rot_vel_scale=self.rot_vel_scale,
-            mirror_xy=self.mirror_xy,
+            mirror_xy=self.mirror,
+            mirror_arms=self.mirror,
         )
 
     def _get_movement_enabled(self, controller_info: dict) -> bool:

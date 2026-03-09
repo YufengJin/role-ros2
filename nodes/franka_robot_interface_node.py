@@ -148,14 +148,14 @@ class MockRobotInterface:
             self._joint_positions = torch.tensor(rest_pose[:num_dofs], dtype=torch.float32)
             self._joint_velocities = torch.zeros(num_dofs, dtype=torch.float32)
             self._kp = torch.ones(num_dofs, dtype=torch.float32) * 40.0
-            self._kd = torch.ones(num_dofs, dtype=torch.float32) * 4.0
+            self._kd = torch.ones(num_dofs, dtype=torch.float32) * 2.0
             self._target_joint_positions = torch.tensor(rest_pose[:num_dofs], dtype=torch.float32)
             self._target_joint_velocities = torch.zeros(num_dofs, dtype=torch.float32)
         else:
             self._joint_positions = np.array(rest_pose[:num_dofs], dtype=np.float32)
             self._joint_velocities = np.zeros(num_dofs)
             self._kp = np.ones(num_dofs) * 40.0
-            self._kd = np.ones(num_dofs) * 4.0
+            self._kd = np.ones(num_dofs) * 2.0
             self._target_joint_positions = np.array(rest_pose[:num_dofs], dtype=np.float32)
             self._target_joint_velocities = np.zeros(num_dofs)
         
@@ -166,7 +166,7 @@ class MockRobotInterface:
         # Motion parameters
         self._max_velocity = 1.0  # rad/s
         self._position_gain = 5.0
-        self._velocity_gain = 2.0
+        self._velocity_gain = 1.0  # Lower = less damping (was 2.0)
     
     def update_state(self, dt: Optional[float] = None):
         """Update robot state based on target positions/velocities."""

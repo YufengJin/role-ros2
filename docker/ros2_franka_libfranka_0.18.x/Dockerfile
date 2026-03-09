@@ -191,13 +191,17 @@ RUN git clone --recurse-submodules -b v1.41.1 https://github.com/grpc/grpc.git &
 
 # Add Robotpkg repository for Pinocchio and eigenpy (version 2.5.2)
 # eigenpy is required by hpp-fcl
+# Pin robotpkg versions: repo has casadi 3.7.x but pinocchio requires 3.6.7; unpinned install fails
 RUN echo "deb [arch=amd64] http://robotpkg.openrobots.org/packages/debian/pub $(lsb_release -sc) robotpkg" \
     > /etc/apt/sources.list.d/robotpkg.list && \
     curl http://robotpkg.openrobots.org/packages/debian/robotpkg.key | apt-key add - && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
-    robotpkg-py3*-pinocchio \
-    robotpkg-py3*-eigenpy \
+    robotpkg-casadi=3.6.7 \
+    robotpkg-pinocchio=3.4.0 \
+    robotpkg-py38-casadi=3.6.7 \
+    robotpkg-py38-pinocchio=3.4.0 \
+    robotpkg-py38-eigenpy=3.10.3 \
     && apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

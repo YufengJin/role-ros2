@@ -14,7 +14,7 @@ Usage:
         --control-hz 15.0 \\
         --speed-factor 1.5
 
-Author: Role-ROS2 Team
+Author: Chaser Robotics Team
 """
 
 import argparse
@@ -193,7 +193,7 @@ class ReplayTrajectory:
             if movement_enabled:
                 self.env.step(action)
             
-            # Regularize control frequency (matching collect_trajectory.py)
+            # Regularize control frequency (matching collect_trajectory_franka)
             comp_time = time.time() - start_time
             # Apply speed_factor to frequency: faster replay = shorter sleep time
             effective_hz = self.control_hz * self.speed_factor
@@ -298,11 +298,7 @@ def main():
     try:
         replayer = ReplayTrajectory(args)
         
-        # Main replay loop
-        # Note: RobotEnv has its own MultiThreadedExecutor that spins the node
-        # in a background thread. We just need to keep the main thread alive.
-        # Note: Frequency control is handled inside _replay_loop(), so no external sleep needed
-        
+        # Main replay loop; frequency control is in _replay_loop()
         while rclpy.ok() and not replayer._replay_completed:
             replayer._replay_loop()
             

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-visualize_tfds.py
+visualize_tfds.py - Visualize TFDS/RLDS examples with matplotlib.
 
-Visualize TFDS/RLDS examples (to_tfrecord.py output, DROID, etc.) with matplotlib.
+Author: Chaser Robotics Team
 
 - Row 0: 3 camera images (exterior_image_1_left, exterior_image_2_left, wrist_image_left)
 - Row 1: Joint position (7), gripper position, action (7) time series up to current step
@@ -10,15 +10,12 @@ Visualize TFDS/RLDS examples (to_tfrecord.py output, DROID, etc.) with matplotli
 
 Usage:
   python scripts/misc/visualize_tfds.py --tfrecord-dir /path/to/tfrecord/role_ros2/1.0.0
-  python scripts/misc/visualize_tfds.py --tfrecord-dir /app/datasets/droid/droid_100/1.0.0 --max-episodes 5
-  python scripts/misc/visualize_tfds.py --tfrecord-dir .../1.0.0 --save out.png   # 无头/无 DISPLAY 时必须用 --save
+  python scripts/misc/visualize_tfds.py --tfrecord-dir .../1.0.0 --save out.png  # Use --save when headless (no DISPLAY)
 
-无头环境 (Docker/SSH 无 X)：无 DISPLAY 时脚本会自动用 Agg 并要求 --save；否则会因 Qt/xcb 崩溃。
-减轻 TensorFlow 日志：TF_CPP_MIN_LOG_LEVEL=2 或 3。
-
-为什么 trajectory_visualizer 能弹窗而 visualize_tfds 不能？trajectory_visualizer 仅用 h5py/imageio/matplotlib，
-不经过 tf/tfds；tfds 会间接拉入 opencv-python(cv2)，cv2 带 Qt，import 时加载 xcb，易在无 DISPLAY 或冲突时崩。
-本脚本通过 QT_QPA_PLATFORM=offscreen 与 matplotlib 的 TkAgg 后端规避 cv2 的 Qt；若需弹窗请装 python3-tk。
+Headless: Without DISPLAY, script uses Agg and requires --save; otherwise Qt/xcb may crash.
+Reduce TF log spam: TF_CPP_MIN_LOG_LEVEL=2 or 3.
+Why trajectory_visualizer works headless: it uses h5py/imageio/matplotlib only; tfds pulls in cv2 (Qt/xcb), which
+crashes without DISPLAY. This script uses QT_QPA_PLATFORM=offscreen and TkAgg to avoid that.
 """
 
 from __future__ import annotations
@@ -28,24 +25,23 @@ import os
 import sys
 from pathlib import Path
 
-# 必须在 import tfds/matplotlib 之前设置，避免 TF 刷屏、以及 tf/cv2 拉起的 Qt 在无 DISPLAY 时用 xcb 崩掉
+# Must set before importing tfds/matplotlib to reduce TF log spam and avoid cv2 Qt/xcb crash when no DISPLAY
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 _linux_no_display = sys.platform == "linux" and not os.environ.get("DISPLAY")
 
-# tfds→tf 会间接 import opencv-python(cv2)；cv2 带 Qt，import 时加载 xcb，无 DISPLAY 或冲突即崩。
-# 令 Qt 走 offscreen，避免 cv2 的 Qt 去碰 xcb。trajectory_visualizer 不 import tf/cv2，故无此问题。
+# tfds pulls in cv2 (Qt/xcb). Use offscreen to avoid xcb crash when no DISPLAY.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-# 后端：无 DISPLAY 或 --save 时用 Agg（不开窗）；有 DISPLAY 且要开窗时用 TkAgg，避免与 cv2 的 Qt 冲突
+# Backend: Agg when headless or --save; TkAgg otherwise to avoid cv2 Qt conflict
 if "--save" in sys.argv or _linux_no_display:
     import matplotlib
     matplotlib.use("Agg")
 else:
     import matplotlib
     try:
-        matplotlib.use("TkAgg")  # Tk 与 cv2 的 Qt 互不干扰，可正常弹窗
+        matplotlib.use("TkAgg")  # Tk and cv2 Qt do not conflict, window can open
     except Exception:
-        pass  # 无 Tk 时回退到 matplotlib 默认（可能仍与 cv2 冲突）
+        pass  # Fallback if Tk unavailable
 
 import numpy as np
 import matplotlib.pyplot as plt
