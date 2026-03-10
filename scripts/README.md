@@ -21,7 +21,7 @@ This document describes scripts in `scripts/`, including `scripts/postprocess/` 
 
 - **`scripts/misc/hdf5_reader.py`**: Inspect HDF5 trajectory structure, shapes, and attributes.
 - **`scripts/misc/trajectory_visualizer.py`**: Matplotlib GUI to visualize trajectories (slider, camera images, robot/action plots, Gantt).
-- **`scripts/misc/visualize_tfds.py`**: Matplotlib GUI 可视化 TFDS/RLDS 数据（to_tfrecord、DROID 等）：三路图像、关节/夹爪/动作时序，Episode/Step 滑条。
+- **`scripts/misc/visualize_tfds.py`**: Matplotlib GUI to visualize TFDS/RLDS data (to_tfrecord, DROID, etc.): three camera views, joint/gripper/action time series, Episode/Step sliders.
 - **`scripts/misc/mujoco_to_urdf.py`**: Convert MuJoCo XML to URDF for ROS2.
 
 **scripts/tests/**
@@ -391,24 +391,24 @@ for batch in ds.take(10):
 
 ### Description
 
-用 Matplotlib 交互可视化 TFDS/RLDS 数据集（to_tfrecord 输出、DROID 等）。布局与 `trajectory_visualizer` 类似，数据来源为 TFDS：`tfds.builder_from_directory` + `as_dataset`。
+Interactive Matplotlib GUI for TFDS/RLDS datasets (to_tfrecord output, DROID, etc.). Layout similar to `trajectory_visualizer`; data from TFDS via `tfds.builder_from_directory` + `as_dataset`.
 
-- **第一行**：三路相机图 `exterior_image_1_left`、`exterior_image_2_left`、`wrist_image_left` + 信息框（instruction、file）
-- **第二行**：`observation.joint_position`(7)、`observation.gripper_position`、`action`(7) 的时序到当前 step
-- **滑条**：Episode、Step；可用 `--max-episodes` 限制预加载的 episode 数
+- **Row 1**: Three camera images (`exterior_image_1_left`, `exterior_image_2_left`, `wrist_image_left`) + info box (instruction, file)
+- **Row 2**: `observation.joint_position`(7), `observation.gripper_position`, `action`(7) time series up to current step
+- **Sliders**: Episode, Step; use `--max-episodes` to cap cached episodes
 
-目录需为含 `dataset_info.json` 的 TFDS 版本目录（如 `.../role_ros2/1.0.0` 或 `.../droid_100/1.0.0`）。
+Directory must be a TFDS version dir containing `dataset_info.json` (e.g. `.../role_ros2/1.0.0` or `.../droid_100/1.0.0`).
 
 ### Usage
 
 ```bash
-# role_ros2（to_tfrecord 输出）
+# role_ros2 (to_tfrecord output)
 python3 scripts/misc/visualize_tfds.py --tfrecord-dir data/tfrecord/role_ros2/1.0.0
 
-# DROID，限制缓存 5 个 episode
+# DROID, limit 5 cached episodes
 python3 scripts/misc/visualize_tfds.py --tfrecord-dir /app/datasets/droid/droid_100/1.0.0 --max-episodes 5
 
-# 无头保存为 PNG（无 GUI 时先 export MPLBACKEND=Agg）
+# Headless save as PNG (export MPLBACKEND=Agg when no GUI)
 python3 scripts/misc/visualize_tfds.py --tfrecord-dir data/tfrecord/role_ros2/1.0.0 --save /tmp/out.png
 ```
 
@@ -416,35 +416,35 @@ python3 scripts/misc/visualize_tfds.py --tfrecord-dir data/tfrecord/role_ros2/1.
 
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
-| `--tfrecord-dir` | Path | `data/tfrecord` | TFDS 版本目录（含 dataset_info.json、*-train.tfrecord-*） |
-| `--split` | str | `train` | `train` 或 `test` |
-| `--max-episodes` | int | 10 | 预加载并缓存的 episode 数量上限 |
-| `--save` | Path | - | 将当前 figure 保存到文件后退出（不弹 GUI）；无头环境可配合 `MPLBACKEND=Agg` |
+| `--tfrecord-dir` | Path | `data/tfrecord` | TFDS version dir (dataset_info.json, *-train.tfrecord-*) |
+| `--split` | str | `train` | `train` or `test` |
+| `--max-episodes` | int | 10 | Max episodes to preload and cache |
+| `--save` | Path | - | Save figure to file and exit (no GUI); for headless use with `MPLBACKEND=Agg` |
 
 ### Examples
 
-参见 **`scripts/misc/visualize_tfds_examples.sh`**：可复制其中命令，或在 role-ros2 根目录运行 `./scripts/misc/visualize_tfds_examples.sh 1` 等。
+See **`scripts/misc/visualize_tfds_examples.sh`**: copy commands from there, or run `./scripts/misc/visualize_tfds_examples.sh 1` etc. from the role-ros2 repo root.
 
-#### Example 1: role_ros2（to_tfrecord 输出）
+#### Example 1: role_ros2 (to_tfrecord output)
 
 ```bash
 python3 scripts/misc/visualize_tfds.py --tfrecord-dir data/tfrecord/role_ros2/1.0.0
 ```
 
-#### Example 2: DROID，限制缓存的 episode
+#### Example 2: DROID, limit cached episodes
 
 ```bash
 python3 scripts/misc/visualize_tfds.py --tfrecord-dir /app/datasets/droid/droid_100/1.0.0 --max-episodes 5
 ```
 
-#### Example 3: 无头保存（CI / 无显示器）
+#### Example 3: Headless save (CI / no display)
 
 ```bash
 export MPLBACKEND=Agg
 python3 scripts/misc/visualize_tfds.py --tfrecord-dir data/tfrecord/role_ros2/1.0.0 --save /tmp/visualize_tfds_out.png
 ```
 
-#### Example 4: 只缓存 3 个 episode、train 分片
+#### Example 4: Cache 3 episodes, train split
 
 ```bash
 python3 scripts/misc/visualize_tfds.py --tfrecord-dir data/tfrecord/role_ros2/1.0.0 --max-episodes 3 --split train
@@ -712,7 +712,7 @@ python3 scripts/misc/trajectory_visualizer.py /path/to/trajectory.h5 [--debug]
 
 ### scripts/misc/visualize_tfds.py
 
-Matplotlib GUI 可视化 TFDS/RLDS：三路图像、joint/gripper/action 时序，Episode/Step 滑条。支持 to_tfrecord 输出与 DROID。示例：`scripts/misc/visualize_tfds_examples.sh`。
+Matplotlib GUI to visualize TFDS/RLDS: three camera views, joint/gripper/action time series, Episode/Step sliders. Supports to_tfrecord output and DROID. Examples: `scripts/misc/visualize_tfds_examples.sh`.
 
 ```bash
 python3 scripts/misc/visualize_tfds.py --tfrecord-dir data/tfrecord/role_ros2/1.0.0 [--max-episodes 10] [--save out.png]
