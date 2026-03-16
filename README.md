@@ -120,6 +120,15 @@ flowchart LR
 
 Output: `role_ros2-train.tfrecord-*`, `dataset_info.json`, loadable via `tfds.builder_from_directory()`.
 
+## Policy Deployment
+
+Running learned policies on a separate GPU server from the real-time robot controller is a common setup in robot learning. role-ros2 integrates with **[policy-websocket](https://github.com/YufengJin/policy_websocket.git)** — a lightweight WebSocket-based inference bridge with binary serialization (msgpack + NumPy) and built-in action chunking support for policies like ACT and Diffusion Policy.
+
+For ready-to-use integrations with popular generalist policies, we provide dedicated forks:
+
+- **[openpi](https://github.com/YufengJin/openpi.git)** — π0 policy inference server, compatible with role-ros2
+- **[openvla](https://github.com/YufengJin/openvla.git)** — OpenVLA inference server, compatible with role-ros2
+
 ## Scripts & Tools
 
 | Script | Description |
@@ -212,6 +221,14 @@ Contributions are welcome. Please ensure:
 1. Code follows ROS2 and Python best practices (PEP 8)
 2. Documentation and comments are added
 3. Related README and docs are updated
+
+## Acknowledgements
+
+This project is developed at [PEARL Lab](https://pearl-lab.com/), TU Darmstadt.
+
+We thank the following contributors for their valuable contributions to this project:
+
+- 🤝 [Xiaogang Jia](https://xiaogangjia.github.io/Personal_Website/)
 
 ## License
 
