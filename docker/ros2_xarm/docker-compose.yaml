@@ -1,0 +1,35 @@
+# Docker Compose configuration for ROS2 Humble + xArm Python SDK
+# Standalone image independent of the Franka containers.
+
+services:
+  ros2_xarm:
+    image: ros2_xarm:humble
+    container_name: ros2_xarm_container
+    build:
+      context: ../..  # repo root (role-ros2/)
+      dockerfile: docker/ros2_xarm/Dockerfile
+    network_mode: host
+    ipc: host
+    stdin_open: true
+    tty: true
+    deploy:
+      restart_policy:
+        condition: any
+    environment:
+      ROBOT_IP: "${ROBOT_IP:-192.168.1.222}"
+      ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
+      RMW_IMPLEMENTATION: "${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
+      FASTDDS_BUILTIN_TRANSPORTS: "${FASTDDS_BUILTIN_TRANSPORTS:-UDPv4}"
+      ROS_LOCALHOST_ONLY: "${ROS_LOCALHOST_ONLY:-0}"
+      DISPLAY: "${DISPLAY}"
+      # Set SKIP_AUTO_ENV=true to skip automatic env sourcing on entry.
+      # Then manually: source /etc/ros2_xarm/ros2_xarm.env
+      SKIP_AUTO_ENV: "${SKIP_AUTO_ENV:-false}"
+    volumes:
+      # X11 (for rviz / GUI demos)
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # DDS shared memory
+      - /dev/shm:/dev/shm:rw
+      # Mount the whole role-ros2 repo so the container can build / edit code
+      # without rebuilding the image. Matches the franka-image convention.
+      - ../../:/app/ros2_ws/src/role-ros2:rw

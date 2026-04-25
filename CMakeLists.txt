@@ -98,6 +98,11 @@ install(PROGRAMS
   RENAME franka_robot_interface
 )
 install(PROGRAMS
+  nodes/xarm_robot_interface_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME xarm_robot_interface
+)
+install(PROGRAMS
   nodes/franka_gripper_interface_node.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME franka_gripper_interface
@@ -188,6 +193,17 @@ install(DIRECTORY role_ros2/robot_ik/franka/mesh/
   DESTINATION share/${PROJECT_NAME}/robot_ik/franka/mesh
   FILES_MATCHING
     PATTERN "*.obj"
+)
+
+# Install xArm URDF and meshes (for robot_state_publisher in xarm_robot.launch.py)
+install(FILES
+  role_ros2/robot_ik/xarm/xarm6.urdf
+  DESTINATION share/${PROJECT_NAME}/robot_ik/xarm
+)
+install(DIRECTORY role_ros2/robot_ik/xarm/meshes/
+  DESTINATION share/${PROJECT_NAME}/robot_ik/xarm/meshes
+  FILES_MATCHING
+    PATTERN "*.stl"
 )
 
 # Install XML model files (needed by RobotIKSolver)

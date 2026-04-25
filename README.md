@@ -59,6 +59,7 @@ role-ros2 provides unified robot interfaces and VR-based teleoperation:
 |-------|-------|----------|
 | Single-arm Franka | `FrankaRobot` | One-arm manipulation |
 | Bimanual Franka | `BimanualFrankaRobot` | Two-arm manipulation |
+| UFACTORY xArm6 (beta) | `xarm_robot_interface` node | One-arm manipulation via xArm-Python-SDK |
 
 **VR control (Oculus Quest)**:
 - **Hold GRIP** → Enable robot movement

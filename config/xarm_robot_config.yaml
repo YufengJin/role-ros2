@@ -1,0 +1,82 @@
+# xArm6 Robot Configuration File
+# Used by launch/xarm_robot.launch.py to start nodes/xarm_robot_interface_node.py
+#
+# Mirrors the topic / service interface of franka_robot_config.yaml so downstream
+# scripts only need to switch namespace (e.g. fr3_arm -> xarm6_arm).
+
+# ============================================================================
+# Robot Connection Settings
+# ============================================================================
+# IP address of the xArm controller box (on the robot LAN).
+robot_ip: "192.168.1.185"
+
+# ============================================================================
+# Joint Names Configuration
+# ============================================================================
+# xArm6 has 6 joints. Keep names consistent with any URDF you load downstream.
+arm_joints:
+  - xarm6_joint1
+  - xarm6_joint2
+  - xarm6_joint3
+  - xarm6_joint4
+  - xarm6_joint5
+  - xarm6_joint6
+
+# ============================================================================
+# Namespace Configuration
+# ============================================================================
+arm_namespace: "xarm6_arm"
+
+# Frame ID published in joint_states / arm_state / ee_pose headers.
+# Must match the URDF root link that the arm is attached to.
+ee_frame_id: "xarm6_link_base"
+
+# ============================================================================
+# URDF Configuration
+# ============================================================================
+# URDF file in share/role_ros2/robot_ik/xarm/ used by launch to seed
+# robot_state_publisher (publishes /tf for RViz / TF-based tooling).
+urdf_file: "xarm6.urdf"
+
+# ============================================================================
+# Mode Settings
+# ============================================================================
+# Mock mode (no real robot). When true, MockXArmInterface is used.
+use_mock: false
+
+# ============================================================================
+# Publishing Settings
+# ============================================================================
+publish_rate: 50.0
+
+# ============================================================================
+# Reset / Home Position Settings
+# ============================================================================
+# Home joint positions in radians (length must equal arm_joints).
+home_joints: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+# Whether to drive to home_joints when the node starts.
+auto_reset_on_startup: false
+auto_reset_delay: 5.0
+
+# ============================================================================
+# Velocity / Speed Limits
+# ============================================================================
+# Used both for converting time_to_go -> SDK speed and for streaming bounds.
+max_joint_velocity: 1.0   # rad/s
+
+# ============================================================================
+# Example Usage
+# ============================================================================
+#   ros2 launch role_ros2 xarm_robot.launch.py
+#   ros2 launch role_ros2 xarm_robot.launch.py use_mock:=true
+#
+# Send joint position command:
+#   ros2 topic pub --once /xarm6_arm/joint_position_controller/command \
+#       role_ros2/msg/JointPositionCommand \
+#       "{positions: [0.1, 0.0, 0.0, 0.0, 0.0, 0.0], blocking: false}"
+#
+# Move to joint positions (blocking):
+#   ros2 service call /xarm6_arm/move_to_joint_positions \
+#       role_ros2/srv/MoveToJointPositions \
+#       "{joint_positions: [0,0,0,0,0,0], time_to_go: 2.0}"
