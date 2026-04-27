@@ -4,17 +4,21 @@ This document is the single reference for building, running, and troubleshooting
 
 ## Overview
 
-The `docker/` directory provides three kinds of setups:
+The `docker/` directory provides several setups:
 
 1. **Camera/GPU only**: ROS2 Humble + CUDA 11.8 + ZED SDK for GPU or ZED camera use.
-2. **Robot only**: ROS2 Foxy + Polymetis + libfranka for Franka robot control (no GPU).
-3. **Camera + robot**: Both containers run together for the full stack.
+2. **Franka robot only**: ROS2 Foxy + Polymetis + libfranka for Franka robot control (no GPU).
+3. **Camera + Franka robot**: Both containers run together for the full Franka stack.
+4. **xArm robot only**: ROS2 Humble + xarm-python-sdk (no GPU, no CUDA).
+5. **Allegro Hand only**: ROS2 Humble + ros2_control + the official allegro_hand_ros2 driver (CAN, no GPU).
 
 When to use which:
 
 - Camera/GPU only → **ros2_cu118**
-- Robot only → **ros2_franka_libfranka_0.14.x** or **ros2_franka_libfranka_0.18.x**
-- Camera + robot → **ros2_cu118_franka_0.14.x** or **ros2_cu118_franka_0.18.x**
+- Franka robot only → **ros2_franka_libfranka_0.14.x** or **ros2_franka_libfranka_0.18.x**
+- Camera + Franka robot → **ros2_cu118_franka_0.14.x** or **ros2_cu118_franka_0.18.x**
+- xArm robot → **ros2_xarm**
+- Allegro Hand → **ros2_allegro**
 
 ## Subfolders
 
@@ -43,6 +47,17 @@ When to use which:
 
 - **Purpose**: Compose stack — runs both ros2_cu118 and ros2_polymetis (libfranka 0.18.x).
 - **Files**: `docker-compose.yaml`
+
+### ros2_xarm
+
+- **Purpose**: Single image — ROS2 Humble + xarm-python-sdk (Ubuntu 22.04, Python 3.10, no GPU/CUDA).
+- **Files**: `Dockerfile`, `docker-compose.yaml`, `entrypoint.sh`, `ros2_xarm.env`, `smoke_test.sh`, `tests/`
+
+### ros2_allegro
+
+- **Purpose**: Single image — ROS2 Humble + the full ros2_control stack required by the official Allegro Hand V4 driver (`allegro_hand_ros2/`). Talks to the hand over native Linux SocketCAN; no PCAN userspace lib needed. The role-ros2 wrapper (`allegro_hand_interface_node`) adapts the official ros2_control topics to role-ros2 conventions.
+- **Files**: `Dockerfile`, `docker-compose.yaml`, `entrypoint.sh`, `ros2_allegro.env`, `smoke_test.sh`
+- **Hardware prerequisite**: USB-CAN dongle on the host (e.g. PEAK PCAN-USB → `peak_usb` kernel module, or generic `gs_usb`). The container shares the host's `can0` via `network_mode: host` — no `/dev` passthrough or `privileged: true` is needed.
 
 ## Prerequisites
 
@@ -85,6 +100,18 @@ For 0.18.x:
 
 ```bash
 docker compose -f docker/ros2_cu118_franka_0.18.x/docker-compose.yaml build
+```
+
+### xArm only (ros2_xarm)
+
+```bash
+docker compose -f docker/ros2_xarm/docker-compose.yaml build
+```
+
+### Allegro Hand only (ros2_allegro)
+
+```bash
+docker compose -f docker/ros2_allegro/docker-compose.yaml build
 ```
 
 ## X11 / xhost setup
@@ -157,6 +184,60 @@ Enter containers:
 
 - Camera: `docker exec -it ros2_cu118_container bash`
 - Robot: `docker exec -it ros2_polymetis_container bash`
+
+### ros2_allegro (Allegro Hand V4)
+
+**Step 1 — bring up the CAN interface on the host** (only required for real hardware; mock mode skips this entirely):
+
+```bash
+sudo modprobe peak_usb        # or gs_usb / kvaser_usb depending on dongle
+sudo ip link set can0 type can bitrate 1000000
+sudo ip link set can0 up
+ip -details link show can0    # expect state ERROR-ACTIVE
+candump can0 &                # optional: confirm hand heartbeat frames
+```
+
+**Step 2 — start the container** (from the repo root):
+
+```bash
+docker compose -f docker/ros2_allegro/docker-compose.yaml up -d
+docker exec -it ros2_allegro_container bash
+```
+
+**Step 3 — launch the hand**
+
+Mock (no hardware required, useful for CI / desktop dry-runs):
+
+```bash
+ros2 launch role_ros2 allegro_hand_robot.launch.py use_mock:=true
+```
+
+Real hardware:
+
+```bash
+ros2 launch role_ros2 allegro_hand_robot.launch.py
+```
+
+**Step 4 — interact** (in another container shell):
+
+```bash
+# state stream
+ros2 topic echo /allegro_hand/hand_state
+
+# 16-DoF position command (Allegro V4)
+ros2 topic pub --once /allegro_hand/joint_position_controller/command \
+    role_ros2/msg/JointPositionCommand \
+    "{positions: [0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0], blocking: false}"
+
+# blocking grasp primitive
+ros2 service call /allegro_hand/grasp_primitive role_ros2/srv/GraspPrimitive \
+    "{command: 'envelop', effort: 0.5, blocking: true}"
+
+# return to home
+ros2 service call /allegro_hand/reset role_ros2/srv/Reset "{}"
+```
+
+Set `HAND_NAMESPACE=...`, `HAND_SIDE=left|right`, or `CAN_INTERFACE=can1` in the environment (or pass them as launch args) to support a different topology.
 
 ## When NVIDIA Container Toolkit is not installed
 

@@ -1,0 +1,76 @@
+# Allegro Hand V4 Configuration
+# Used by launch/allegro_hand_robot.launch.py
+#
+# Topology:
+#   /joint_states              <- joint_state_broadcaster (root, official driver)
+#   /allegro_hand_position_controller/commands  <- ForwardCommandController input (Float64MultiArray)
+#   /allegro_hand_posture_controller/grasp_cmd  <- posture action server (position primitives)
+#   /allegro_hand_grasp_controller/grasp_cmd    <- grasp   action server (effort primitives)
+#
+# Wrapper (in /{namespace}):
+#   /{ns}/joint_states                          (relayed, filtered to 16 hand joints)
+#   /{ns}/hand_state                            (HandState aggregate)
+#   /{ns}/joint_position_controller/command     (JointPositionCommand input, 16-DoF)
+#   /{ns}/reset                                 (Reset.srv  -> posture "home")
+#   /{ns}/move_to_joint_positions               (MoveToJointPositions.srv -> Float64MultiArray + poll convergence)
+#   /{ns}/grasp_primitive                       (GraspPrimitive.srv -> posture/grasp action)
+
+# ============================================================================
+# Hardware Identity
+# ============================================================================
+device: "v4"
+hand_side: "right"          # right | left  (passed to allegro_hand.launch.py)
+hand_id: 0                  # CAN bus hand id
+
+# ============================================================================
+# CAN (informational only — actual setup happens on the host)
+# ============================================================================
+# host setup:
+#   sudo ip link set can0 up type can bitrate 1000000
+can_interface: "can0"
+
+# ============================================================================
+# ROS Naming
+# ============================================================================
+namespace: "allegro_hand"   # role-ros2 wrapper namespace
+prefix: "ah_"               # URDF/joint prefix used by the official driver
+
+# Joint names — must match the official ros2_controllers.yaml exactly
+# (allegro_hand_ros2/allegro_hand_bringup/config/v4/single_hand/ros2_controllers.yaml)
+hand_joint_names:
+  - ah_joint00
+  - ah_joint01
+  - ah_joint02
+  - ah_joint03
+  - ah_joint10
+  - ah_joint11
+  - ah_joint12
+  - ah_joint13
+  - ah_joint20
+  - ah_joint21
+  - ah_joint22
+  - ah_joint23
+  - ah_joint30
+  - ah_joint31
+  - ah_joint32
+  - ah_joint33
+
+# ============================================================================
+# Behavior
+# ============================================================================
+publish_rate: 50.0          # Hz — wrapper publish rate for hand_state
+use_mock: false             # true => launch sets ros2_control_hardware_type:=mock_components
+
+# Open-hand pose. 16 zeros works as a safe neutral for V4. Override per task if needed.
+home_joints: [0.0, 0.0, 0.0, 0.0,
+              0.0, 0.0, 0.0, 0.0,
+              0.0, 0.0, 0.0, 0.0,
+              0.0, 0.0, 0.0, 0.0]
+
+# Drive the hand to home_joints on startup (via posture controller "home" primitive)
+auto_home_on_startup: false
+auto_home_delay: 5.0        # seconds — let the official controllers warm up first
+
+# move_to_joint_positions convergence settings
+move_tolerance: 0.02        # rad per joint
+move_timeout: 5.0           # seconds

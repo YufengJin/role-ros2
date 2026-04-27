@@ -1,0 +1,49 @@
+# Docker Compose configuration for ROS2 Humble + Allegro Hand V4
+# Standalone image. Hand connects via SocketCAN; the host owns can0 and the
+# container shares it via network_mode: host (no /dev passthrough or privileged
+# required).
+#
+# Host setup BEFORE `docker compose up`:
+#   sudo modprobe peak_usb       # or gs_usb / kvaser_usb for other dongles
+#   sudo ip link set can0 type can bitrate 1000000
+#   sudo ip link set can0 up
+#
+# The entrypoint warns if can0 is DOWN; it does not try to bring it up itself
+# (would require privileged mode + NET_ADMIN — unnecessary for this design).
+
+services:
+  ros2_allegro:
+    image: ros2_allegro:humble
+    container_name: ros2_allegro_container
+    build:
+      context: ../..  # repo root (role-ros2/)
+      dockerfile: docker/ros2_allegro/Dockerfile
+    network_mode: host
+    ipc: host
+    stdin_open: true
+    tty: true
+    deploy:
+      restart_policy:
+        condition: any
+    environment:
+      CAN_INTERFACE: "${CAN_INTERFACE:-can0}"
+      HAND_SIDE: "${HAND_SIDE:-right}"
+      HAND_DEVICE: "${HAND_DEVICE:-v4}"
+      HAND_NAMESPACE: "${HAND_NAMESPACE:-allegro_hand}"
+      ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
+      RMW_IMPLEMENTATION: "${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
+      FASTDDS_BUILTIN_TRANSPORTS: "${FASTDDS_BUILTIN_TRANSPORTS:-UDPv4}"
+      ROS_LOCALHOST_ONLY: "${ROS_LOCALHOST_ONLY:-0}"
+      DISPLAY: "${DISPLAY}"
+      # Set SKIP_AUTO_ENV=true to skip automatic env sourcing on entry.
+      # Then manually: source /etc/ros2_allegro/ros2_allegro.env
+      SKIP_AUTO_ENV: "${SKIP_AUTO_ENV:-false}"
+    volumes:
+      # X11 (for rviz / GUI demos)
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # DDS shared memory
+      - /dev/shm:/dev/shm:rw
+      # Mount the whole role-ros2 repo so the container can build / edit code
+      # without rebuilding the image. Matches the franka / xArm convention.
+      # The bundled allegro_hand_ros2/ submodule is built on first colcon run.
+      - ../../:/app/ros2_ws/src/role-ros2:rw

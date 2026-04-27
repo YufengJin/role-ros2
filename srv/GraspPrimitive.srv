@@ -1,0 +1,21 @@
+# Grasp Primitive Service
+# Wraps the official allegro_hand_control_msgs/action/GraspCommand action so it
+# can be triggered via a single blocking ROS 2 service call from RobotEnv-style
+# clients (matching the franka_gripper grasp/open/close ergonomics).
+
+# Posture/grasp primitive name. Routed by allegro_hand_interface_node:
+#   - posture controller (position-based): home, ready, off
+#   - grasp controller   (effort-based)  : grasp_3, grasp_4, pinch_it, pinch_mt, envelop
+string command
+
+# Desired envelop grasp torque (only meaningful for effort-mode primitives).
+# -1 (default) → use the controller's built-in default.
+float64 effort
+
+# Whether to block until the action completes
+bool blocking
+---
+bool success
+string message
+bool stalled       # Mirrors the action result
+bool reached_goal  # Mirrors the action result

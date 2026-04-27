@@ -42,3 +42,6 @@ outputs/
 
 # Hardware logs
 hardware/franka/launch/outputs/
+
+xArm-Python-SDK/
+allegro_hand_ros2/

@@ -55,6 +55,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   # State messages
   "msg/ArmState.msg"
   "msg/GripperState.msg"
+  "msg/HandState.msg"
   "msg/RobotState.msg"
   # ============================================================================
   # Legacy services (V1)
@@ -75,6 +76,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/StartJointVelocity.srv"
   "srv/GripperGoto.srv"
   "srv/GripperGrasp.srv"
+  "srv/GraspPrimitive.srv"
   # ============================================================================
   # Actions
   # ============================================================================
@@ -118,14 +120,9 @@ install(PROGRAMS
   RENAME camera_calibration_tf_publisher
 )
 install(PROGRAMS
-  nodes/franka_gripper_interface_node.py
+  nodes/allegro_hand_interface_node.py
   DESTINATION lib/${PROJECT_NAME}
-  RENAME franka_gripper_interface
-)
-install(PROGRAMS
-  nodes/robot_state_aggregator_node.py
-  DESTINATION lib/${PROJECT_NAME}
-  RENAME robot_state_aggregator
+  RENAME allegro_hand_interface
 )
 
 # Note: scripts/ directory contains pure Python scripts (not ROS2 nodes)
