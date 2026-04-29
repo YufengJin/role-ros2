@@ -5,7 +5,8 @@
 # ============================================================================
 # Robot Connection Settings
 # ============================================================================
-robot_ip: "172.17.0.2"   # Robot IP address or hostname
+# robot_ip: "172.17.0.2"   # Robot IP address or hostname
+robot_ip: "10.10.10.102"
 
 # Robot identification
 arm_id: "fr3"  # Robot arm ID. Supported values: fer, fr3, fp3
@@ -120,7 +121,8 @@ default_controller_mode: "joint_impedance"
 # Home joint positions (radians)
 # Default: [0.0, -0.628, 0.0, -2.513, 0.0, 1.885, 0.0]
 # This corresponds to [0, -1/5*pi, 0, -4/5*pi, 0, 3/5*pi, 0]
-home_joints: [0.0, -0.628, 0.0, -2.513, 0.0, 1.885, 0.0]
+# home_joints: [0.0, -0.628, 0.0, -2.513, 0.0, 1.885, 0.0]
+home_joints: [-0.0228, -0.3524, -0.0125, -2.1719, 0.0744, 1.6508, -2.4758]
 
 # Auto-reset on startup (default: false for V2 to avoid unexpected movement)
 auto_reset_on_startup: false
