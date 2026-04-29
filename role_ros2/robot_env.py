@@ -156,7 +156,11 @@ class RobotEnv(gym.Env):
         return action_info
 
     def create_action_dict(self, action):
-        return self._robot.create_action_dict(action)
+        return self._robot.create_action_dict(
+            action,
+            action_space=self.action_space,
+            gripper_action_space=self.gripper_action_space,
+        )
 
     def read_cameras(self, use_sync: bool = True):
         """

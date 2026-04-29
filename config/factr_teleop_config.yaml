@@ -24,14 +24,12 @@ arm_teleop:
   arm_joint_limits_min: [-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973]
   arm_joint_limits_safety_margin: 0.1
   initialization:
-    # initial_match_joint_pos: [0.0, -0.7854, 0.0, -2.356, 0.0, 1.57, 0.0]
-    # If true, search offsets from current Dynamixel positions and print the result.
-    # If false, use factr_joint_offsets directly and do not perform offset search.
+    factr_joint_offsets: [0., 3.14159265, 6.28318531, 1.57079633 , 3.14159265, 6.28318531, 1.57079633, 0.0]
+    initial_joint_pos: [0.0, -1.882, 0.0, -3.157, 0.058, 1.266, 0.0, 0.0]
+
     search_dynamixel_offsets: false
-    # Raw Dynamixel offsets for [7 arm joints, gripper]. Replace these with the
-    # printed search result from a calibrated run.
     calibration_joint_pos: [0.0, 0.0, 0.0, -2.356, 0.0, 1.57, 0.0]
-    factr_joint_offsets: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    
 
 gripper_teleop:
   actuation_range: 0.8
@@ -67,7 +65,7 @@ teleop:
     # recording real teleoperation data. This avoids a sudden jump if Franka is
     # not already close to the FACTR leader.
     enabled: true
-    joint_threshold: 0.035
+    joint_threshold: 0.2
     max_joint_step: 0.02
     print_period_s: 1.0
     exclude_from_trajectory: true
@@ -79,15 +77,12 @@ teleop:
     failure_key: "b"
     keypress_latch_s: 0.75
   force_feedback:
-    # Current ArmState does not yet publish motor_torques_external. This source
-    # estimates follower external torque as motor_torques_measured - joint_torques_computed.
-    # Change to motor_torques_external if that field is added later.
     source: estimated_external_torque
     fallback_zero: true
   mapping:
     joint_indices: [0, 1, 2, 3, 4, 5, 6]
     joint_signs: [1, 1, 1, 1, 1, 1, 1]
-    joint_offsets: [0, 0, 0, 0, 0, 0, 0]
+    joint_offsets: [0, 0, 0, 0, 0, 0, -0.7854]
     gripper_open_raw: 0.0
     gripper_closed_raw: 0.8
     gripper_invert: false

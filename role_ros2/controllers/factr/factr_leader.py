@@ -54,7 +54,6 @@ class FactrLeaderInterface:
     """High-frequency FACTR leader controller with cached non-blocking reads."""
 
     CALIBRATION_RANGE_MULTIPLIER = 20
-    CALIBRATION_STEP_COUNT = 81
 
     def __init__(self, config_path: Optional[str] = None, autostart: bool = False):
         self.config = load_factr_config(config_path)
@@ -128,6 +127,9 @@ class FactrLeaderInterface:
             if configured_joint_offsets is None
             else np.asarray(configured_joint_offsets, dtype=np.float64)
         )
+        self.initial_joint_pos = init_cfg.get("initial_joint_pos", None)
+        if self.initial_joint_pos is not None:
+            self.initial_joint_pos = np.asarray(self.initial_joint_pos, dtype=np.float64)
 
         gripper_cfg = cfg.get("gripper_teleop", {})
         self.gripper_limit_min = 0.0
@@ -225,6 +227,9 @@ class FactrLeaderInterface:
     def _calibrate_system(self) -> None:
         if self.driver is None:
             raise RuntimeError("FACTR Dynamixel driver not initialized")
+        
+        for _ in range(10):
+            self.driver.get_positions_and_velocities()
 
         expected_offset_count = self.num_arm_joints + 1
         if not self.search_dynamixel_offsets:
@@ -239,15 +244,39 @@ class FactrLeaderInterface:
                     f"{expected_offset_count} values ({self.num_arm_joints} arm + 1 gripper), "
                     f"got {len(self.configured_joint_offsets)}"
                 )
+                
             self.joint_offsets = self.configured_joint_offsets.copy()
+            
+            # loop through all joints and add +- 2pi to the joint offsets to get the closest to start joints
+            new_joint_offsets = []
+            curr_joints, _ = self.driver.get_positions_and_velocities()
+            start_joints = self.initial_joint_pos
+            assert curr_joints.shape == start_joints.shape
+            
+            for idx, (c_joint, s_joint, offset, joint_sign) in enumerate(
+                zip(curr_joints, start_joints, self.joint_offsets, self.joint_signs)
+            ):
+                best_bias = 0.0
+                best_error = np.inf
+                for bias in [0.0, -2 * np.pi, 2 * np.pi]:
+                    
+                    joint_i = joint_sign * (c_joint - offset - bias)
+                    error = abs(joint_i - s_joint)
+                    if error < best_error:
+                        best_error = error
+                        best_bias = bias
+                new_joint_offsets.append(offset+best_bias)
+                    
+            self.joint_offsets = np.array(new_joint_offsets)
+            
+            
             print(
                 "FACTR using configured Dynamixel joint offsets: "
                 # f"{[round(float(x), 8) for x in self.joint_offsets]}"
             )
+            curr_joints_cld = (curr_joints - self.joint_offsets) * self.joint_signs
+            print(f"current_joints: {curr_joints_cld}")
             return
-
-        for _ in range(10):
-            self.driver.get_positions_and_velocities()
 
         curr_joints, _ = self.driver.get_positions_and_velocities()
         joint_offsets = []
@@ -255,10 +284,17 @@ class FactrLeaderInterface:
             best_offset = 0.0
             best_error = np.inf
             joint_sign_i = self.joint_signs[i]
+            
+            calibration_step_count =  4 * self.CALIBRATION_RANGE_MULTIPLIER + 1
+            # the flange is devided by 8 instead of 4 for joint 1 and 3, unless you install it aligned gear mark
+            if i==1 or i==3:
+                calibration_step_count = 8 * self.CALIBRATION_RANGE_MULTIPLIER + 1
+            
+                        
             for offset in np.linspace(
                 -self.CALIBRATION_RANGE_MULTIPLIER * np.pi,
                 self.CALIBRATION_RANGE_MULTIPLIER * np.pi,
-                self.CALIBRATION_STEP_COUNT,
+                calibration_step_count,
             ):
                 joint_i = joint_sign_i * (curr_joints[i] - offset)
                 error = abs(joint_i - self.calibration_joint_pos[i])
