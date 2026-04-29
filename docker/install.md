@@ -4,17 +4,19 @@ This document is the single reference for building, running, and troubleshooting
 
 ## Overview
 
-The `docker/` directory provides three kinds of setups:
+The `docker/` directory provides four kinds of setups:
 
 1. **Camera/GPU only**: ROS2 Humble + CUDA 11.8 + ZED SDK for GPU or ZED camera use.
 2. **Robot only**: ROS2 Foxy + Polymetis + libfranka for Franka robot control (no GPU).
 3. **Camera + robot**: Both containers run together for the full stack.
+4. **FACTR desktop teleoperation**: ROS2 Humble desktop stack plus FACTR leader dependencies.
 
 When to use which:
 
 - Camera/GPU only → **ros2_cu118**
 - Robot only → **ros2_franka_libfranka_0.14.x** or **ros2_franka_libfranka_0.18.x**
 - Camera + robot → **ros2_cu118_franka_0.14.x** or **ros2_cu118_franka_0.18.x**
+- FACTR desktop teleoperation → **ros2_factr**
 
 ## Subfolders
 
@@ -23,6 +25,12 @@ When to use which:
 - **Purpose**: Single image — ROS2 Humble + CUDA 11.8 + ZED SDK (camera/GPU).
 - **Base image**: `nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04`
 - **Files**: `Dockerfile`, `docker-compose.yaml`, `entrypoint.sh`, `ros2_cu118.env`, `install_nvidia_toolkit.sh`
+
+### ros2_factr
+
+- **Purpose**: Desktop-side FACTR teleoperation image. It extends `ros2_cu118:latest` and adds `dynamixel-sdk`, Pinocchio Python bindings, serial utilities, and the FTDI latency helper.
+- **Files**: `Dockerfile`, `docker-compose.yaml`
+- **Runtime note**: The real-time Franka/Polymetis container remains separate and should run on the robot real-time machine.
 
 ### ros2_franka_libfranka_0.14.x
 
@@ -57,6 +65,22 @@ When to use which:
 ```bash
 cd docker/ros2_cu118
 docker compose build
+```
+
+### FACTR desktop teleoperation (ros2_factr)
+
+Build `ros2_cu118` first because the FACTR image uses it as its base:
+
+```bash
+cd docker/ros2_cu118
+docker compose build
+```
+
+Then build the FACTR image:
+
+```bash
+cd ../../
+docker compose -f docker/ros2_factr/docker-compose.yaml build
 ```
 
 ### Robot only (ros2_franka_libfranka_0.14.x or 0.18.x)
@@ -125,6 +149,21 @@ docker compose run --rm ros2_cu118 bash
 
 Without GPU (see next section): edit `docker-compose.yaml` and comment out or remove the `runtime: nvidia` line for the service, then run `docker compose up -d`.
 
+### ros2_factr only
+
+From the repository root:
+
+```bash
+docker compose -f docker/ros2_factr/docker-compose.yaml up -d
+docker exec -it ros2_factr_container bash
+```
+
+The compose file mounts `/dev` and `/sys` so the container can access the FACTR USB serial device and write the FTDI latency timer:
+
+```bash
+docker exec -it ros2_factr_container factr-set-latency --config /app/ros2_ws/src/role-ros2/config/factr_teleop_config.yaml
+```
+
 ### ros2_polymetis only (0.14.x or 0.18.x)
 
 ```bash
@@ -157,6 +196,36 @@ Enter containers:
 
 - Camera: `docker exec -it ros2_cu118_container bash`
 - Robot: `docker exec -it ros2_polymetis_container bash`
+
+### FACTR + Franka split-machine launch
+
+On the real-time machine connected to the Franka/Panda, use the existing
+Polymetis container and launch the normal Franka interface. For Panda, build/run
+the robot image with `ROBOT_TYPE=panda`.
+
+```bash
+cd docker/ros2_franka_libfranka_0.14.x
+ROBOT_TYPE=panda docker compose build
+ROBOT_TYPE=panda ROBOT_IP=<panda-ip> docker compose up -d
+docker exec -it ros2_polymetis_container bash
+ros2 launch role_ros2 franka_robot.launch.py use_mock:=false robot_ip:=<panda-ip>
+```
+
+Use `docker/ros2_franka_libfranka_0.18.x` instead if your robot system/libfranka
+version requires the newer stack.
+
+On the desktop connected to FACTR, run `ros2_factr_container`. The FACTR bringup
+config starts trajectory collection inside that container. Run `bringup.py` on
+the desktop host, not inside the container, because it uses `docker exec`.
+
+```bash
+export ROS_DOMAIN_ID=<same-domain-as-rt-machine>
+docker compose -f docker/ros2_factr/docker-compose.yaml up -d
+python3 scripts/bringup.py --config conf/factr_franka.json
+```
+
+The `FACTR Collect Trajectory` entry first runs `factr-set-latency`, then starts
+`scripts/collect_trajectory_factr_franka.py`.
 
 ## When NVIDIA Container Toolkit is not installed
 

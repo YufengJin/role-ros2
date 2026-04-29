@@ -7,6 +7,6 @@ including VR controllers for teleoperation.
 
 from role_ros2.controllers.base_controller import BaseController
 from role_ros2.controllers.oculus_controller import VRPolicy, VRBimanPolicy
+from role_ros2.controllers.factr import FACTRPolicy
 
-__all__ = ['BaseController', 'VRPolicy', 'VRBimanPolicy']
-
+__all__ = ['BaseController', 'VRPolicy', 'VRBimanPolicy', 'FACTRPolicy']

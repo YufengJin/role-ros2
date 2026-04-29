@@ -766,10 +766,14 @@ class CollectTrajectoryBase:
             control_timestamps["step_end"] = get_ros_time_ns(self._node)
             obs["timestamp"]["control"] = control_timestamps
             timestep = {"observation": obs, "action": action_info}
-            if self._traj_writer is not None:
+            exclude_from_trajectory = bool(
+                controller_action_info.get("exclude_from_trajectory", False)
+            )
+            if self._traj_writer is not None and not exclude_from_trajectory:
                 self._traj_writer.write_timestep(timestep)
 
-            self._num_steps += 1
+            if not exclude_from_trajectory:
+                self._num_steps += 1
             if self.horizon is not None and self._num_steps >= self.horizon:
                 self._print(f"Reached horizon ({self.horizon} steps)")
                 self._handle_trajectory_success()

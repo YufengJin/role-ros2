@@ -165,6 +165,8 @@ install(DIRECTORY config
     PATTERN "*.yaml"
     PATTERN "*.yml"
     PATTERN "*.rviz"
+    PATTERN "*.urdf"
+    PATTERN "*.STL"
 )
 
 # ============================================================================
@@ -233,4 +235,3 @@ if(BUILD_TESTING)
 endif()
 
 ament_package()
-

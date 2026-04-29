@@ -163,7 +163,15 @@ class DockerROSControlCenter(QMainWindow):
         """Return [(display_name, full_path), ...] for conf/*.json."""
         configs = []
         if os.path.isdir(self.conf_dir):
-            for name in ["franka.json", "biman_franka.json"]:
+            preferred = ["franka.json", "biman_franka.json", "factr_franka.json"]
+            names = []
+            for name in preferred:
+                if os.path.exists(os.path.join(self.conf_dir, name)):
+                    names.append(name)
+            for name in sorted(os.listdir(self.conf_dir)):
+                if name.endswith(".json") and name not in names:
+                    names.append(name)
+            for name in names:
                 path = os.path.join(self.conf_dir, name)
                 if os.path.exists(path):
                     display = name.replace(".json", "").replace("_", " ").title()

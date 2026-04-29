@@ -1,0 +1,14 @@
+[
+    {
+        "name": "FACTR Collect Trajectory",
+        "container": "ros2_factr_container",
+        "command": "cd /app/ros2_ws/src/role-ros2 && factr-set-latency --config config/factr_teleop_config.yaml && python3 scripts/collect_trajectory_factr_franka.py --factr-config config/factr_teleop_config.yaml --viz",
+        "kill_keyword": "scripts/collect_trajectory_factr_franka.py"
+    },
+    {
+        "name": "Rviz2",
+        "container": "ros2_factr_container",
+        "command": "cd /app/ros2_ws/src/role-ros2 && ros2 run rviz2 rviz2 -d config/rviz/collect_traj.rviz",
+        "kill_keyword": "rviz2 -d config/rviz/collect_traj.rviz"
+    }
+]

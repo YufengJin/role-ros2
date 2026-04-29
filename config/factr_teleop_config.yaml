@@ -1,0 +1,94 @@
+name: factr_franka_teleop
+
+
+dynamixel:
+  dynamixel_port: "usb-FTDI_USB__-__Serial_Converter_FTAKRKHW-if00-port0"
+
+  servo_types:
+    - "XC330_T288_T"
+    - "XM430_W210_T"
+    - "XC330_T288_T"
+    - "XM430_W210_T"
+    - "XC330_T288_T"
+    - "XC330_T288_T"
+    - "XC330_T288_T"
+    - "XC330_T288_T"
+
+  joint_signs: [1, 1, 1, -1, 1, -1, 1, -1]
+
+
+arm_teleop:
+  leader_urdf: "factr_teleop_franka.urdf"
+  num_arm_joints: 7
+  arm_joint_limits_max: [2.8973, 1.7628, 2.8973, -0.8698, 2.8973, 3.7525, 2.8973]
+  arm_joint_limits_min: [-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973]
+  arm_joint_limits_safety_margin: 0.1
+  initialization:
+    # initial_match_joint_pos: [0.0, -0.7854, 0.0, -2.356, 0.0, 1.57, 0.0]
+    # If true, search offsets from current Dynamixel positions and print the result.
+    # If false, use factr_joint_offsets directly and do not perform offset search.
+    search_dynamixel_offsets: false
+    # Raw Dynamixel offsets for [7 arm joints, gripper]. Replace these with the
+    # printed search result from a calibrated run.
+    calibration_joint_pos: [0.0, 0.0, 0.0, -2.356, 0.0, 1.57, 0.0]
+    factr_joint_offsets: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+gripper_teleop:
+  actuation_range: 0.8
+
+controller:
+  frequency: 500
+  gravity_comp:
+    enable: true
+    gain: 0.85
+  torque_feedback:
+    enable: false
+    gain: 2.0
+    damping: 0.0
+    motor_scalar: 94.5652173913
+  null_space_regulation:
+    null_space_joint_target: [0.0, -0.7854, 0.0, -2.356, 0.0, 1.57, 0.0, 0.0]
+    kp: 0.0
+    kd: 0.0
+  static_friction_comp:
+    enable_speed: 0.9
+    gain: 0.6
+  joint_limit_barrier:
+    kp: 0.0
+    kd: 0.0
+
+
+teleop:
+  hz: 30.0
+  action_space: joint_position
+  start_enabled: false
+  alignment:
+    # On start, slowly move Franka to the absolute mapped FACTR joint pose before
+    # recording real teleoperation data. This avoids a sudden jump if Franka is
+    # not already close to the FACTR leader.
+    enabled: true
+    joint_threshold: 0.035
+    max_joint_step: 0.02
+    print_period_s: 1.0
+    exclude_from_trajectory: true
+  keyboard:
+    enable: true
+    start_key: "s"
+    stop_key: "f"
+    success_key: "a"
+    failure_key: "b"
+    keypress_latch_s: 0.75
+  force_feedback:
+    # Current ArmState does not yet publish motor_torques_external. This source
+    # estimates follower external torque as motor_torques_measured - joint_torques_computed.
+    # Change to motor_torques_external if that field is added later.
+    source: estimated_external_torque
+    fallback_zero: true
+  mapping:
+    joint_indices: [0, 1, 2, 3, 4, 5, 6]
+    joint_signs: [1, 1, 1, 1, 1, 1, 1]
+    joint_offsets: [0, 0, 0, 0, 0, 0, 0]
+    gripper_open_raw: 0.0
+    gripper_closed_raw: 0.8
+    gripper_invert: false
+    gripper_deadband: 0.02

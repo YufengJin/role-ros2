@@ -1,0 +1,42 @@
+# Docker Compose configuration for the FACTR desktop-side teleoperation
+# container. The real-time Franka/Polymetis side should keep using one of the
+# existing ros2_franka_libfranka_* compose files on the RT machine.
+
+services:
+  ros2_factr:
+    image: ros2_factr:latest
+    container_name: ros2_factr_container
+    build:
+      context: ../..
+      dockerfile: docker/ros2_factr/Dockerfile
+    network_mode: host
+    pid: host
+    ipc: host
+    stdin_open: true
+    tty: true
+    privileged: true
+    cap_add:
+      - SYS_NICE
+    ulimits:
+      rtprio: 99
+      memlock: 102400
+    deploy:
+      restart_policy:
+        condition: any
+    environment:
+      ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
+      RMW_IMPLEMENTATION: "rmw_fastrtps_cpp"
+      FASTDDS_BUILTIN_TRANSPORTS: "UDPv4"
+      ROS_LOCALHOST_ONLY: "${ROS_LOCALHOST_ONLY:-0}"
+      DISPLAY: "${DISPLAY}"
+      FACTR_CONFIG: "/app/ros2_ws/src/role-ros2/config/factr_teleop_config.yaml"
+      FACTR_DYNAMIXEL_PORT: "${FACTR_DYNAMIXEL_PORT:-usb-FTDI_USB__-__Serial_Converter_FTAKRKHW-if00-port0}"
+      FACTR_FTDI_LATENCY_TIMER: "${FACTR_FTDI_LATENCY_TIMER:-1}"
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /dev/shm:/dev/shm:rw
+      - /dev:/dev
+      # Needed for writing /sys/bus/usb-serial/devices/ttyUSB*/latency_timer.
+      - /sys:/sys:rw
+      - ../../:/app/ros2_ws/src/role-ros2:rw
+
