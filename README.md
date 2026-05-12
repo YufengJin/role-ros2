@@ -1,9 +1,13 @@
-# role-ros2: Robot Learning Full Stack on ROS2
+# role-ros2 &nbsp;·&nbsp; `nautilus-collect`
+
+> **Data-collection chamber of the [Nautilus](https://yufengjin.github.io/projects/nautilus/) harness.**
+> Implements the same `Robot` typed contract used in Nautilus evaluation and deployment, so the same code path serves both teleoperated data collection and closed-loop policy rollout &mdash; differing only in the action source.
 
 <div align="center">
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![ROS2](https://img.shields.io/badge/ROS2-Humble%20%7C%20Foxy-brightgreen)](https://www.ros.org/)
+[![Nautilus](https://img.shields.io/badge/part%20of-Nautilus-005A9C)](https://yufengjin.github.io/projects/nautilus/)
 
 </div>
 
@@ -13,17 +17,25 @@
 
 <br>
 
-**role-ros2** (Robot Learning ROS2) is a unified robot learning full stack built on the ROS2 open-source ecosystem. It provides end-to-end tools for data collection (VR teleoperation), labeling, conversion, and camera calibration, with Docker-based separation of robot hardware and algorithms for modularity.
+**role-ros2** (Robot Learning ROS2), distributed within the Nautilus ecosystem as **`nautilus-collect`**, is a unified robot learning full stack built on the ROS2 open-source ecosystem. It provides end-to-end tools for data collection (VR + GELLO teleoperation), labeling, conversion, and camera calibration, with Docker-based separation of robot hardware and algorithms for modularity.
 
-- An integrated toolchain for robot learning: VR data collection, labeling, conversion to TFDS/RLDS, and Charuco-based hand-eye calibration—all in one platform.
+- An integrated toolchain for robot learning: VR data collection, labeling, conversion to TFDS/RLDS, and Charuco-based hand-eye calibration&mdash;all in one platform.
 
-- Docker container separation of camera/GPU and robot control, enabling modular deployment and clean hardware–software decoupling.
+- Docker container separation of camera/GPU and robot control, enabling modular deployment and clean hardware&ndash;software decoupling.
 
-- VR teleoperation with Oculus Quest controlling Franka Panda (single-arm and bimanual) for real-time trajectory collection.
+- VR teleoperation with Oculus Quest controlling Franka Panda (single-arm and bimanual) for real-time trajectory collection, with **in-band success/failure labels** triggered mid-recording&mdash;no post-hoc relabelling pass required.
 
 - DROID / TFDS unified data format compatible with RLDS schema, ready for LeRobot and other training frameworks.
 
-- A Gym-compatible `RobotEnv` interface for imitation learning and reinforcement learning research.
+- A Gym-compatible `RobotEnv` interface for imitation learning and reinforcement learning research, satisfying the Nautilus `Robot` typed contract.
+
+## Role in the Nautilus harness
+
+`nautilus-collect` is the **chambered data-collection platform** of [Nautilus](https://yufengjin.github.io/projects/nautilus/). It exposes the same typed `Robot` interface (`reset` / `get_observation` / `apply_action` / `safe_stop`) used elsewhere in Nautilus, which means:
+
+- The same launch surface drives **teleoperated collection** and **closed-loop policy rollout**; only the action source changes (operator vs. policy server).
+- Both VR and GELLO controllers emit the same `Action`, so adding a new teleoperation modality is a **one-class extension**.
+- Trajectories are written in a DROID-/TFDS-compatible schema, so collected data feeds directly into Nautilus reproduction and fine-tuning workflows without conversion glue.
 
 ## Quick Start
 
